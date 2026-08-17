@@ -7,7 +7,7 @@
 (function (root) {
   'use strict';
 
-  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL, FICTIONAL_SHOCKS, HISTORICAL_ODDS, ETOPS_RANGE_KM } =
+  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL, FICTIONAL_SHOCKS, HISTORICAL_ODDS, ETOPS_RANGE_KM, LINE_GRADES, RETOOL_COST_RATE, OUTSOURCING } =
     root.AirlinerData;
   const { MANUFACTURERS } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
@@ -69,6 +69,8 @@
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
       pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 },
       events: [],
+      // 조달 전략 — 원가 ↔ 공급 차질 위험.
+      outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
       shocks: [],
       gameOver: null,
@@ -200,6 +202,9 @@
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
+    if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
+    for (const l of s.lines || []) if (!LINE_GRADES[l.grade]) l.grade = 'standard';
+
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
       // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
@@ -305,6 +310,9 @@
   function addToFleet(s, airlineId, programId, n) {
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
+
+    if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
+    for (const l of s.lines || []) if (!LINE_GRADES[l.grade]) l.grade = 'standard';
 
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
@@ -480,18 +488,21 @@
   }
 
   /** 조립 라인 신설 — 인증 완료 기종만 가능. */
-  function buildLine(s, programId) {
+  function buildLine(s, programId, gradeId) {
     const p = s.programs.find((x) => x.id === programId);
     if (!p || p.phase !== 'production') return { ok: false, error: '양산 가능한 기종이 아닙니다.' };
     const seg = SEGMENTS[p.segment];
-    if (s.cash < seg.lineCost) return { ok: false, error: `라인 건설비 ${fmtMoney(seg.lineCost)}이 부족합니다.` };
+    const grade = LINE_GRADES[gradeId] || LINE_GRADES.standard;
+    const cost = Math.round(seg.lineCost * grade.costMult);
+    if (s.cash < cost) return { ok: false, error: `라인 건설비 ${fmtMoney(cost)}이 부족합니다.` };
     ensureShape(s);
-    s.cash -= seg.lineCost;
-    s.pending.capex += seg.lineCost;
+    s.cash -= cost;
+    s.pending.capex += cost;
     s.lines.push({
       id: 'line-' + s.nextId++,
       programId: p.id,
-      capacity: seg.lineMaxRate,
+      grade: grade.id,
+      capacity: Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult)),
       ramp: 0.15,
       partial: 0,
       idle: false,
@@ -513,6 +524,48 @@
     s.pending.capex -= refund; // 매각 대금은 설비 투자의 환입
     s.lines.splice(idx, 1);
     pushLog(s, 'info', `${p.name} 라인 폐쇄. 설비 매각으로 ${fmtMoney(refund)} 회수.`);
+    return { ok: true };
+  }
+
+  /**
+   * 라인 전환 — 기존 라인을 다른 기종으로 돌린다.
+   * 동체 단면이 같아야 치구를 재활용할 수 있다. 패밀리 전략이 개발비뿐 아니라
+   * 생산 설비까지 재활용하게 만드는 지점이다(실제로도 같은 최종조립라인에서
+   * 같은 계열 변형을 굴린다).
+   */
+  function retoolLine(s, lineId, targetProgramId) {
+    const line = s.lines.find((l) => l.id === lineId);
+    if (!line) return { ok: false, error: '라인을 찾을 수 없습니다.' };
+    const from = s.programs.find((x) => x.id === line.programId);
+    const to = s.programs.find((x) => x.id === targetProgramId);
+    if (!to || to.phase !== 'production') return { ok: false, error: '양산 가능한 기종이 아닙니다.' };
+    if (to.id === line.programId) return { ok: false, error: '이미 그 기종의 라인입니다.' };
+    if (from && from.abreast !== undefined && to.abreast !== undefined && from.abreast !== to.abreast) {
+      return { ok: false, error: '동체 단면이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
+    }
+
+    const seg = SEGMENTS[to.segment];
+    const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+    const cost = Math.round(seg.lineCost * grade.costMult * RETOOL_COST_RATE);
+    if (s.cash < cost) return { ok: false, error: `전환 비용 ${fmtMoney(cost)}이 부족합니다.` };
+
+    ensureShape(s);
+    s.cash -= cost;
+    s.pending.capex += cost;
+    line.programId = to.id;
+    line.capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult));
+    line.ramp = 0.15; // 전환 후에는 램프업을 다시 올린다
+    line.partial = 0;
+    pushLog(s, 'info', `${from ? from.name : '라인'} → ${to.name} 라인 전환 (${fmtMoney(cost)}). 램프업을 다시 올린다.`);
+    return { ok: true };
+  }
+
+  /** 외주 비중 변경 — 원가 ↔ 공급 차질 위험. */
+  function setOutsourcing(s, levelId) {
+    if (!OUTSOURCING[levelId]) return { ok: false, error: '알 수 없는 외주 수준입니다.' };
+    ensureShape(s);
+    s.outsourcing = levelId;
+    pushLog(s, 'info', `조달 전략을 ${OUTSOURCING[levelId].name}으로 바꿨다.`);
     return { ok: true };
   }
 
@@ -853,6 +906,7 @@
   }
 
   function runProduction(s, report) {
+    const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
     let mult = 1;
     if (s.effects.strikeQuarters > 0) mult *= 0.5;
     if (s.effects.supplyQuarters > 0) mult *= 0.75;
@@ -880,7 +934,9 @@
         continue;
       }
 
-      line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter);
+      // 자동화 라인은 물량이 크지만 안정화가 느리다 — 수요가 확실할 때만 값을 한다.
+      const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+      line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter * grade.rampMult);
       const raw = line.capacity * line.ramp * mult + line.partial;
       let units = Math.floor(raw);
       line.partial = raw - units;
@@ -893,7 +949,7 @@
       let cost = 0;
       for (let i = 0; i < units; i++) {
         p.produced++;
-        cost += unitCostAt(p.unitCostBase, p.produced);
+        cost += unitCostAt(p.unitCostBase, p.produced) * sourcing.costMult;
       }
       s.cash -= cost;
       report.productionCost += cost;
@@ -940,7 +996,7 @@
     report.rate = Math.round(rate * 10000) / 100;
     const overhead =
       CONFIG.fixedOverheadPerQuarter +
-      s.lines.length * CONFIG.lineOverheadPerLine +
+      s.lines.reduce((a, l) => a + CONFIG.lineOverheadPerLine * ((LINE_GRADES[l.grade] || LINE_GRADES.standard).overhead), 0) +
       s.engineers * CONFIG.engineerCostPerQuarter +
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase * CONFIG.inventoryHoldingCost, 0);
 
@@ -1287,6 +1343,8 @@
     investQuality,
     cancelProgram,
     buildLine,
+    retoolLine,
+    setOutsourcing,
     closeLine,
     toggleLine,
     sellStock,

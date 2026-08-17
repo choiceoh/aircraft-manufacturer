@@ -350,7 +350,10 @@
       weight: 8,
       condition: (s) => s.lines.length > 0,
       apply: (s, h) => {
-        s.effects.supplyQuarters = Math.max(s.effects.supplyQuarters || 0, h.rng.int(1, 3));
+        // 외주가 많을수록 공급망 사고가 길어진다 — 787 이 실제로 겪은 대가.
+        const risk = (OUTSOURCING[s.outsourcing] || OUTSOURCING.mid).supplyRisk;
+        const q = Math.max(1, Math.round(h.rng.int(1, 3) * risk));
+        s.effects.supplyQuarters = Math.max(s.effects.supplyQuarters || 0, q);
         return `1차 협력사가 납기를 놓쳤다. ${s.effects.supplyQuarters}개 분기 동안 생산율이 25% 깎인다.`;
       },
     },

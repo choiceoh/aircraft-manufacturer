@@ -1955,3 +1955,99 @@ test('ETOPS 개념이 없던 세이브의 장거리 기종은 자격을 이어�
   E.ensureShape(s);
   assert.strictEqual(short.etops, false);
 });
+
+// ─────────────────── 생산 설비 ───────────────────
+
+test('라인 등급은 건설비 ↔ 물량·램프업의 트레이드오프다', () => {
+  const s = E.newGame(3);
+  s.cash = 200000;
+  const p = s.programs.find((x) => x.phase === 'production');
+  const seg = Data.SEGMENTS[p.segment];
+
+  const before = s.cash;
+  assert.ok(E.buildLine(s, p.id, 'classic').ok);
+  const classicCost = before - s.cash;
+  const classic = s.lines[s.lines.length - 1];
+
+  const before2 = s.cash;
+  assert.ok(E.buildLine(s, p.id, 'highRate').ok);
+  const fastCost = before2 - s.cash;
+  const fast = s.lines[s.lines.length - 1];
+
+  assert.ok(fastCost > classicCost, '고속 라인이 비싸야 한다');
+  assert.ok(fast.capacity > classic.capacity, '고속 라인이 물량이 커야 한다');
+  assert.ok(Data.LINE_GRADES.highRate.rampMult < Data.LINE_GRADES.classic.rampMult, '고속 라인은 안정화가 느려야 한다');
+  assert.ok(classic.capacity < seg.lineMaxRate, '재래식은 표준보다 물량이 적어야 한다');
+});
+
+test('라인 전환은 같은 동체 단면에서만 된다', () => {
+  const s = E.newGame(4);
+  s.cash = 300000;
+  const legacy = s.programs.find((x) => x.legacy);
+  assert.ok(E.buildLine(s, legacy.id, 'standard').ok);
+  const line = s.lines[s.lines.length - 1];
+
+  // 같은 단면 기종
+  const same = { segment: 'narrow', seats: 200, range: 5200, tech: 50, abreast: legacy.abreast, wing: 45 };
+  assert.ok(E.launchProgram(s, same, 'SAME').ok);
+  const sameP = s.programs[s.programs.length - 1];
+  sameP.phase = 'production';
+
+  // 다른 단면 기종
+  const other = { segment: 'narrow', seats: 200, range: 5200, tech: 50, abreast: legacy.abreast === 6 ? 7 : 6, wing: 45 };
+  assert.ok(E.launchProgram(s, other, 'OTHER').ok);
+  const otherP = s.programs[s.programs.length - 1];
+  otherP.phase = 'production';
+
+  const bad = E.retoolLine(s, line.id, otherP.id);
+  assert.strictEqual(bad.ok, false, '단면이 다르면 전환할 수 없어야 한다');
+  assert.ok(/동체 단면/.test(bad.error));
+
+  const cashBefore = s.cash;
+  const good = E.retoolLine(s, line.id, sameP.id);
+  assert.ok(good.ok, good.error);
+  assert.strictEqual(line.programId, sameP.id);
+  assert.ok(line.ramp <= 0.15, '전환 후 램프업을 다시 올려야 한다');
+
+  // 전환이 신규 건설보다 싸야 의미가 있다.
+  const retoolCost = cashBefore - s.cash;
+  assert.ok(retoolCost < Data.SEGMENTS[sameP.segment].lineCost, '전환이 신규 건설보다 싸야 한다');
+});
+
+test('외주 비중은 단가 ↔ 공급 차질 위험의 트레이드오프다', () => {
+  assert.ok(Data.OUTSOURCING.high.costMult < Data.OUTSOURCING.low.costMult, '외주가 많을수록 단가가 낮아야 한다');
+  assert.ok(Data.OUTSOURCING.high.supplyRisk > Data.OUTSOURCING.low.supplyRisk, '외주가 많을수록 위험해야 한다');
+
+  // 실제 생산 원가에 반영되는지 — 같은 시드·같은 조작에서 원가만 달라야 한다.
+  const run = (level) => {
+    const s = E.newGame(12);
+    E.setOutsourcing(s, level);
+    let cost = 0;
+    for (let i = 0; i < 8 && !s.gameOver; i++) {
+      s.cash = 40000;
+      const r = E.endTurn(s);
+      if (!r.ok) break;
+      cost += r.report.productionCost;
+    }
+    return cost;
+  };
+  assert.ok(run('high') < run('low'), '광범위 외주가 생산원가가 낮아야 한다');
+});
+
+test('공급 차질 이벤트는 외주 비중에 따라 길어진다', () => {
+  const ev = Data.EVENTS.find((e) => /공급/.test(e.name));
+  assert.ok(ev, '공급망 이벤트가 있어야 한다');
+
+  const sample = (level) => {
+    let total = 0;
+    for (let seed = 1; seed <= 60; seed++) {
+      const s = E.newGame(seed);
+      E.setOutsourcing(s, level);
+      s.effects.supplyQuarters = 0;
+      ev.apply(s, { rng: R.createRng(seed), fmt: E.fmtMoney, reputation: () => {}, income: () => {}, expense: () => {} });
+      total += s.effects.supplyQuarters;
+    }
+    return total;
+  };
+  assert.ok(sample('high') > sample('low'), '외주가 많을수록 차질이 길어야 한다');
+});

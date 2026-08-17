@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, AIRLINES, UPGAUGE_PER_YEAR } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
@@ -445,6 +445,27 @@
 
   // ─────────────────────────────── 생산 ───────────────────────────────
 
+  /** 같은 동체 단면이라야 치구를 재활용할 수 있다 — 패밀리가 생산에서도 값을 하는 지점. */
+  function retoolTargets(s, line, from) {
+    const targets = s.programs.filter(
+      (t) =>
+        t.phase === 'production' &&
+        t.id !== line.programId &&
+        (from === undefined || from.abreast === undefined || t.abreast === undefined || t.abreast === from.abreast),
+    );
+    if (!targets.length) return '';
+    const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+    const btns = targets
+      .map((t) => {
+        const cost = Math.round(SEGMENTS[t.segment].lineCost * grade.costMult * RETOOL_COST_RATE);
+        return `<button data-action="retool-line" data-id="${line.id}" data-target="${t.id}" ${
+          s.cash >= cost ? '' : 'disabled'
+        }>${esc(t.name)}로 전환 · ${money(cost)}</button>`;
+      })
+      .join('');
+    return `<div class="row">${btns}</div>`;
+  }
+
   function renderProduction(s) {
     const ready = s.programs.filter((p) => p.phase === 'production');
     if (!ready.length) return '<div class="card"><p class="muted">양산 가능한 기종이 없다.</p></div>';
@@ -452,11 +473,27 @@
     const buildButtons = ready
       .map((p) => {
         const seg = SEGMENTS[p.segment];
-        const can = s.cash >= seg.lineCost;
-        return `<button data-action="build-line" data-id="${p.id}" ${can ? '' : 'disabled'}>
-          ${esc(p.name)} 라인 신설 · ${money(seg.lineCost)}
-        </button>`;
+        const grades = Object.values(LINE_GRADES)
+          .map((g) => {
+            const cost = Math.round(seg.lineCost * g.costMult);
+            const rate = Math.round(seg.lineMaxRate * g.rateMult);
+            return `<button data-action="build-line" data-id="${p.id}" data-grade="${g.id}" ${s.cash >= cost ? '' : 'disabled'}>
+                ${esc(g.name)} · ${money(cost)} · 분기 ${rate}기 · 램프 ×${g.rampMult}
+              </button>`;
+          })
+          .join('');
+        return `<div class="line"><b>${esc(p.name)}</b><div class="row">${grades}</div></div>`;
       })
+      .join('');
+
+    const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
+    const sourcingButtons = Object.values(OUTSOURCING)
+      .map(
+        (o) =>
+          `<button class="mat ${o.id === sourcing.id ? 'on' : ''}" data-action="set-outsourcing" data-level="${o.id}">
+             <b>${esc(o.name)}</b><span>단가 ×${o.costMult.toFixed(2)} · 공급 차질 ×${o.supplyRisk}</span>
+           </button>`,
+      )
       .join('');
 
     const lines = s.lines.length
@@ -471,7 +508,8 @@
               </div>
               <div class="row between"><span>가동률</span><span>${Math.round(l.ramp * 100)}%</span></div>
               ${bar(l.ramp * 100, 'ramp')}
-              <p class="muted">분기 최대 ${l.capacity}기 · 이 기종 잔고 ${ordered}기</p>
+              <p class="muted">${esc((LINE_GRADES[l.grade] || LINE_GRADES.standard).name)} · 분기 최대 ${l.capacity}기 · 이 기종 잔고 ${ordered}기</p>
+              ${retoolTargets(s, l, p)}
               <div class="row">
                 <button data-action="toggle-line" data-id="${l.id}">${l.idle ? '가동 재개' : '가동 중지'}</button>
                 <button class="danger" data-action="close-line" data-id="${l.id}">폐쇄</button>
@@ -495,9 +533,14 @@
       .join('');
 
     return `
+      <section class="card"><h3>조달 전략</h3>
+        <p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
+        <div class="mats">${sourcingButtons}</div>
+      </section>
       <section class="card"><h3>라인 신설</h3>
-        <p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.</p>
-        <div class="row wrap">${buildButtons}</div>
+        <p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.
+          재래식은 싸고 빨리 안정되지만 물량이 적고, 고속 자동화는 반대다 — 수요가 확실한 기종에만 값을 한다.</p>
+        ${buildButtons}
       </section>
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;

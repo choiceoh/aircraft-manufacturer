@@ -236,8 +236,16 @@
         break;
       }
 
+      case 'set-outsourcing':
+        act(E.setOutsourcing(s, btn.dataset.level));
+        break;
+
+      case 'retool-line':
+        act(E.retoolLine(s, btn.dataset.id, btn.dataset.target));
+        break;
+
       case 'build-line':
-        act(E.buildLine(s, btn.dataset.id));
+        act(E.buildLine(s, btn.dataset.id, btn.dataset.grade));
         break;
 
       case 'toggle-line':
