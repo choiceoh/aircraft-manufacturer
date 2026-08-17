@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  engine-tests:
+    name: engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # 의존성이 없다. 소스가 globalThis 에 붙는 IIFE라 require 만으로 로드된다.
+      - run: node --test test/engine.test.cjs
