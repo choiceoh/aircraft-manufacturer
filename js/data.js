@@ -369,6 +369,84 @@
     },
   ];
 
+
+  /**
+   * 역사적 충격 — 1998~2017년에 실제로 항공기 시장을 흔든 사건을 정해진 분기에 넣는다.
+   * 무작위 이벤트와 달리 시드와 무관하게 항상 같은 시점에 오므로, 플레이어는 두 번째
+   * 판부터 "2001년 3분기 전에 현금을 쌓아 두자"처럼 역사 자체를 공략할 수 있다.
+   *
+   * turn = (연도 - 1998) * 4 + (분기 - 1)
+   */
+  const HISTORICAL = [
+    {
+      turn: (2001 - 1998) * 4 + 2, // 2001년 3분기
+      name: '9·11 테러',
+      apply: (s, h) => {
+        s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.66);
+        s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 7);
+        // 발주 취소가 실제로 쏟아졌다.
+        let cancelled = 0;
+        for (const o of s.backlog.filter((x) => x.remaining > 0)) {
+          const cut = Math.round(o.remaining * h.rng.range(0.15, 0.4));
+          if (cut > 0) {
+            o.remaining -= cut;
+            o.cancelled = (o.cancelled || 0) + cut;
+            cancelled += cut;
+          }
+        }
+        return `미국 동시다발 테러로 항공 수요가 붕괴했다. 발주 ${cancelled}기가 취소되고 수요 회복에는 수년이 걸린다.`;
+      },
+    },
+    {
+      turn: (2003 - 1998) * 4 + 1, // 2003년 2분기
+      name: 'SARS 확산',
+      apply: (s) => {
+        s.market.demandIndex = Math.max(0.5, s.market.demandIndex * 0.85);
+        s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 3);
+        return '사스가 아시아 노선을 마비시켰다. 역내 항공사들이 인도 연기를 요청한다.';
+      },
+    },
+    {
+      turn: (2008 - 1998) * 4 + 1, // 2008년 2분기
+      name: '유가 사상 최고',
+      apply: (s) => {
+        s.market.fuelIndex = Math.min(2.2, Math.max(s.market.fuelIndex * 1.75, 1.9));
+        s.effects.fuelShockQuarters = Math.max(s.effects.fuelShockQuarters || 0, 6);
+        return '유가가 배럴당 $140을 넘었다. 항공사들이 연비 나쁜 기종을 조기 퇴역시키기 시작한다.';
+      },
+    },
+    {
+      turn: (2008 - 1998) * 4 + 3, // 2008년 4분기
+      name: '금융위기',
+      apply: (s, h) => {
+        s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.72);
+        s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 5);
+        // 신용이 마른다 — 조달 비용이 오래 오른다.
+        s.effects.rateBump = Math.max(s.effects.rateBump || 0, 0.012);
+        s.effects.rateBumpQuarters = Math.max(s.effects.rateBumpQuarters || 0, 8);
+        s.market.fuelIndex = Math.max(0.5, s.market.fuelIndex * 0.55);
+        return '리먼 파산으로 금융시장이 얼어붙었다. 항공사 자금조달이 막히고 우리 차입 금리도 뛴다.';
+      },
+    },
+    {
+      turn: (2010 - 1998) * 4 + 1, // 2010년 2분기
+      name: '아이슬란드 화산 분화',
+      apply: (s, h) => {
+        const cost = Math.round(h.rng.range(40, 110));
+        h.expense(cost);
+        return `화산재로 유럽 하늘이 닫혔다. 인도 지연과 위약 대응에 ${h.fmt(cost)}이 나갔다.`;
+      },
+    },
+    {
+      turn: (2014 - 1998) * 4 + 2, // 2014년 3분기
+      name: '유가 급락',
+      apply: (s) => {
+        s.market.fuelIndex = Math.max(0.45, s.market.fuelIndex * 0.5);
+        return '셰일 증산으로 유가가 반토막 났다. 연비 프리미엄이 당분간 힘을 잃는다.';
+      },
+    },
+  ];
+
   root.AirlinerData = {
     CONFIG,
     SEGMENTS,
@@ -379,5 +457,6 @@
     RIVAL_STRENGTH_FLOOR,
     RIVAL_DRIFT_LIMIT,
     EVENTS,
+    HISTORICAL,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

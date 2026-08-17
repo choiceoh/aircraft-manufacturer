@@ -166,12 +166,17 @@
         break;
 
       case 'design-seg':
-        ui.spec = D.defaultSpec(btn.dataset.seg);
+        ui.spec = D.defaultSpec(btn.dataset.seg, E.yearOf(s.turn));
         render();
         break;
 
       case 'design-mat':
         ui.spec.material = btn.dataset.mat;
+        render();
+        break;
+
+      case 'design-eng':
+        ui.spec.engine = btn.dataset.eng;
         render();
         break;
 

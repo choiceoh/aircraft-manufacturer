@@ -6,6 +6,7 @@
   'use strict';
 
   const { SEGMENTS, MATERIALS, CONFIG } = root.AirlinerData;
+  const Engines = root.AirlinerEngines;
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -42,6 +43,11 @@
     const range = clamp(spec.range, seg.range.min, seg.range.max);
     const tech = clamp(spec.tech, 0, 100);
 
+    // 엔진은 설계의 두 번째 축이다. spec.year(소수 연도)가 있으면 그 시점에 실제로
+    // 살 수 있는 엔진으로 좁히고, 갓 나온 엔진이면 성숙도 위험이 얹힌다.
+    const eng = Engines.resolve(seg.id, spec.engine, spec.year);
+    const engMaturity = eng ? Engines.maturityRisk(eng, spec.year) : 1;
+
     const seatRatio = seats / seg.seats.ref;
     const rangeRatio = range / seg.range.ref;
 
@@ -51,10 +57,11 @@
       Math.pow(seatRatio, 1.15) *
       Math.pow(rangeRatio, 0.55) *
       (1 + (tech / 100) * 0.9) *
-      mat.devCostMult;
+      mat.devCostMult *
+      eng.devMult;
 
     let devQuarters =
-      seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * mat.devTimeMult;
+      seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * mat.devTimeMult * eng.timeMult;
 
     let engineersNeeded = seg.engineersNeeded * Math.pow(seatRatio, 0.5) * (1 + (tech / 100) * 0.4);
 
@@ -63,18 +70,21 @@
     // 딱지만 붙인 채 소재·기술·항속을 갈아엎으면 신규 설계를 34% 가격에 사는 셈이라
     // 개발비 제약 자체가 무너진다 (동일 설계 기준 $18.6B → $6.3B).
     const derivative = isCompatibleDerivative(spec, range, tech);
+    // 엔진을 갈아 끼운 파생형(재장착)은 형식증명은 물려받지만 개발비가 훨씬 크다.
+    // A320neo·737 MAX 가 정확히 이 경우다 — 순수 동체 연장과 같은 값을 매기면 안 된다.
+    const reEngined = derivative && spec.derivedFrom.engine !== undefined && spec.derivedFrom.engine !== eng.id;
     if (derivative) {
-      devCost *= 0.34;
-      devQuarters *= 0.5;
-      engineersNeeded *= 0.55;
+      devCost *= reEngined ? 0.58 : 0.34;
+      devQuarters *= reEngined ? 0.72 : 0.5;
+      engineersNeeded *= reEngined ? 0.75 : 0.55;
     }
 
     // 연비 지수(0~100). 기술 투자 + 소재가 좌우하고, 과도한 항속은 구조중량으로 깎인다.
     const rangePenalty = Math.max(0, rangeRatio - 1) * 9;
-    const efficiency = clamp(22 + tech * 0.62 + mat.efficiencyBonus - rangePenalty, 5, 99);
+    const efficiency = clamp(22 + tech * 0.62 + mat.efficiencyBonus + eng.eff - rangePenalty, 5, 99);
 
     // 객실 쾌적성 — 항공사 프리미엄 노선 평가에 반영.
-    const comfort = clamp(38 + tech * 0.28 + mat.comfortBonus, 10, 99);
+    const comfort = clamp(38 + tech * 0.28 + mat.comfortBonus + eng.comfort, 10, 99);
 
     // 표준 생산원가: 크기·항속에 비례, 기술/소재가 올린다.
     const unitCostBase =
@@ -82,7 +92,8 @@
       Math.pow(seatRatio, 0.92) *
       Math.pow(rangeRatio, 0.3) *
       (1 + (tech / 100) * 0.3) *
-      mat.unitCostMult;
+      mat.unitCostMult *
+      eng.costMult;
 
     // 정가: 원가가 아니라 "시장이 값을 쳐주는 가치" 기준으로 만든다.
     const listPrice =
@@ -90,10 +101,11 @@
       Math.pow(seatRatio, 0.95) *
       Math.pow(rangeRatio, 0.34) *
       (1 + (tech / 100) * 0.42) *
-      (1 + mat.efficiencyBonus / 130);
+      (1 + (mat.efficiencyBonus + eng.eff) / 130);
 
     // 개발 리스크: 기술을 밀어붙이고 복합재를 쓸수록 결함 확률이 오른다.
-    const defectRisk = clamp(0.05 + (tech / 100) * 0.22 + mat.riskBonus, 0.03, 0.6);
+    // 엔진 신뢰성과 성숙도가 곱으로 얹힌다 — 신형 엔진 초도 채택이 실제로 위험한 이유.
+    const defectRisk = clamp((0.05 + (tech / 100) * 0.22 + mat.riskBonus) * eng.riskMult * engMaturity, 0.03, 0.75);
 
     return {
       segment: seg.id,
@@ -101,6 +113,11 @@
       range: Math.round(range),
       tech: Math.round(tech),
       material: mat.id,
+      engine: eng.id,
+      engineName: eng.name,
+      engineMaker: eng.maker,
+      // 성숙도 위험이 남아 있으면 UI가 경고할 수 있게 노출한다.
+      engineImmature: Math.round((engMaturity - 1) * 100) / 100,
       devCost: Math.round(devCost),
       devQuarters: Math.max(2, Math.round(devQuarters)),
       engineersNeeded: Math.round(engineersNeeded),
@@ -112,6 +129,7 @@
       certQuarters: seg.certQuarters,
       // UI가 "파생형 할인이 적용됐는지"를 그대로 보여줄 수 있게 노출한다.
       derivative,
+      reEngined,
     };
   }
 
@@ -126,14 +144,17 @@
   }
 
   /** 설계 기본값 — 세그먼트를 고를 때마다 슬라이더를 이 값으로 되돌린다. */
-  function defaultSpec(segmentId) {
+  function defaultSpec(segmentId, year) {
     const seg = SEGMENTS[segmentId];
+    const eng = Engines.defaultFor(segmentId, year);
     return {
       segment: segmentId,
       seats: seg.seats.ref,
       range: seg.range.ref,
       tech: 50,
       material: 'aluminum',
+      engine: eng ? eng.id : undefined,
+      year,
     };
   }
 

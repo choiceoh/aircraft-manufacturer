@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
-for (const f of ['rng.js', 'fleet.js', 'data.js', 'design.js', 'bidding.js', 'engine.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'data.js', 'design.js', 'bidding.js', 'engine.js']) {
   require(path.join(JS, f));
 }
 
@@ -985,4 +985,205 @@ test('응찰 불가 공고는 canBid 로 걸러진다 (감점·확인창 공용 
       assert.ok(ok, 'canBid 가 참이면 실격 아닌 후보가 있어야 한다');
     }
   }
+});
+
+// ─────────────────────────── 심화 메커니즘 ───────────────────────────
+
+const { AirlinerEngines: EN } = globalThis;
+
+test('엔진: 그 시점에 살 수 없는 엔진은 채택되지 않는다', () => {
+  // 1998년에 2016년 엔진(LEAP)을 지정해도 조용히 당대 엔진으로 대체돼야 한다.
+  const early = D.evaluate({ segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum', engine: 'leap-1a', year: 1998 });
+  assert.notStrictEqual(early.engine, 'leap-1a');
+  assert.ok(EN.inService(EN.get(early.engine), 1998), '대체된 엔진은 그 시점에 판매 중이어야 한다');
+
+  // 2016년에는 그대로 채택된다.
+  const late = D.evaluate({ segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum', engine: 'leap-1a', year: 2016.5 });
+  assert.strictEqual(late.engine, 'leap-1a');
+  assert.ok(late.efficiency > early.efficiency, '신형 엔진이 연비가 좋아야 한다');
+});
+
+test('엔진: 신형은 초기 결함 위험이 얹히고 성숙하면 사라진다', () => {
+  const base = { segment: 'wide', seats: 300, range: 12000, tech: 60, material: 'hybrid', engine: 'trent1000' };
+  const fresh = D.evaluate({ ...base, year: 2011.75 }); // 취항 직후
+  const mature = D.evaluate({ ...base, year: 2016 }); // 성숙 후
+  assert.ok(fresh.defectRisk > mature.defectRisk, '취항 직후가 더 위험해야 한다');
+  assert.ok(fresh.engineImmature > 0);
+  assert.strictEqual(mature.engineImmature, 0);
+  // 연비·개발비는 성숙도와 무관하다 — 위험만 다르다.
+  assert.strictEqual(fresh.efficiency, mature.efficiency);
+  assert.strictEqual(fresh.devCost, mature.devCost);
+});
+
+test('엔진: 재장착 파생형은 동체 연장보다 비싸고 신규 설계보다 싸다', () => {
+  // 원형 엔진이 아직 팔리고 있어야 "순수 동체 연장"이 성립한다. CFM56-5B 를 쓴다.
+  // (DN-150 의 CFM56-3 은 2000년에 단산되므로 2016년 파생형은 필연적으로 재장착이 된다 —
+  //  그건 의도한 동작이고, 아래 별도 테스트로 고정한다.)
+  const y = 2016.5;
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum' };
+  const from = { id: 'x', name: '원형', tech: 50, material: 'aluminum', range: 5500, engine: 'cfm56-5b' };
+
+  const stretch = D.evaluate({ ...base, seats: 200, engine: 'cfm56-5b', derivedFrom: from, year: y });
+  const reEngine = D.evaluate({ ...base, seats: 200, engine: 'leap-1a', derivedFrom: from, year: y });
+  const brandNew = D.evaluate({ ...base, seats: 200, engine: 'leap-1a', year: y });
+
+  assert.strictEqual(stretch.derivative, true);
+  assert.strictEqual(stretch.reEngined, false, '같은 엔진이면 재장착이 아니다');
+  assert.strictEqual(reEngine.derivative, true);
+  assert.strictEqual(reEngine.reEngined, true);
+
+  assert.ok(reEngine.devCost > stretch.devCost, '재장착이 단순 연장보다 비싸야 한다');
+  assert.ok(reEngine.devCost < brandNew.devCost, '그래도 신규 설계보다는 싸야 한다');
+  assert.ok(reEngine.devQuarters > stretch.devQuarters);
+});
+
+test('단산된 엔진을 쓰던 기종의 파생형은 재장착으로 처리된다', () => {
+  // 현실의 제약이다 — 원형 엔진을 더 살 수 없으면 동체만 늘리는 선택지는 없다.
+  const s = E.newGame(3);
+  s.turn = (2016 - 1998) * 4;
+  const legacy = s.programs.find((p) => p.legacy);
+  assert.strictEqual(EN.inService(EN.get(legacy.engine), 2016), false, '승계 엔진은 이미 단산돼 있어야 한다');
+
+  const ev = D.evaluate({ ...E.derivativeSpec(legacy, 20), year: E.yearOf(s.turn) });
+  assert.strictEqual(ev.derivative, true);
+  assert.strictEqual(ev.reEngined, true);
+  assert.notStrictEqual(ev.engine, legacy.engine);
+});
+
+test('선단 공통성: 우리 기체를 굴리는 항공사에서 점수가 더 높다', () => {
+  const s = E.newGame(8);
+  const p = s.programs.find((x) => x.phase === 'production');
+  const rng = R.createRng(1);
+  const rfps = [];
+  for (let i = 0; i < 60 && rfps.length < 1; i++) {
+    for (const r of B.generateRfps(s, rng)) if (r.segment === 'narrow') rfps.push(r);
+  }
+  const rfp = rfps[0];
+  assert.ok(rfp, '협동체 공고를 하나 만들어야 한다');
+
+  // 같은 공고를 두 상태에서 채점한다: 선단 없음 → 선단 보유.
+  const airline = rfp.airlineId;
+  const saved = s.fleets[airline];
+  s.fleets[airline] = undefined;
+  const without = B.scoreBid(s, rfp, p, 0.1).total;
+  s.fleets[airline] = { [p.id]: 40 };
+  const withFleet = B.scoreBid(s, rfp, p, 0.1).total;
+  s.fleets[airline] = saved;
+
+  assert.ok(withFleet > without, `공통성 가산이 붙어야 한다 (${without} → ${withFleet})`);
+  assert.ok(withFleet - without <= 6.01, '가산은 상한(6점)을 넘지 않는다');
+});
+
+test('선단 공통성은 신규 계정의 점수를 깎지 않는다', () => {
+  // 공통성을 가중치 항목으로 넣으면 분모(wsum)가 커져 "우리 기체가 없는 항공사"
+  // 점수가 일괄로 내려간다. 그건 가산점의 취지와 정반대다.
+  const s = E.newGame(8);
+  const p = s.programs.find((x) => x.phase === 'production');
+  const rng = R.createRng(5);
+  let rfp = null;
+  for (let i = 0; i < 200 && !rfp; i++) {
+    for (const r of B.generateRfps(s, rng)) {
+      if (!rfp && r.segment === 'narrow' && !B.scoreBid(s, r, p, 0.1).blocked) rfp = r;
+    }
+  }
+  assert.ok(rfp, '실격되지 않는 협동체 공고를 하나 찾아야 한다');
+
+  s.fleets = {}; // 어느 항공사에도 우리 기체가 없다
+  const noFleet = B.scoreBid(s, rfp, p, 0.1);
+  assert.strictEqual(noFleet.parts.common, 0, '공통성 0 이면 가산도 0');
+
+  // 가산 이전의 가중합만으로 계산한 값과 같아야 한다(= 분모 오염이 없다).
+  s.fleets = { [rfp.airlineId]: { [p.id]: 40 } };
+  const withFleet = B.scoreBid(s, rfp, p, 0.1);
+  assert.ok(withFleet.total > noFleet.total);
+  assert.ok(withFleet.parts.spec === noFleet.parts.spec, '다른 항목 점수는 그대로여야 한다');
+});
+
+test('역사적 충격은 시드와 무관하게 정해진 분기에 온다', () => {
+  const nineEleven = Data.HISTORICAL.find((h) => h.name.includes('9·11'));
+  assert.ok(nineEleven, '9·11 항목이 있어야 한다');
+
+  for (const seed of [1, 2, 3, 99]) {
+    const s = E.newGame(seed);
+    let hit = null;
+    while (!s.gameOver && s.turn <= nineEleven.turn + 1) {
+      s.cash = Math.max(s.cash, 60000); // 자금 문제로 중단되지 않게
+      E.endTurn(s);
+      const ev = s.events.find((e) => e.historical && e.name.includes('9·11'));
+      if (ev) hit = s.turn;
+    }
+    assert.strictEqual(hit, nineEleven.turn, `seed ${seed}: 9·11 이 ${nineEleven.turn}턴에 와야 한다`);
+  }
+});
+
+test('수요 충격은 몇 분기에 걸쳐 회복된다 (한 분기 벌금이 아니다)', () => {
+  const s = E.newGame(4);
+  const t911 = Data.HISTORICAL.find((h) => h.name.includes('9·11')).turn;
+  const series = [];
+  while (!s.gameOver && s.turn < t911 + 8) {
+    s.cash = Math.max(s.cash, 60000);
+    E.endTurn(s);
+    series.push({ turn: s.turn, demand: s.market.demandIndex });
+  }
+  const at = series.find((x) => x.turn === t911);
+  const after4 = series.find((x) => x.turn === t911 + 4);
+  assert.ok(at && after4);
+  assert.ok(at.demand < 0.75, `충격 분기 수요가 낮아야 한다 (${at.demand.toFixed(2)})`);
+  assert.ok(after4.demand < 0.95, `1년 뒤에도 완전히 회복되면 안 된다 (${after4.demand.toFixed(2)})`);
+});
+
+test('신용등급: 차입이 늘면 등급이 내려가고 이자율이 오른다', () => {
+  const s = E.newGame(6);
+  const good = E.creditRating(s);
+  E.borrow(s, Data.CONFIG.maxDebt); // 한도까지 당긴다
+  const bad = E.creditRating(s);
+  assert.ok(bad.mult > good.mult, `부채가 늘면 금리 배수가 올라야 한다 (${good.grade} → ${bad.grade})`);
+});
+
+test('신용등급: 개발 투자만으로 최하등급이 되지 않는다', () => {
+  // 개발비를 자산으로 보지 않으면 개발 기간(= 게임의 본편) 내내 CCC 가 되어
+  // 현금이 가장 마른 시점에 이자까지 올리는 사망 나선이 생긴다.
+  const s = E.newGame(6);
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 60, material: 'hybrid' }, 'DEV');
+  for (let i = 0; i < 8 && !s.gameOver; i++) E.endTurn(s);
+  const p = s.programs.find((x) => x.phase === 'dev');
+  assert.ok(p && p.spent > 0, '개발이 진행돼 지출이 쌓여야 한다');
+  assert.notStrictEqual(E.creditRating(s).grade, 'CCC');
+});
+
+test('인증 지연이 생기면 기간이 늘고 비용이 리포트에 잡힌다', () => {
+  // 분기당 확률이 12% 상한이라 한 판에서는 자주 나지 않는다. 여러 시드를 돌려
+  // "지연이 발생하면 기간이 늘고 그 비용이 리포트에 잡힌다"를 검증한다.
+  let delays = 0;
+  let costed = 0;
+
+  for (let seed = 1; seed <= 40; seed++) {
+    const s = E.newGame(seed);
+    s.cash = 60000; // 자금 문제로 중단되지 않게
+    E.launchProgram(s, { segment: 'regional', seats: 90, range: 2500, tech: 95, material: 'composite' }, 'RISK');
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 100;
+    p.phase = 'cert';
+    p.defectRisk = 0.6;
+
+    while (p.phase === 'cert' && !s.gameOver) {
+      const before = s.log.length;
+      const r = E.endTurn(s);
+      if (!r.ok) break;
+      s.cash = 60000;
+      // 인증이 밀리는 경로는 둘이다: 무작위 이벤트 '인증 지연'(무상)과 심사 지연(유상).
+      // 여기서 검증하는 건 후자이므로 로그로 구분한다.
+      let sawReview = false;
+      for (let i = 0; i < s.log.length - before; i++) {
+        if (/형식증명 심사에서 설계 변경/.test(s.log[i].text)) sawReview = true;
+      }
+      if (sawReview) {
+        delays++;
+        if (r.report.rdCost > 0) costed++;
+      }
+    }
+  }
+
+  assert.ok(delays > 0, '결함 위험 60%로 40판을 돌리면 심사 지연이 나야 한다');
+  assert.strictEqual(delays, costed, '심사 지연에는 항상 대응 비용이 따라야 한다');
 });

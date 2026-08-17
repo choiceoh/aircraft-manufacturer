@@ -21,6 +21,9 @@
    */
   const RIVAL_BID_EDGE = 4;
 
+  /** 선단 공통성이 줄 수 있는 최대 가산점 (입찰 점수 0~100 척도). */
+  const COMMONALITY_BONUS = 6;
+
   /** 해당 분기에 새로 뜨는 RFP 목록을 만든다. */
   function generateRfps(state, rng) {
     const rfps = [];
@@ -131,6 +134,15 @@
     const repScore = clamp(state.reputation / 100, 0, 1);
     const relScore = clamp((state.relations[rfp.airlineId] ?? 40) / 100, 0, 1);
 
+    // 선단 공통성 — 이미 우리 기체를 굴리는 항공사는 정비·훈련·부품 재고를 공유할 수
+    // 있어 강하게 선호한다. 현실에서 항공사가 한 제조사에 묶이는 가장 큰 이유이고,
+    // 게임에서는 초반 한 건의 수주가 복리로 불어나게 만드는 장치다.
+    // 같은 기종이면 최대, 우리 다른 기종이라도 부분 인정(조종석 공통성).
+    const fleet = (state.fleets && state.fleets[rfp.airlineId]) || {};
+    const sameType = fleet[program.id] || 0;
+    const anyOurs = Object.values(fleet).reduce((a, b) => a + b, 0);
+    const commonality = clamp(sameType / 25, 0, 1) * 0.75 + clamp((anyOurs - sameType) / 60, 0, 1) * 0.25;
+
     // 가중치를 시장 상황에 맞춰 재배분한 뒤 합이 1이 되도록 정규화한다.
     const w = {
       spec: 0.3,
@@ -150,7 +162,11 @@
           comfortScore * w.comfort +
           repScore * w.rep +
           relScore * w.rel)) /
-      wsum;
+        wsum +
+      // 공통성은 가중치 항목이 아니라 가산점이다. 가중합에 넣으면 분모(wsum)가 커져
+      // "우리 기체가 없는 항공사" 점수가 일괄로 깎이는데, 그건 신규 계정을 뚫는 걸
+      // 더 어렵게 만들 뿐 공통성의 취지(기존 계정이 유리하다)와 반대다.
+      commonality * COMMONALITY_BONUS;
 
     return {
       total: Math.round(total * 10) / 10,
@@ -161,6 +177,7 @@
         comfort: Math.round(comfortScore * 100),
         rep: Math.round(repScore * 100),
         rel: Math.round(relScore * 100),
+        common: Math.round(commonality * 100),
       },
       blocked: null,
       price: Math.round(effPrice * 10) / 10,

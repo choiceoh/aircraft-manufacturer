@@ -7,6 +7,7 @@
 
   const { SEGMENTS, SEGMENT_ORDER, MATERIALS, CONFIG } = root.AirlinerData;
   const E = root.AirlinerEngine;
+  const Engines = root.AirlinerEngines;
   const D = root.AirlinerDesign;
   const B = root.AirlinerBidding;
 
@@ -30,6 +31,18 @@
   }
 
   // ─────────────────────────────── 개요 ───────────────────────────────
+
+  /** 그 항공사가 굴리는 우리 기체 요약 — 선단 공통성 가산의 근거를 보여준다. */
+  function fleetSummary(s, airlineId) {
+    const f = (s.fleets && s.fleets[airlineId]) || {};
+    const parts = Object.entries(f)
+      .filter(([, n]) => n > 0)
+      .map(([pid, n]) => {
+        const p = s.programs.find((x) => x.id === pid);
+        return `${esc(p ? p.name : '기존 기종')} ${n}기`;
+      });
+    return parts.length ? parts.join(' · ') : '<span class="muted">없음 (신규 계정)</span>';
+  }
 
   function renderOverview(s) {
     const warnings = [];
@@ -139,6 +152,23 @@
       )
       .join('');
 
+    // 그 시점에 실제로 살 수 있는 엔진만 보여준다. 성숙도가 덜 찬 신형은 경고를 단다.
+    const year = E.yearOf(s.turn);
+    const engines = Engines.available(spec.segment, year)
+      .slice()
+      .sort((a, b) => a.eff - b.eff)
+      .map((e) => {
+        const immature = Engines.maturityRisk(e, year) > 1;
+        const on = e.id === (spec.engine || (Engines.defaultFor(spec.segment, year) || {}).id);
+        return `<button class="mat ${on ? 'on' : ''}" data-action="design-eng" data-eng="${e.id}">
+             <b>${esc(e.name)}</b>
+             <span>${esc(e.maker)} · 연비 ${e.eff >= 0 ? '+' : ''}${e.eff} · 단가 ×${e.costMult.toFixed(2)}${
+               immature ? ' · <b class="warn">신형(초기 결함 위험)</b>' : ''
+             }</span>
+           </button>`;
+      })
+      .join('');
+
     const derivatives = s.programs
       .filter((p) => p.phase === 'production')
       .map(
@@ -163,6 +193,9 @@
           <p class="hint">기술 투자를 올리면 연비·정가가 오르지만 개발비·기간·결함 위험이 함께 오른다.</p>
           <h3 style="margin-top:18px">주 구조재</h3>
           <div class="mats">${mats}</div>
+          <h3 style="margin-top:18px">엔진</h3>
+          <div class="mats">${engines}</div>
+          <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
         </div>
         <div class="card" id="design-preview">${renderDesignPreview(s, spec, designName)}</div>
       </section>
@@ -179,7 +212,9 @@
 
   /** 설계 미리보기 — 슬라이더를 움직일 때 이 영역만 갈아끼운다. */
   function renderDesignPreview(s, spec, designName) {
-    const ev = D.evaluate(spec);
+    // 미리보기는 항상 "지금" 기준으로 평가한다. spec.year 를 들고 다니면 분기가
+    // 지나도 갱신되지 않아, 이미 살 수 없는 엔진으로 계산된 값을 보여주게 된다.
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn) });
     const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
     const seg = SEGMENTS[spec.segment];
 
@@ -382,6 +417,7 @@
             <tr><th>경쟁 강도</th><td>${rfp.rivalHint.label}</td></tr>
             <tr><th>맞붙을 기종</th><td>${esc(rfp.rivalHint.rival || '—')}</td></tr>
             <tr><th>우리와의 관계</th><td>${Math.round(s.relations[rfp.airlineId] ?? 40)} / 100</td></tr>
+            <tr><th>보유 우리 기체</th><td>${fleetSummary(s, rfp.airlineId)}</td></tr>
           </table>
           ${
             !candidates.length
@@ -452,6 +488,7 @@
   // ─────────────────────────────── 재무 ───────────────────────────────
 
   function renderFinance(s) {
+    const rating = E.creditRating(s);
     const rows = s.history
       .slice(-16)
       .reverse()
@@ -473,7 +510,8 @@
       <section class="grid2">
         <div class="card">
           <h3>차입 / 상환</h3>
-          <p class="muted">분기 이자율 ${(CONFIG.interestPerQuarter * 100).toFixed(1)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
+          <p class="muted">신용등급 <b>${rating.grade}</b> · 분기 이자율 ${(CONFIG.interestPerQuarter * rating.mult * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
+          <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 등급이 내려가면 같은 차입에도 이자가 더 나간다.</p>
           <div class="row wrap">
             <button data-action="borrow" data-amt="1000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(1000, room))} 차입</button>
             <button data-action="borrow" data-amt="3000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(3000, room))} 차입</button>

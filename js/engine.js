@@ -7,7 +7,7 @@
 (function (root) {
   'use strict';
 
-  const { CONFIG, SEGMENTS, AIRLINES, EVENTS } = root.AirlinerData;
+  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL } = root.AirlinerData;
   const { MANUFACTURERS } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
@@ -18,6 +18,11 @@
     const v = Math.round(m);
     if (Math.abs(v) >= 1000) return `$${(v / 1000).toFixed(2)}B`;
     return `$${v}M`;
+  }
+
+  /** 턴 인덱스 → 소수 연도 (1998.0 = 1998년 1분기). 엔진·기종 카탈로그가 이 값을 쓴다. */
+  function yearOf(turn) {
+    return CONFIG.startYear + turn / 4;
   }
 
   function turnLabel(turn) {
@@ -52,6 +57,8 @@
       lines: [],
       backlog: [],
       relations: {},
+      // 항공사별 우리 기체 보유량 (airlineId → programId → 대수). 선단 공통성 가산의 근거.
+      fleets: {},
       competitors: newCompetitors(),
       rfps: [],
       bids: {},
@@ -87,7 +94,8 @@
    * 대신 연비가 낮아 유가가 오르거나 경쟁사가 신형을 내면 급속히 경쟁력을 잃는다.
    */
   function seedLegacyProgram(s) {
-    const spec = { segment: 'narrow', seats: 150, range: 4800, tech: 38, material: 'aluminum' };
+    // 1990년대 초 설계라 그 시절 엔진을 달고 있다 — 지금 기준으로는 연비가 처진다.
+    const spec = { segment: 'narrow', seats: 150, range: 4800, tech: 38, material: 'aluminum', engine: 'cfm56-3', year: yearOf(0) };
     const ev = evaluate(spec);
     const p = {
       id: 'prog-' + s.nextId++,
@@ -124,6 +132,11 @@
     s.stats.delivered = p.delivered;
 
     // 인계받은 수주 잔고 — 초반 몇 년치 현금흐름.
+    // 이미 인도된 186기 중 상당수가 이 두 항공사에 있다. 선단 공통성 가산이 여기서
+    // 시작되므로, 이 두 계정은 지켜야 할 자산이고 나머지는 새로 뚫어야 할 시장이다.
+    // (남은 물량은 이미 퇴역했거나 더는 기체를 사지 않는 사업자에게 있다고 본다.)
+    s.fleets = { panamer: { [p.id]: 62 }, hanul: { [p.id]: 48 } };
+
     for (const o of [
       { id: 'panamer', name: '판아메르 항공', qty: 24 },
       { id: 'hanul', name: '한울항공', qty: 16 },
@@ -178,6 +191,7 @@
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
+    if (!s.fleets) s.fleets = {};
 
     // 가상 경쟁사(strength 스칼라)를 쓰던 세이브는 실존 제조사 명단으로 갈아끼운다.
     // 옛 strength 는 새 카탈로그와 척도가 달라 옮겨올 수 없으므로 보정치는 0에서 시작한다.
@@ -190,6 +204,13 @@
       }
     }
     return s;
+  }
+
+  /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
+  function addToFleet(s, airlineId, programId, n) {
+    if (!s.fleets) s.fleets = {};
+    if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
+    s.fleets[airlineId][programId] = (s.fleets[airlineId][programId] || 0) + n;
   }
 
   function rngFor(s) {
@@ -209,7 +230,7 @@
 
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate(spec);
+    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -260,8 +281,16 @@
       range: base.range,
       tech: base.tech,
       material: base.material,
+      engine: base.engine,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
-      derivedFrom: { id: base.id, name: base.name, tech: base.tech, material: base.material, range: base.range },
+      derivedFrom: {
+        id: base.id,
+        name: base.name,
+        tech: base.tech,
+        material: base.material,
+        range: base.range,
+        engine: base.engine,
+      },
     };
   }
 
@@ -270,14 +299,16 @@
     const p = s.programs.find((x) => x.id === programId);
     if (!p) return { ok: false, error: '프로그램을 찾을 수 없습니다.' };
     if (p.qualityInvests >= 3) return { ok: false, error: '품질 투자는 3회까지입니다.' };
-    const cost = Math.round(p.devCost * 0.06);
+    // 개발비의 3.5%. 예전 6%는 현금이 가장 마른 개발 구간에 부담이 몰리는 반면
+    // 효과는 양산 이후에나 나타나, 투자할수록 손해인 함정 선택지였다.
+    const cost = Math.round(p.devCost * 0.035);
     if (s.cash < cost) return { ok: false, error: `${fmtMoney(cost)}이 부족합니다.` };
     ensureShape(s);
     s.cash -= cost;
     s.pending.rdCost += cost;
     p.spent += cost; // 매몰비용 표시가 실제 지출과 어긋나지 않게
     p.qualityInvests++;
-    p.defectRisk = Math.round(p.defectRisk * 0.75 * 1000) / 1000;
+    p.defectRisk = Math.round(p.defectRisk * 0.62 * 1000) / 1000;
     pushLog(s, 'program', `${p.name} 추가 시험·검증에 ${fmtMoney(cost)} 투입. 결함 위험 ${(p.defectRisk * 100).toFixed(1)}%로 하락.`);
     return { ok: true };
   }
@@ -472,6 +503,7 @@
       cost: Math.round(report.productionCost + report.rdCost + report.capex + report.overhead + report.interest),
       net: Math.round(report.revenue - report.productionCost - report.rdCost - report.capex - report.overhead - report.interest),
       delivered: report.delivered,
+      rd: Math.round(report.rdCost),
       backlog: totalBacklog(s),
       reputation: Math.round(s.reputation),
     });
@@ -624,6 +656,24 @@
     // 개발 루프에서 방금 cert로 전환된 프로그램은 제외한다. 포함하면 개발에 그 분기를
     // 다 쓰고도 인증 1분기가 함께 지나가, 3분기짜리 인증이 실제로는 2분기에 끝난다.
     for (const p of certifyingBefore) {
+      // 인증 지연 — 결함 위험이 높은 설계(고기술·복합재·미성숙 엔진)일수록 심사에서
+      // 제동이 걸린다. 품질 투자는 이 확률을 함께 낮춘다.
+      // 이 판정이 없으면 기술 슬라이더는 "비싸지만 확정된 이득"이라 도박이 아니게 된다.
+      if (rng.chance(clamp(p.defectRisk * 0.26, 0.01, 0.12))) {
+        const delay = rng.int(1, 2);
+        const cost = Math.round(p.devCost * 0.03 * delay);
+        p.certRemaining += delay;
+        p.spent += cost;
+        s.cash -= cost;
+        report.rdCost += cost;
+        pushLog(
+          s,
+          'bad',
+          `${p.name} 형식증명 심사에서 설계 변경 요구가 나왔다. ${delay}분기 지연, 대응 비용 ${fmtMoney(cost)}.`,
+        );
+        continue;
+      }
+
       p.certRemaining -= 1;
       if (p.certRemaining <= 0) {
         p.phase = 'production';
@@ -700,6 +750,7 @@
       o.remaining -= n;
       p.stock -= n;
       p.delivered += n;
+      addToFleet(s, o.airlineId, p.id, n);
       s.cash += revenue;
       s.stats.delivered += n;
       s.stats.revenue += revenue;
@@ -717,8 +768,13 @@
   }
 
   function settleFinance(s, report) {
-    const rate = CONFIG.interestPerQuarter + (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0);
+    // 기본금리 × 신용등급 배수 + 신용경색 가산.
+    const rating = creditRating(s);
+    const rate =
+      CONFIG.interestPerQuarter * rating.mult + (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0);
     const interest = s.debt * rate;
+    s.rating = rating.grade;
+    report.rate = Math.round(rate * 10000) / 100;
     const overhead =
       CONFIG.fixedOverheadPerQuarter +
       s.lines.length * CONFIG.lineOverheadPerLine +
@@ -773,6 +829,8 @@
     const e = s.effects;
     if (e.strikeQuarters > 0) e.strikeQuarters--;
     if (e.supplyQuarters > 0) e.supplyQuarters--;
+    if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
+    if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
     if (e.rateBumpQuarters > 0) {
       e.rateBumpQuarters--;
       // 기간이 끝나면 가산폭도 함께 지운다. 남겨두면 나중에 약한 경색이
@@ -792,8 +850,12 @@
   function driftMarket(s, rng) {
     const m = s.market;
     // 평균 회귀 + 잡음. 시장은 늘 1.0 근처로 되돌아가려 한다.
-    m.fuelIndex = clamp(m.fuelIndex + (1 - m.fuelIndex) * 0.12 + rng.normal(0, 0.05), 0.45, 2.2);
-    m.demandIndex = clamp(m.demandIndex + (1 - m.demandIndex) * 0.15 + rng.normal(0, 0.06), 0.35, 2.0);
+    // 충격이 진행 중이면 회귀를 크게 늦춘다. 그러지 않으면 9·11 이 두세 분기 만에
+    // 없던 일이 되어, 역사적 사건이 한 번의 벌금으로만 남는다.
+    const demandPull = s.effects.demandSlumpQuarters > 0 ? 0.07 : 0.15;
+    const fuelPull = s.effects.fuelShockQuarters > 0 ? 0.05 : 0.12;
+    m.fuelIndex = clamp(m.fuelIndex + (1 - m.fuelIndex) * fuelPull + rng.normal(0, 0.05), 0.45, 2.2);
+    m.demandIndex = clamp(m.demandIndex + (1 - m.demandIndex) * demandPull + rng.normal(0, 0.06), 0.35, 2.0);
     s.reputation = clamp(s.reputation + (50 - s.reputation) * 0.03, 0, 100);
   }
 
@@ -805,6 +867,40 @@
 
   function rollEvents(s, rng) {
     const fired = [];
+
+    const helpersFor = (rng) => ({
+      rng,
+      fmt: fmtMoney,
+      reputation: (d) => adjustReputation(s, d),
+      income: (amt) => {
+        s.cash += amt;
+        s.pending.revenue += amt;
+      },
+      expense: (amt) => {
+        s.cash -= amt;
+        s.pending.overhead += amt;
+      },
+      pickWeighted: (arr, weightOf) => {
+        const w = arr.map((x) => Math.max(1e-4, weightOf(x)));
+        const total = w.reduce((a, b) => a + b, 0);
+        let r = rng.next() * total;
+        for (let i = 0; i < arr.length; i++) {
+          r -= w[i];
+          if (r <= 0) return arr[i];
+        }
+        return arr[arr.length - 1];
+      },
+    });
+
+    // 역사적 충격은 시드와 무관하게 정해진 분기에 온다. 무작위 추첨보다 먼저 적용해
+    // 그 분기의 시장 상태(수요·유가)가 곧바로 반영되게 한다.
+    for (const h of HISTORICAL.filter((x) => x.turn === s.turn)) {
+      const text = h.apply(s, helpersFor(rng));
+      fired.push({ id: 'hist-' + h.turn, name: h.name, text, historical: true });
+      pushLog(s, 'event', `[${h.name}] ${text}`);
+      if (isInsolvent(s)) return fired;
+    }
+
     // 분기당 0~2건. 초반 몇 분기는 조용하게 둔다.
     if (s.turn < 3) return fired;
     let draws = rng.chance(0.55) ? 1 : 0;
@@ -820,33 +916,7 @@
       let r = rng.next() * totalW;
       const chosen = pool.find((e) => (r -= weightOf(e)) <= 0) || pool[0];
 
-      const helpers = {
-        rng,
-        fmt: fmtMoney,
-        reputation: (d) => adjustReputation(s, d),
-        // 이벤트의 현금 이동도 다음 분기 리포트가 흡수해야 한다.
-        // 직접 s.cash 를 건드리면 현금은 변했는데 재무표로 설명되지 않는다.
-        income: (amt) => {
-          s.cash += amt;
-          s.pending.revenue += amt;
-        },
-        expense: (amt) => {
-          s.cash -= amt;
-          s.pending.overhead += amt;
-        },
-        /** 가중 추첨 — 결함 대상 선정처럼 "위험이 높을수록 자주 걸린다"를 표현할 때. */
-        pickWeighted: (arr, weightOf) => {
-          const w = arr.map((x) => Math.max(1e-4, weightOf(x)));
-          const total = w.reduce((a, b) => a + b, 0);
-          let r = rng.next() * total;
-          for (let i = 0; i < arr.length; i++) {
-            r -= w[i];
-            if (r <= 0) return arr[i];
-          }
-          return arr[arr.length - 1];
-        },
-      };
-      const text = chosen.apply(s, helpers);
+      const text = chosen.apply(s, helpersFor(rng));
       fired.push({ id: chosen.id, name: chosen.name, text });
       pushLog(s, 'event', `[${chosen.name}] ${text}`);
 
@@ -902,6 +972,49 @@
   function marketShare(s) {
     const total = s.stats.delivered + s.stats.rivalDelivered;
     return total > 0 ? s.stats.delivered / total : 0;
+  }
+
+  /**
+   * 신용등급 — 부채비율과 최근 수익성에서 산출해 차입 금리에 직접 연동한다.
+   * 초반에 한도까지 당겨쓰면 이자가 비싸져 더 빨리 마르고, 흑자를 내면 조달이 싸진다.
+   * 재무가 "차입 한도까지는 공짜"에서 "쓸수록 비싸지는 자원"으로 바뀐다.
+   */
+  const RATINGS = [
+    { grade: 'AA', mult: 0.78 },
+    { grade: 'A', mult: 0.88 },
+    { grade: 'BBB', mult: 1.0 },
+    { grade: 'BB', mult: 1.14 },
+    { grade: 'B', mult: 1.3 },
+    { grade: 'CCC', mult: 1.5 },
+  ];
+
+  function creditRating(s) {
+    // 신용평가는 청산가치(netWorth)가 아니라 계속기업 가치로 본다. 개발 중인
+    // 프로그램에 넣은 돈은 곧 형식증명을 받을 자산이지 사라진 돈이 아니다.
+    // 이걸 빼면 개발 기간 내내(= 게임의 본편) 자동으로 최하등급이 되어,
+    // 가장 현금이 마른 시점에 이자까지 올리는 사망 나선이 만들어진다.
+    const inProgress = s.programs
+      .filter((p) => p.phase === 'dev' || p.phase === 'cert')
+      .reduce((a, p) => a + p.spent * 0.6, 0);
+    const equity = Math.max(1, netWorth(s) + inProgress);
+    // 부채/자기자본은 자기자본이 얇아지면 발산해, 어려운 회사를 자동으로 CCC로 밀어
+    // 이자까지 올리는 사망 나선을 만든다. 0~1로 유계인 부채비율을 쓴다.
+    const leverage = s.debt / (s.debt + equity);
+    // 최근 4분기 손익 평균을 자기자본 대비로 본다.
+    // 개발비 차감 전 손익으로 본다 — 신제품에 투자 중인 회사를 적자로 읽지 않도록.
+    const recent = s.history.slice(-4);
+    const profit = recent.length
+      ? recent.reduce((a, h) => a + h.net + (h.rd || 0), 0) / recent.length
+      : 0;
+    const profitability = profit / equity;
+
+    // 0(최악) ~ 1(최고) 점수로 합성.
+    const levScore = clamp(1 - leverage / 0.75, 0, 1);
+    const proScore = clamp(0.5 + profitability * 12, 0, 1);
+    const score = levScore * 0.65 + proScore * 0.35;
+
+    const idx = Math.min(RATINGS.length - 1, Math.floor((1 - score) * RATINGS.length));
+    return RATINGS[idx];
   }
 
   function netWorth(s) {
@@ -989,10 +1102,12 @@
     backlogValue,
     marketShare,
     netWorth,
+    creditRating,
     finalScore,
     projectedQuarters,
     ensureShape,
     fmtMoney,
     turnLabel,
+    yearOf,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
