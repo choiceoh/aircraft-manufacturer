@@ -7,7 +7,7 @@
 (function (root) {
   'use strict';
 
-  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL } = root.AirlinerData;
+  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL, FICTIONAL_SHOCKS, HISTORICAL_ODDS } = root.AirlinerData;
   const { MANUFACTURERS } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
@@ -68,6 +68,8 @@
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
       pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 },
       events: [],
+      // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
+      shocks: [],
       gameOver: null,
     };
     for (const a of AIRLINES) s.relations[a.id] = 34 + (a.prestige < 0.8 ? 10 : 0);
@@ -75,6 +77,7 @@
     seedLegacyProgram(s);
 
     const rng = rngFor(s);
+    s.shocks = buildShockSchedule(s, rng);
     s.rfps = generateRfps(s, rng);
     saveRng(s, rng);
 
@@ -192,6 +195,8 @@
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
     if (!s.fleets) s.fleets = {};
+    // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
+    if (!Array.isArray(s.shocks)) s.shocks = buildShockSchedule(s, createRng(s.seed));
 
     // 가상 경쟁사(strength 스칼라)를 쓰던 세이브는 실존 제조사 명단으로 갈아끼운다.
     // 옛 strength 는 새 카탈로그와 척도가 달라 옮겨올 수 없으므로 보정치는 0에서 시작한다.
@@ -206,9 +211,54 @@
     return s;
   }
 
+  /**
+   * 충격 일정표를 시드마다 한 번 만든다.
+   *
+   * 역사적 사건은 각각 HISTORICAL_ODDS(60%) 확률로만 실현된다. 불발된 자리는
+   * 가상 충격이 **무작위 시점에** 대신 들어간다. 전부 고정이면 두 번째 판부터
+   * 정답 암기가 되고, 전부 무작위면 학습이 무의미해진다. 섞으면 "2001년은
+   * 위험할 수 있다"는 지식은 살아 있되 그것만 믿을 수는 없게 된다.
+   *
+   * 충격 총 개수는 유지해 밸런스 봉투를 흔들지 않는다.
+   */
+  function buildShockSchedule(s, rng) {
+    const schedule = [];
+    const pool = FICTIONAL_SHOCKS.slice();
+
+    // 1단계: 어떤 역사적 사건이 실현되는지 먼저 전부 정한다.
+    // (섞어서 처리하면 앞서 배치한 가상 충격이 뒤에 확정될 역사 시점과 겹친다.)
+    const misses = [];
+    const used = new Set();
+    for (const h of HISTORICAL) {
+      if (rng.chance(HISTORICAL_ODDS)) {
+        schedule.push({ turn: h.turn, kind: 'historical', id: h.id || 'hist-' + h.turn });
+        used.add(h.turn);
+      } else {
+        misses.push(h);
+      }
+    }
+
+    // 2단계: 불발된 수만큼 가상 충격을 빈 분기에 배치한다.
+    for (let i = 0; i < misses.length && pool.length; i++) {
+      const pick = pool.splice(rng.int(0, pool.length - 1), 1)[0];
+      let turn = rng.int(6, CONFIG.totalTurns - 5);
+      for (let tries = 0; tries < 40 && used.has(turn); tries++) {
+        turn = rng.int(6, CONFIG.totalTurns - 5);
+      }
+      if (used.has(turn)) continue; // 자리를 못 찾으면 이번 판에서는 건너뛴다
+      used.add(turn);
+      schedule.push({ turn, kind: 'fictional', id: pick.id });
+    }
+
+    schedule.sort((a, b) => a.turn - b.turn);
+    return schedule;
+  }
+
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
   function addToFleet(s, airlineId, programId, n) {
     if (!s.fleets) s.fleets = {};
+    // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
+    if (!Array.isArray(s.shocks)) s.shocks = buildShockSchedule(s, createRng(s.seed));
     if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
     s.fleets[airlineId][programId] = (s.fleets[airlineId][programId] || 0) + n;
   }
@@ -830,6 +880,7 @@
     if (e.strikeQuarters > 0) e.strikeQuarters--;
     if (e.supplyQuarters > 0) e.supplyQuarters--;
     if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
+    if (e.demandBoomQuarters > 0) e.demandBoomQuarters--;
     if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
     if (e.rateBumpQuarters > 0) {
       e.rateBumpQuarters--;
@@ -852,7 +903,9 @@
     // 평균 회귀 + 잡음. 시장은 늘 1.0 근처로 되돌아가려 한다.
     // 충격이 진행 중이면 회귀를 크게 늦춘다. 그러지 않으면 9·11 이 두세 분기 만에
     // 없던 일이 되어, 역사적 사건이 한 번의 벌금으로만 남는다.
-    const demandPull = s.effects.demandSlumpQuarters > 0 ? 0.07 : 0.15;
+    // 호황도 침체와 같은 방식으로 지속된다 — 상승 충격이 한 분기 보너스로 끝나면
+    // 가상 충격의 상방이 사실상 없는 것과 같다.
+    const demandPull = s.effects.demandSlumpQuarters > 0 || s.effects.demandBoomQuarters > 0 ? 0.07 : 0.15;
     const fuelPull = s.effects.fuelShockQuarters > 0 ? 0.05 : 0.12;
     m.fuelIndex = clamp(m.fuelIndex + (1 - m.fuelIndex) * fuelPull + rng.normal(0, 0.05), 0.45, 2.2);
     m.demandIndex = clamp(m.demandIndex + (1 - m.demandIndex) * demandPull + rng.normal(0, 0.06), 0.35, 2.0);
@@ -892,12 +945,17 @@
       },
     });
 
-    // 역사적 충격은 시드와 무관하게 정해진 분기에 온다. 무작위 추첨보다 먼저 적용해
-    // 그 분기의 시장 상태(수요·유가)가 곧바로 반영되게 한다.
-    for (const h of HISTORICAL.filter((x) => x.turn === s.turn)) {
-      const text = h.apply(s, helpersFor(rng));
-      fired.push({ id: 'hist-' + h.turn, name: h.name, text, historical: true });
-      pushLog(s, 'event', `[${h.name}] ${text}`);
+    // 충격은 일정표대로 온다. 무작위 추첨보다 먼저 적용해 그 분기의 시장 상태
+    // (수요·유가)가 곧바로 반영되게 한다.
+    for (const slot of (s.shocks || []).filter((x) => x.turn === s.turn)) {
+      const def =
+        slot.kind === 'historical'
+          ? HISTORICAL.find((h) => (h.id || 'hist-' + h.turn) === slot.id)
+          : FICTIONAL_SHOCKS.find((f) => f.id === slot.id);
+      if (!def) continue;
+      const text = def.apply(s, helpersFor(rng));
+      fired.push({ id: slot.id, name: def.name, text, shock: slot.kind });
+      pushLog(s, 'event', `[${def.name}] ${text}`);
       if (isInsolvent(s)) return fired;
     }
 
@@ -1109,5 +1167,6 @@
     fmtMoney,
     turnLabel,
     yearOf,
+    buildShockSchedule,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

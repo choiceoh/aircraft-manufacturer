@@ -1099,37 +1099,80 @@ test('선단 공통성은 신규 계정의 점수를 깎지 않는다', () => {
   assert.ok(withFleet.parts.spec === noFleet.parts.spec, '다른 항목 점수는 그대로여야 한다');
 });
 
-test('역사적 충격은 시드와 무관하게 정해진 분기에 온다', () => {
-  const nineEleven = Data.HISTORICAL.find((h) => h.name.includes('9·11'));
-  assert.ok(nineEleven, '9·11 항목이 있어야 한다');
+test('충격 일정: 역사적 사건은 실현되면 제 시점에만 온다', () => {
+  const realTurns = new Set(Data.HISTORICAL.map((h) => h.turn));
+  let hist = 0;
+  let fict = 0;
 
-  for (const seed of [1, 2, 3, 99]) {
+  for (let seed = 1; seed <= 200; seed++) {
     const s = E.newGame(seed);
-    let hit = null;
-    while (!s.gameOver && s.turn <= nineEleven.turn + 1) {
-      s.cash = Math.max(s.cash, 60000); // 자금 문제로 중단되지 않게
-      E.endTurn(s);
-      const ev = s.events.find((e) => e.historical && e.name.includes('9·11'));
-      if (ev) hit = s.turn;
+    assert.ok(s.shocks.length <= Data.HISTORICAL.length, '충격이 원래 개수를 넘지 않는다');
+    for (const slot of s.shocks) {
+      if (slot.kind === 'historical') {
+        hist++;
+        assert.ok(realTurns.has(slot.turn), '역사적 사건은 실제 시점에만 온다');
+      } else {
+        fict++;
+        assert.ok(slot.turn >= 6 && slot.turn <= Data.CONFIG.totalTurns - 5, '가상 충격 시점이 범위 안이어야 한다');
+      }
     }
-    assert.strictEqual(hit, nineEleven.turn, `seed ${seed}: 9·11 이 ${nineEleven.turn}턴에 와야 한다`);
+    // 같은 분기에 둘이 겹치지 않는다.
+    const turns = s.shocks.map((x) => x.turn);
+    assert.strictEqual(new Set(turns).size, turns.length, '충격이 한 분기에 겹치면 안 된다');
   }
+
+  const ratio = hist / (hist + fict);
+  assert.ok(
+    Math.abs(ratio - Data.HISTORICAL_ODDS) < 0.08,
+    `역사 실현 비율이 ${Data.HISTORICAL_ODDS} 근처여야 한다 (실측 ${ratio.toFixed(3)})`,
+  );
+});
+
+test('충격 일정은 시드에 대해 결정적이고, 시드가 다르면 갈린다', () => {
+  const a = E.newGame(42).shocks;
+  const b = E.newGame(42).shocks;
+  assert.deepStrictEqual(a, b, '같은 시드는 같은 일정');
+
+  // 200 시드 중 최소 한 번은 9·11 이 불발돼야 "암기 방지"가 실제로 작동한다.
+  const t911 = Data.HISTORICAL.find((h) => h.name.includes('9·11')).turn;
+  let fired = 0;
+  for (let seed = 1; seed <= 200; seed++) {
+    if (E.newGame(seed).shocks.some((x) => x.kind === 'historical' && x.turn === t911)) fired++;
+  }
+  assert.ok(fired > 0 && fired < 200, `9·11 이 시드에 따라 갈려야 한다 (200판 중 ${fired}회)`);
 });
 
 test('수요 충격은 몇 분기에 걸쳐 회복된다 (한 분기 벌금이 아니다)', () => {
   const s = E.newGame(4);
-  const t911 = Data.HISTORICAL.find((h) => h.name.includes('9·11')).turn;
+  const nine = Data.HISTORICAL.find((h) => h.name.includes('9·11'));
+  // 일정을 직접 고정해 이 시드에서 반드시 9·11 이 오게 한다.
+  s.shocks = [{ turn: nine.turn, kind: 'historical', id: nine.id || 'hist-' + nine.turn }];
+
   const series = [];
-  while (!s.gameOver && s.turn < t911 + 8) {
+  while (!s.gameOver && s.turn < nine.turn + 8) {
     s.cash = Math.max(s.cash, 60000);
     E.endTurn(s);
     series.push({ turn: s.turn, demand: s.market.demandIndex });
   }
-  const at = series.find((x) => x.turn === t911);
-  const after4 = series.find((x) => x.turn === t911 + 4);
-  assert.ok(at && after4);
-  assert.ok(at.demand < 0.75, `충격 분기 수요가 낮아야 한다 (${at.demand.toFixed(2)})`);
-  assert.ok(after4.demand < 0.95, `1년 뒤에도 완전히 회복되면 안 된다 (${after4.demand.toFixed(2)})`);
+  const before = series.find((x) => x.turn === nine.turn - 1);
+  const at = series.find((x) => x.turn === nine.turn);
+  const after4 = series.find((x) => x.turn === nine.turn + 4);
+  assert.ok(before && at && after4);
+
+  // 절대 수준이 아니라 낙폭으로 본다 — 충격 직전 수요는 시드마다 다르다.
+  assert.ok(at.demand < before.demand * 0.8, `충격 분기에 크게 떨어져야 한다 (${before.demand.toFixed(2)} → ${at.demand.toFixed(2)})`);
+  // 평상시 회귀(0.15)라면 4분기면 대부분 복구된다. 침체 중에는 그러면 안 된다.
+  assert.ok(after4.demand < before.demand * 0.9, `1년 뒤에도 충격 전 수준으로 돌아가면 안 된다 (${after4.demand.toFixed(2)})`);
+});
+
+test('가상 충격에는 상방도 있다 (타임라인이 벌주기만 하지 않는다)', () => {
+  const ups = Data.FICTIONAL_SHOCKS.filter((f) => {
+    const s = E.newGame(1);
+    const before = s.market.demandIndex;
+    f.apply(s, { rng: R.createRng(1), fmt: E.fmtMoney, reputation: () => {}, income: () => {}, expense: () => {} });
+    return s.market.demandIndex > before;
+  });
+  assert.ok(ups.length >= 2, `수요를 올리는 가상 충격이 최소 둘은 있어야 한다 (${ups.length})`);
 });
 
 test('신용등급: 차입이 늘면 등급이 내려가고 이자율이 오른다', () => {
@@ -1143,11 +1186,18 @@ test('신용등급: 차입이 늘면 등급이 내려가고 이자율이 오른�
 test('신용등급: 개발 투자만으로 최하등급이 되지 않는다', () => {
   // 개발비를 자산으로 보지 않으면 개발 기간(= 게임의 본편) 내내 CCC 가 되어
   // 현금이 가장 마른 시점에 이자까지 올리는 사망 나선이 생긴다.
+  // 지급능력은 넉넉히 두고 "개발비를 쓰고 있다"는 사실만 남긴다.
+  // (현금이 마르면 CCC 는 옳은 판정이다 — 그건 이 테스트의 대상이 아니다.)
   const s = E.newGame(6);
+  s.cash = 30000;
   E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 60, material: 'hybrid' }, 'DEV');
-  for (let i = 0; i < 8 && !s.gameOver; i++) E.endTurn(s);
-  const p = s.programs.find((x) => x.phase === 'dev');
+  for (let i = 0; i < 8 && !s.gameOver; i++) {
+    E.endTurn(s);
+    s.cash = Math.max(s.cash, 30000);
+  }
+  const p = s.programs.find((x) => x.phase === 'dev' || x.phase === 'cert');
   assert.ok(p && p.spent > 0, '개발이 진행돼 지출이 쌓여야 한다');
+  assert.ok(E.netWorth(s) > 0, '전제: 부실이 아니어야 한다');
   assert.notStrictEqual(E.creditRating(s).grade, 'CCC');
 });
 

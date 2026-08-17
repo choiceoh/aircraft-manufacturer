@@ -447,6 +447,117 @@
     },
   ];
 
+
+  /**
+   * 가상 충격 — 역사적 사건이 불발된 자리를 메운다.
+   * 규모는 역사적 충격과 같은 범위로 맞춰 밸런스 봉투를 유지하되, 발생 시점이
+   * 무작위라 암기가 통하지 않는다. 상승 충격을 섞어 타임라인이 일방적으로
+   * 벌주기만 하지 않게 했다.
+   */
+  const FICTIONAL_SHOCKS = [
+    {
+      id: 'mega_bankruptcy',
+      name: '대형 항공사 연쇄 파산',
+      apply: (s, h) => {
+        s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.72);
+        s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 5);
+        let lost = 0;
+        for (const o of s.backlog.filter((x) => x.remaining > 0)) {
+          if (!h.rng.chance(0.45)) continue;
+          const cut = Math.round(o.remaining * h.rng.range(0.2, 0.5));
+          if (cut > 0) {
+            o.remaining -= cut;
+            o.cancelled = (o.cancelled || 0) + cut;
+            lost += cut;
+          }
+        }
+        return `주요 항공사 두 곳이 연달아 파산 보호를 신청했다. 발주 ${lost}기가 증발하고 업계 전체가 발주를 미룬다.`;
+      },
+    },
+    {
+      id: 'emerging_boom',
+      name: '신흥시장 항공 붐',
+      apply: (s) => {
+        s.market.demandIndex = Math.min(2.0, s.market.demandIndex * 1.45);
+        s.effects.demandBoomQuarters = Math.max(s.effects.demandBoomQuarters || 0, 6);
+        return '아시아·중동 신흥 항공사들이 동시에 기단 확장에 나섰다. 당분간 발주가 쏟아진다.';
+      },
+    },
+    {
+      id: 'regional_conflict',
+      name: '산유국 분쟁',
+      apply: (s) => {
+        s.market.fuelIndex = Math.min(2.2, Math.max(s.market.fuelIndex * 1.6, 1.75));
+        s.effects.fuelShockQuarters = Math.max(s.effects.fuelShockQuarters || 0, 5);
+        return '주요 산유국에서 무력 충돌이 벌어졌다. 유가가 급등하고 항공사들이 연비를 최우선으로 따지기 시작한다.';
+      },
+    },
+    {
+      id: 'emission_rules',
+      name: '배출 규제 도입',
+      apply: (s, h) => {
+        const cost = Math.round(h.rng.range(60, 160));
+        h.expense(cost);
+        s.market.fuelIndex = Math.min(2.2, s.market.fuelIndex * 1.25);
+        s.effects.fuelShockQuarters = Math.max(s.effects.fuelShockQuarters || 0, 8);
+        return `국제 배출 규제가 발효됐다. 인증 대응에 ${h.fmt(cost)}이 들고, 연비가 사실상 규제 요건이 된다.`;
+      },
+    },
+    {
+      id: 'titanium_squeeze',
+      name: '항공소재 공급난',
+      apply: (s, h) => {
+        s.effects.supplyQuarters = Math.max(s.effects.supplyQuarters || 0, h.rng.int(3, 5));
+        const cost = Math.round(h.rng.range(50, 140));
+        h.expense(cost);
+        return `티타늄·탄소섬유 공급이 막혔다. 생산이 밀리고 긴급 조달에 ${h.fmt(cost)}이 나갔다.`;
+      },
+    },
+    {
+      id: 'lessor_boom',
+      name: '리스사 대량 발주',
+      apply: (s, h) => {
+        s.market.demandIndex = Math.min(2.0, s.market.demandIndex * 1.3);
+        s.effects.demandBoomQuarters = Math.max(s.effects.demandBoomQuarters || 0, 4);
+        const cash = Math.round(h.rng.range(120, 300));
+        h.income(cash);
+        return `대형 리스사가 기단 교체 프로그램을 발표하며 선수금 ${h.fmt(cash)}을 걸었다. 시장이 달아오른다.`;
+      },
+    },
+    {
+      id: 'credit_freeze',
+      name: '항공금융 경색',
+      apply: (s) => {
+        s.effects.rateBump = Math.max(s.effects.rateBump || 0, 0.011);
+        s.effects.rateBumpQuarters = Math.max(s.effects.rateBumpQuarters || 0, 7);
+        s.market.demandIndex = Math.max(0.5, s.market.demandIndex * 0.85);
+        s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 4);
+        return '항공기 금융이 얼어붙었다. 항공사도 우리도 돈을 빌리기가 어려워진다.';
+      },
+    },
+    {
+      id: 'pilot_shortage',
+      name: '조종사 부족 심화',
+      apply: (s) => {
+        s.market.demandIndex = Math.max(0.5, s.market.demandIndex * 0.88);
+        s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 4);
+        return '조종사 부족으로 항공사들이 노선 확장을 늦춘다. 신규 발주도 함께 미뤄진다.';
+      },
+    },
+    {
+      id: 'open_skies',
+      name: '항공자유화 협정',
+      apply: (s) => {
+        s.market.demandIndex = Math.min(2.0, s.market.demandIndex * 1.35);
+        s.effects.demandBoomQuarters = Math.max(s.effects.demandBoomQuarters || 0, 5);
+        return '주요 권역 간 항공자유화 협정이 발효됐다. 신규 노선이 열리며 기재 수요가 뛴다.';
+      },
+    },
+  ];
+
+  /** 역사적 사건이 실제로 일어날 확률. 나머지는 가상 충격으로 대체된다. */
+  const HISTORICAL_ODDS = 0.6;
+
   root.AirlinerData = {
     CONFIG,
     SEGMENTS,
@@ -458,5 +569,7 @@
     RIVAL_DRIFT_LIMIT,
     EVENTS,
     HISTORICAL,
+    FICTIONAL_SHOCKS,
+    HISTORICAL_ODDS,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
