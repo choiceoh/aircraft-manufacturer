@@ -2235,3 +2235,70 @@ test('노선망 밖 발주는 반드시 다른 세그먼트로 나간다', () =>
     assert.strictEqual(rfp.reqField, Data.FIELD_REQUIREMENT[airline.field || 'normal'], '요건 값도 함께 따라와야 한다');
   }
 });
+
+test('세이브 마이그레이션이 이착륙 성능을 유도한다', () => {
+  const s = E.newGame(21);
+  // 승계 기종은 옛 규칙으로 만들어져 fieldPerf 가 없다고 가정한다.
+  const legacy = s.programs.find((p) => p.legacy) || s.programs[0];
+  delete legacy.fieldPerf;
+  delete legacy.wing;
+  delete s.fleets; // ensureShape 를 다시 태우기 위한 최소 조건
+  E.ensureShape(s);
+
+  assert.strictEqual(typeof legacy.fieldPerf, 'number', '이착륙 성능을 채워야 한다');
+  assert.ok(legacy.fieldPerf < 100, '만점을 그냥 주면 안 된다 (' + legacy.fieldPerf + ')');
+
+  // 짧은 활주로 요건에 실제로 걸리는지 — 폴백 100 이면 언제나 통과해 버린다.
+  const airline = Data.AIRLINES.find((a) => a.field === 'short');
+  const rfp = {
+    id: 'r1',
+    airlineId: airline.id,
+    segment: legacy.segment,
+    reqSeats: Math.round(legacy.seats * 0.9),
+    reqRange: legacy.range,
+    reqField: Data.FIELD_REQUIREMENT.short,
+    fieldKind: 'short',
+    reqEtops: false,
+    qty: 10,
+    priceSensitivity: 0.5,
+    prestige: 0.5,
+    relation: 40,
+  };
+  legacy.fieldPerf = Data.FIELD_REQUIREMENT.short - 1;
+  assert.strictEqual(B.scoreBid(s, rfp, legacy, 0).blocked, '이착륙 성능 미달', '미달이면 실격이어야 한다');
+});
+
+test('라인 자산 평가가 실제 건설비를 따른다', () => {
+  const mk = (grade) => {
+    const s = E.newGame(22);
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50, abreast: 6, wing: 45 }, 'A').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    s.cash = 300000;
+    assert.ok(E.buildLine(s, p.id, grade).ok);
+    const line = s.lines[s.lines.length - 1];
+    // 현금·부채를 같게 맞춰 라인 자산만 비교한다.
+    s.cash = 10000;
+    s.debt = 0;
+    return { worth: E.netWorth(s), paid: line.paidCost };
+  };
+  const classic = mk('classic');
+  const fast = mk('highRate');
+  assert.ok(fast.paid > classic.paid, '고속 라인이 더 비싸야 한다');
+  assert.ok(fast.worth > classic.worth, '비싼 라인이 더 큰 자산으로 잡혀야 한다');
+  assert.strictEqual(Math.round(fast.worth - classic.worth), Math.round((fast.paid - classic.paid) * 0.4), '차액은 건설비 차이의 40%여야 한다');
+});
+
+test('addToFleet 은 선단 장부만 건드린다', () => {
+  const s = E.newGame(23);
+  const p = s.programs[0];
+  const before = JSON.stringify({ shocks: s.shocks, outsourcing: s.outsourcing, rate: s.rateForQuarter });
+  E.addToFleet(s, 'hanul', p.id, 5);
+  assert.strictEqual(JSON.stringify({ shocks: s.shocks, outsourcing: s.outsourcing, rate: s.rateForQuarter }), before, '마이그레이션을 다시 돌리면 안 된다');
+  assert.strictEqual(s.fleets.hanul[p.id], 48 + 5, '선단 수량만 올라야 한다');
+
+  // 마이그레이션 로직은 ensureShape 한 곳에만 있어야 한다 (사본이 갈라지는 것을 막는다).
+  const src = require('node:fs').readFileSync(require('node:path').join(JS, 'engine.js'), 'utf8');
+  const body = src.slice(src.indexOf('function addToFleet('), src.indexOf('function rngFor('));
+  assert.ok(!/p\.wing === undefined|buildShockSchedule|LINE_GRADES/.test(body), 'addToFleet 안에 마이그레이션 사본이 남아 있다');
+});

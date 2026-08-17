@@ -7,8 +7,21 @@
 (function (root) {
   'use strict';
 
-  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL, FICTIONAL_SHOCKS, HISTORICAL_ODDS, ETOPS_RANGE_KM, LINE_GRADES, RETOOL_COST_RATE, OUTSOURCING } =
-    root.AirlinerData;
+  const {
+    CONFIG,
+    SEGMENTS,
+    AIRLINES,
+    EVENTS,
+    HISTORICAL,
+    FICTIONAL_SHOCKS,
+    HISTORICAL_ODDS,
+    ETOPS_RANGE_KM,
+    LINE_GRADES,
+    RETOOL_COST_RATE,
+    OUTSOURCING,
+    WING_MATERIALS,
+    LEGACY_MATERIAL_MAP,
+  } = root.AirlinerData;
   const { MANUFACTURERS } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
@@ -234,6 +247,15 @@
     for (const p of s.programs) {
       if (p.abreast === undefined) p.abreast = root.AirlinerAirframe.DEFAULT_ABREAST[p.segment];
       if (p.wing === undefined) p.wing = 45;
+      // 날개를 채웠으면 이착륙 성능도 같이 유도한다. 비워 두면 scoreBid 의
+      // 폴백(?? 100)이 옛 기체를 만점으로 쳐서, 짧은 활주로·고온고지 노선에
+      // 영구히 무자격 응찰한다 — 그 제약이 있으나 마나가 된다.
+      if (typeof p.fieldPerf !== 'number') {
+        const legacyMat = LEGACY_MATERIAL_MAP[p.material] || LEGACY_MATERIAL_MAP.aluminum;
+        const wmat = WING_MATERIALS[p.wingMat || legacyMat.wingMat] || WING_MATERIALS.aluminum;
+        const ratio = p.range / SEGMENTS[p.segment].range.ref;
+        p.fieldPerf = root.AirlinerAirframe.wingProfile(p.wing, ratio, wmat.aspectRelief).field;
+      }
     }
 
     // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
@@ -323,71 +345,6 @@
 
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
   function addToFleet(s, airlineId, programId, n) {
-    if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
-    if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
-
-    if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
-    for (const l of s.lines || []) {
-      if (!LINE_GRADES[l.grade]) l.grade = 'standard';
-      if (typeof l.paidCost !== 'number') {
-        const lp = s.programs.find((x) => x.id === l.programId);
-        const g = LINE_GRADES[l.grade];
-        if (lp) l.paidCost = Math.round(SEGMENTS[lp.segment].lineCost * g.costMult);
-      }
-    }
-
-    if (!s.fleets) {
-      // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
-      // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
-      // 승계분을 다시 심고, 남아 있는 주문 기록에서 실제 인도분을 복원한다.
-      s.fleets = {};
-      const legacy = s.programs.find((p) => p.legacy);
-      if (legacy) {
-        s.fleets.panamer = { [legacy.id]: 62 };
-        s.fleets.hanul = { [legacy.id]: 48 };
-      }
-      for (const o of s.backlog || []) {
-        const shipped = o.qty - (o.cancelled || 0) - o.remaining;
-        if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
-      }
-    }
-
-    // 단면 개념이 없던 세이브의 프로그램에 단면을 채운다. 비워 두면 라인 전환
-    // 검사(from.abreast === undefined)가 통과해, 어떤 단면·세그먼트로든 35% 할인가에
-    // 갈아탈 수 있다 — 치구 재활용이라는 전제 자체가 무너진다.
-    for (const p of s.programs) {
-      if (p.abreast === undefined) p.abreast = root.AirlinerAirframe.DEFAULT_ABREAST[p.segment];
-      if (p.wing === undefined) p.wing = 45;
-    }
-
-    // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
-    // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
-    for (const p of s.programs) {
-      if (p.etops === undefined) p.etops = p.range >= ETOPS_RANGE_KM;
-    }
-
-    // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
-    // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
-    // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
-    for (const p of s.programs) {
-      if (p.engine && root.AirlinerEngines.get(p.engine)) continue;
-      // launchTurn 은 승계 기종이면 음수다(DN-150 = -40 = 1988년). 0으로 클램프하면
-      // 1998년 기준 엔진이 잡혀 새 게임의 같은 기체와 달라지고, 2000년 이후에는
-      // 단산 여부가 갈려 파생형 비용까지 34% vs 58% 로 어긋난다.
-      const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
-      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(born));
-      if (!eng) continue;
-      p.engine = eng.id;
-      p.engineName = eng.name;
-      p.engineMaker = eng.maker;
-    }
-    // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
-    // 이미 지난 분기의 슬롯은 버린다 — 충격은 endTurn 이 턴을 올린 뒤 발화하므로
-    // 현재 턴 이하 슬롯은 영영 뜨지 않는 죽은 항목이 되고, 그 시점 충격은 옛 규칙
-    // 아래서 이미 한 번 지나갔다.
-    if (!Array.isArray(s.shocks)) {
-      s.shocks = buildShockSchedule(s, createRng(s.seed)).filter((x) => x.turn > s.turn);
-    }
     if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
     s.fleets[airlineId][programId] = (s.fleets[airlineId][programId] || 0) + n;
   }
@@ -1330,9 +1287,14 @@
   function netWorth(s) {
     const assetValue =
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase, 0) +
+      // 라인 자산은 **실제로 치른 건설비**의 40%다. 등급 배수를 빼고 세그먼트
+      // 기준가로 매기면, $1.54B 짜리 고속 라인과 $634M 짜리 재래식 라인이 똑같이
+      // $352M 로 잡혀 비싼 등급을 고를수록 신용등급·최종점수가 손해를 본다.
       s.lines.reduce((a, l) => {
         const p = s.programs.find((x) => x.id === l.programId);
-        return a + (p ? SEGMENTS[p.segment].lineCost * 0.4 : 0);
+        if (!p) return a;
+        const paid = typeof l.paidCost === 'number' ? l.paidCost : SEGMENTS[p.segment].lineCost;
+        return a + paid * 0.4;
       }, 0);
     return s.cash + assetValue - s.debt;
   }
@@ -1422,6 +1384,7 @@
     finalScore,
     projectedQuarters,
     ensureShape,
+    addToFleet,
     fmtMoney,
     turnLabel,
     yearOf,
