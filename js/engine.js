@@ -203,7 +203,14 @@
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
     if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
-    for (const l of s.lines || []) if (!LINE_GRADES[l.grade]) l.grade = 'standard';
+    for (const l of s.lines || []) {
+      if (!LINE_GRADES[l.grade]) l.grade = 'standard';
+      if (typeof l.paidCost !== 'number') {
+        const lp = s.programs.find((x) => x.id === l.programId);
+        const g = LINE_GRADES[l.grade];
+        if (lp) l.paidCost = Math.round(SEGMENTS[lp.segment].lineCost * g.costMult);
+      }
+    }
 
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
@@ -219,6 +226,14 @@
         const shipped = o.qty - (o.cancelled || 0) - o.remaining;
         if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
       }
+    }
+
+    // 단면 개념이 없던 세이브의 프로그램에 단면을 채운다. 비워 두면 라인 전환
+    // 검사(from.abreast === undefined)가 통과해, 어떤 단면·세그먼트로든 35% 할인가에
+    // 갈아탈 수 있다 — 치구 재활용이라는 전제 자체가 무너진다.
+    for (const p of s.programs) {
+      if (p.abreast === undefined) p.abreast = root.AirlinerAirframe.DEFAULT_ABREAST[p.segment];
+      if (p.wing === undefined) p.wing = 45;
     }
 
     // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
@@ -312,7 +327,14 @@
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
     if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
-    for (const l of s.lines || []) if (!LINE_GRADES[l.grade]) l.grade = 'standard';
+    for (const l of s.lines || []) {
+      if (!LINE_GRADES[l.grade]) l.grade = 'standard';
+      if (typeof l.paidCost !== 'number') {
+        const lp = s.programs.find((x) => x.id === l.programId);
+        const g = LINE_GRADES[l.grade];
+        if (lp) l.paidCost = Math.round(SEGMENTS[lp.segment].lineCost * g.costMult);
+      }
+    }
 
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
@@ -328,6 +350,14 @@
         const shipped = o.qty - (o.cancelled || 0) - o.remaining;
         if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
       }
+    }
+
+    // 단면 개념이 없던 세이브의 프로그램에 단면을 채운다. 비워 두면 라인 전환
+    // 검사(from.abreast === undefined)가 통과해, 어떤 단면·세그먼트로든 35% 할인가에
+    // 갈아탈 수 있다 — 치구 재활용이라는 전제 자체가 무너진다.
+    for (const p of s.programs) {
+      if (p.abreast === undefined) p.abreast = root.AirlinerAirframe.DEFAULT_ABREAST[p.segment];
+      if (p.wing === undefined) p.wing = 45;
     }
 
     // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
@@ -435,6 +465,8 @@
       range: base.range,
       tech: base.tech,
       material: base.material,
+      fuselage: base.fuselage,
+      wingMat: base.wingMat,
       engine: base.engine,
       abreast: base.abreast,
       wing: base.wing,
@@ -445,9 +477,12 @@
         name: base.name,
         tech: base.tech,
         material: base.material,
+        fuselage: base.fuselage,
+        wingMat: base.wingMat,
         range: base.range,
         engine: base.engine,
         abreast: base.abreast,
+        wing: base.wing,
         // 착수 옵션(base.family)이 아니라 패밀리 소속으로 판정한다. 파생형은
         // familyId 를 물려받지만 family 플래그는 물려받지 않아서, 2대째 파생형이
         // 같은 패밀리인데도 일반 요율을 물게 된다.
@@ -502,6 +537,7 @@
       id: 'line-' + s.nextId++,
       programId: p.id,
       grade: grade.id,
+      paidCost: cost, // 폐쇄 환급의 근거 — 등급별 건설비가 다르다
       capacity: Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult)),
       ramp: 0.15,
       partial: 0,
@@ -518,7 +554,11 @@
     if (idx < 0) return { ok: false, error: '라인을 찾을 수 없습니다.' };
     const line = s.lines[idx];
     const p = s.programs.find((x) => x.id === line.programId);
-    const refund = Math.round(SEGMENTS[p.segment].lineCost * 0.2);
+    // 실제로 낸 값의 20%를 돌려준다. 기준가로 계산하면 고속 라인은 11%,
+    // 재래식은 28% 가 돌아와 "20% 환급"이라는 안내와 어긋난다.
+    const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+    const paid = typeof line.paidCost === 'number' ? line.paidCost : SEGMENTS[p.segment].lineCost * grade.costMult;
+    const refund = Math.round(paid * 0.2);
     ensureShape(s);
     s.cash += refund;
     s.pending.capex -= refund; // 매각 대금은 설비 투자의 환입
@@ -540,7 +580,10 @@
     const to = s.programs.find((x) => x.id === targetProgramId);
     if (!to || to.phase !== 'production') return { ok: false, error: '양산 가능한 기종이 아닙니다.' };
     if (to.id === line.programId) return { ok: false, error: '이미 그 기종의 라인입니다.' };
-    if (from && from.abreast !== undefined && to.abreast !== undefined && from.abreast !== to.abreast) {
+    if (from === undefined || from.abreast === undefined || to.abreast === undefined) {
+      return { ok: false, error: '동체 단면을 알 수 없어 치구 재활용 여부를 판단할 수 없습니다.' };
+    }
+    if (from.abreast !== to.abreast) {
       return { ok: false, error: '동체 단면이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
     }
 
@@ -1272,6 +1315,18 @@
     return typeof s.ratingForQuarter === 'string' ? s.ratingForQuarter : creditRating(s).grade;
   }
 
+  /**
+   * 이 기종의 지금 대당 생산원가 — 학습곡선 + 조달 전략까지 반영한 값.
+   * 화면과 정산이 반드시 같은 값을 쓰도록 여기 한 곳에만 둔다. 화면이 따로
+   * 계산하면 외주 수준에 따라 최대 9% 어긋난 마진을 보고 가격을 정하게 된다.
+   */
+  function currentUnitCost(s, p) {
+    const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
+    // 생산 루프는 p.produced 를 먼저 올리고 그 번호로 원가를 매기므로,
+    // "다음에 만들 1기"의 원가는 produced+1 번째다. 가격 결정은 이 값을 봐야 한다.
+    return unitCostAt(p.unitCostBase, p.produced + 1) * sourcing.costMult;
+  }
+
   function netWorth(s) {
     const assetValue =
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase, 0) +
@@ -1359,6 +1414,7 @@
     backlogValue,
     marketShare,
     netWorth,
+    currentUnitCost,
     creditRating,
     interestRate,
     quarterRate,

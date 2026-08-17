@@ -2051,3 +2051,187 @@ test('공급 차질 이벤트는 외주 비중에 따라 길어진다', () => {
   };
   assert.ok(sample('high') > sample('low'), '외주가 많을수록 차질이 길어야 한다');
 });
+
+/* ── 리뷰 회귀 (6be4b9f) ─────────────────────────────────────────────
+ * 아래 일곱 건은 심화 커밋에서 실제로 열린 구멍이다. 여섯은 파생형 할인·
+ * 생산설비 우회고, 하나는 "화면이 엔진 공식을 따로 계산"하는 그 부류다.
+ */
+
+test('파생형 시드가 부위별 소재를 잃지 않는다', () => {
+  const s = E.newGame(7);
+  const spec = {
+    segment: 'narrow',
+    seats: 180,
+    range: 5500,
+    tech: 55,
+    fuselage: 'composite',
+    wingMat: 'composite',
+    engine: 'cfm56-5b',
+    abreast: 6,
+    wing: 45,
+  };
+  assert.ok(E.launchProgram(s, spec, '원형').ok);
+  const base = s.programs[s.programs.length - 1];
+
+  const seed = E.derivativeSpec(base, 20);
+  assert.strictEqual(seed.fuselage, 'composite', '시드가 동체 소재를 물려받아야 한다');
+  assert.strictEqual(seed.wingMat, 'composite', '시드가 날개 소재를 물려받아야 한다');
+  assert.strictEqual(seed.derivedFrom.fuselage, 'composite', '원형 기록에도 동체 소재가 있어야 한다');
+  assert.strictEqual(seed.derivedFrom.wingMat, 'composite', '원형 기록에도 날개 소재가 있어야 한다');
+  // 소재가 유실되면 알루미늄으로 읽혀 "소재 교체"로 판정되고 할인이 사라진다.
+  assert.ok(D.evaluate({ ...seed, year: 2000 }).derivative, '그대로 두면 파생형 할인을 받아야 한다');
+});
+
+test('단면을 알 수 없는 옛 라인은 전환 자체가 막힌다', () => {
+  const s = E.newGame(8);
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50, abreast: 6, wing: 45 }, 'A').ok);
+  const a = s.programs[s.programs.length - 1];
+  a.phase = 'production';
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 200, range: 5500, tech: 50, abreast: 7, wing: 45 }, 'B').ok);
+  const b = s.programs[s.programs.length - 1];
+  b.phase = 'production';
+
+  s.cash = 60000;
+  const built = E.buildLine(s, a.id, 'standard');
+  assert.ok(built.ok, built.error);
+  const line = s.lines[s.lines.length - 1];
+
+  // 세이브 마이그레이션 이전의 프로그램처럼 단면 정보를 지운다.
+  delete b.abreast;
+  const r = E.retoolLine(s, line.id, b.id);
+  assert.strictEqual(r.ok, false, '단면을 모르면 전환을 허용하면 안 된다');
+  assert.ok(/알 수 없어/.test(r.error), '이유를 밝혀야 한다: ' + r.error);
+});
+
+test('라인 폐쇄 환급이 건설 당시 등급을 따른다', () => {
+  const s = E.newGame(9);
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50, abreast: 6, wing: 45 }, 'A').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+
+  s.cash = 200000;
+  const before = s.cash;
+  assert.ok(E.buildLine(s, p.id, 'highRate').ok);
+  const line = s.lines[s.lines.length - 1];
+  const paid = before - s.cash;
+  assert.ok(paid > Data.SEGMENTS.narrow.lineCost, '고속 라인은 표준보다 비싸야 한다');
+  assert.strictEqual(line.paidCost, paid, '건설비를 라인에 기록해야 한다');
+
+  const cashBeforeClose = s.cash;
+  E.closeLine(s, line.id);
+  const refund = s.cash - cashBeforeClose;
+  assert.strictEqual(refund, Math.round(paid * 0.2), '환급은 실제 건설비의 20%여야 한다');
+  assert.ok(refund > Math.round(Data.SEGMENTS.narrow.lineCost * 0.2), '표준 기준 환급보다 커야 한다');
+});
+
+test('화면의 대당 원가가 조달 전략을 반영한다', () => {
+  const mk = (level) => {
+    const s = E.newGame(10);
+    E.setOutsourcing(s, level);
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50, abreast: 6, wing: 45 }, 'A').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.produced = 40;
+    return { s, p };
+  };
+  const lo = mk('low');
+  const hi = mk('high');
+  assert.ok(E.currentUnitCost(hi.s, hi.p) < E.currentUnitCost(lo.s, lo.p), '외주가 많으면 원가가 낮아야 한다');
+
+  // 프로그램 탭이 그 값을 그대로 써야 한다 — 화면이 따로 계산하면 어긋난다.
+  const htmlLo = P.renderPrograms(lo.s);
+  const htmlHi = P.renderPrograms(hi.s);
+  assert.ok(htmlLo.includes(P.money(E.currentUnitCost(lo.s, lo.p))), '저외주 화면이 공유 함수 값을 써야 한다');
+  assert.ok(htmlHi.includes(P.money(E.currentUnitCost(hi.s, hi.p))), '고외주 화면이 공유 함수 값을 써야 한다');
+  assert.notStrictEqual(
+    htmlLo.match(/현재 대당 원가<\/th><td>([^<]*)/)[1],
+    htmlHi.match(/현재 대당 원가<\/th><td>([^<]*)/)[1],
+    '조달 전략이 다르면 표시 원가도 달라야 한다',
+  );
+});
+
+test('패밀리 선투자는 계보의 뿌리에서 한 번만 청구된다', () => {
+  const base = {
+    segment: 'narrow',
+    seats: 180,
+    range: 5500,
+    tech: 60,
+    fuselage: 'aluminum',
+    wingMat: 'aluminum',
+    engine: 'cfm56-5b',
+    abreast: 6,
+    wing: 45,
+    year: 2000,
+  };
+  const derivedFrom = { id: 'x', tech: 60, fuselage: 'aluminum', wingMat: 'aluminum', range: 5500, engine: 'cfm56-5b', abreast: 6, wing: 45, family: true };
+  const off = D.evaluate({ ...base, seats: 200, derivedFrom });
+  const on = D.evaluate({ ...base, seats: 200, family: true, derivedFrom });
+
+  assert.ok(off.inFamily, '패밀리 원형의 파생형이어야 한다');
+  assert.strictEqual(on.devCost, off.devCost, '승계 파생형에 선투자를 다시 청구하면 안 된다');
+  assert.strictEqual(on.devQuarters, off.devQuarters, '기간도 늘어나면 안 된다');
+  assert.ok(off.family, '패밀리 소속은 그대로 승계되어야 한다');
+
+  // 뿌리에서는 여전히 값을 치러야 한다 — 토글 자체를 죽인 게 아니다.
+  const rootOff = D.evaluate(base);
+  const rootOn = D.evaluate({ ...base, family: true });
+  assert.ok(rootOn.devCost > rootOff.devCost, '뿌리에서는 선투자 비용이 붙어야 한다');
+
+  // 화면도 승계 파생형에는 토글이 아니라 승계 표시를 내보내야 한다.
+  const s = E.newGame(11);
+  const html = P.renderDesign(s, { ...base, seats: 200, derivedFrom }, '파생형');
+  assert.ok(html.includes('패밀리 승계'), '승계 표시가 있어야 한다');
+  assert.ok(!/data-action="design-family"/.test(html), '다시 청구되는 토글을 내보내면 안 된다');
+});
+
+test('날개를 다시 그리면 파생형 할인을 잃는다', () => {
+  const base = {
+    segment: 'narrow',
+    seats: 180,
+    range: 5500,
+    tech: 60,
+    fuselage: 'aluminum',
+    wingMat: 'aluminum',
+    engine: 'cfm56-5b',
+    abreast: 6,
+    year: 2000,
+  };
+  const derivedFrom = { id: 'x', tech: 60, fuselage: 'aluminum', wingMat: 'aluminum', range: 5500, engine: 'cfm56-5b', abreast: 6, wing: 20 };
+
+  const tweak = D.evaluate({ ...base, seats: 200, wing: 30, derivedFrom });
+  assert.ok(tweak.derivative, '윙렛 수준의 손질은 파생형으로 인정해야 한다');
+
+  const redesign = D.evaluate({ ...base, seats: 200, wing: 95, derivedFrom });
+  assert.strictEqual(redesign.derivative, false, '날개를 갈아엎으면 형식증명을 물려받을 수 없다');
+  assert.ok(redesign.devCost > tweak.devCost * 2, '신규 설계 수준의 개발비를 물어야 한다');
+
+  // 파생형 시드가 원형 날개를 싣고 나가야 이 판정이 가능하다.
+  const s = E.newGame(12);
+  assert.ok(E.launchProgram(s, { ...base, wing: 20 }, '원형').ok);
+  const p = s.programs[s.programs.length - 1];
+  assert.strictEqual(E.derivativeSpec(p, 20).derivedFrom.wing, 20, '시드가 원형 날개를 기록해야 한다');
+});
+
+test('노선망 밖 발주는 반드시 다른 세그먼트로 나간다', () => {
+  const s = E.newGame(13);
+  const rng = R.createRng(13);
+  let off = 0;
+  for (let i = 0; i < 4000; i++) {
+    const rfp = B.makeRfp(s, rng);
+    const airline = Data.AIRLINES.find((a) => a.id === rfp.airlineId);
+    if (rfp.segment === airline.bias) continue;
+    off++;
+  }
+  assert.ok(off > 200, '표본에 노선망 밖 발주가 충분히 있어야 한다 (' + off + ')');
+
+  // 자기 급인데 활주로 제약만 사라진 공고가 있으면 안 된다 — 산악 공항 항공사가
+  // 이착륙 요건 0인 공고를 내면서 노선 설명은 그대로 붙는 모순.
+  const rng2 = R.createRng(99);
+  for (let i = 0; i < 4000; i++) {
+    const rfp = B.makeRfp(s, rng2);
+    const airline = Data.AIRLINES.find((a) => a.id === rfp.airlineId);
+    if (rfp.segment !== airline.bias) continue;
+    assert.strictEqual(rfp.fieldKind, airline.field || 'normal', `${airline.name}: 자기 급 발주는 본거지 제약을 유지해야 한다`);
+    assert.strictEqual(rfp.reqField, Data.FIELD_REQUIREMENT[airline.field || 'normal'], '요건 값도 함께 따라와야 한다');
+  }
+});

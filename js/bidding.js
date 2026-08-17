@@ -12,6 +12,8 @@
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
 
+  const SEGMENT_IDS = Object.keys(SEGMENTS);
+
   /**
    * 경쟁사 응찰 우위. 카탈로그 점수는 "기종의 실력"일 뿐이고, 실제 수주전에서
    * 기존 기종은 개발비를 이미 회수했기 때문에 가격 공세 여지가 크다 — 그만큼 문턱을 올린다.
@@ -49,8 +51,11 @@
   function makeRfp(state, rng) {
     const airline = rng.pick(AIRLINES);
     // 대부분은 자기 노선망 안에서 발주하고, 가끔 인접 세그먼트로 넘어간다.
+    // 노선망 밖 발주는 **반드시 다른 세그먼트**여야 한다 — 자기 급을 뽑아 놓고
+    // 대역·활주로 제약만 일반값으로 덮으면, 산악 공항 항공사가 이착륙 요건 0인
+    // 공고를 내는 모순이 생긴다(노선 설명은 그대로 붙은 채로).
     const onProfile = rng.next() < 0.85;
-    const segmentId = onProfile ? airline.bias : rng.pick(['regional', 'narrow', 'wide']);
+    const segmentId = onProfile ? airline.bias : rng.pick(SEGMENT_IDS.filter((id) => id !== airline.bias));
     const seg = SEGMENTS[segmentId];
 
     let seats;
@@ -300,5 +305,5 @@
     return { outcome, qty, rivalName: rival.name, rivalScore: rival.score, margin: Math.round(margin * 10) / 10 };
   }
 
-  root.AirlinerBidding = { generateRfps, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, CONFIG };
+  root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, CONFIG };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

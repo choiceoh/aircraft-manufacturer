@@ -12,7 +12,9 @@
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
   /** 파생형 할인 허용 오차 — 이 범위를 벗어나면 사실상 새 기체다. */
-  const DERIVATIVE_TOLERANCE = { techUp: 5, rangeRatio: 0.15 };
+  // wing: 날개를 손보되 새로 설계하지는 않는 범위. 실제 파생형도 윙렛을 달거나
+  // 익단을 조금 늘리기는 하지만(737NG→MAX), 종횡비를 갈아엎으면 새 날개다.
+  const DERIVATIVE_TOLERANCE = { techUp: 5, rangeRatio: 0.15, wing: 12 };
 
   /**
    * 원형의 형식증명을 물려받을 수 있는 변경인지.
@@ -34,6 +36,9 @@
     // 출발점이라 사실상 새 기체다. 이게 패밀리 전략의 근거이기도 하다:
     // 단면을 한 번 정하면 그 위에서만 싸게 늘리고 줄일 수 있다.
     if (d.abreast !== undefined && spec.abreast !== undefined && d.abreast !== spec.abreast) return false;
+    // 날개를 다시 그리면 이착륙 성능·순항 연비·구조 원가가 통째로 달라진다.
+    // 형상이 그만큼 바뀌었으면 원형의 시험비행 결과를 물려받을 수 없다.
+    if (d.wing !== undefined && spec.wing !== undefined && Math.abs(spec.wing - d.wing) > DERIVATIVE_TOLERANCE.wing) return false;
     if (tech > d.tech + DERIVATIVE_TOLERANCE.techUp) return false;
     if (Math.abs(range - d.range) > d.range * DERIVATIVE_TOLERANCE.rangeRatio) return false;
     return true;
@@ -92,16 +97,6 @@
     // 단, 원형의 형식증명을 실제로 재사용할 수 있는 변경일 때만 인정한다.
     // 딱지만 붙인 채 소재·기술·항속을 갈아엎으면 신규 설계를 34% 가격에 사는 셈이라
     // 개발비 제약 자체가 무너진다 (동일 설계 기준 $18.6B → $6.3B).
-    // 패밀리로 개발하면 공통 구조·조종석 설계에 선투자한다.
-    const family = !!spec.family;
-    if (family) {
-      devCost *= CONFIG.familyDevMult;
-      devQuarters *= CONFIG.familyTimeMult;
-    }
-    // ETOPS 인증을 함께 받으면 개발비와 인증 기간이 는다.
-    const etops = !!spec.etops;
-    if (etops) devCost *= CONFIG.etopsDevMult;
-
     const derivative = isCompatibleDerivative(spec, range, tech);
     // 엔진을 갈아 끼운 파생형(재장착)은 형식증명은 물려받지만 개발비가 훨씬 크다.
     // A320neo·737 MAX 가 정확히 이 경우다 — 순수 동체 연장과 같은 값을 매기면 안 된다.
@@ -110,6 +105,19 @@
     const reEngined = derivative && spec.derivedFrom.engine !== eng.id;
     // 원형이 패밀리로 개발됐으면 파생형이 훨씬 싸다 — 패밀리 선투자의 회수 지점.
     const inFamily = derivative && spec.derivedFrom.family === true;
+
+    // 패밀리로 개발하면 공통 구조·조종석 설계에 선투자한다.
+    // 선투자는 계보의 뿌리에서 **한 번만** 한다 — 이미 패밀리를 물려받는 파생형은
+    // 공통 설계가 이미 존재하므로, 여기서 또 청구하면 아무것도 사지 않는 돈이 된다.
+    const family = inFamily || !!spec.family;
+    if (family && !inFamily) {
+      devCost *= CONFIG.familyDevMult;
+      devQuarters *= CONFIG.familyTimeMult;
+    }
+    // ETOPS 인증을 함께 받으면 개발비와 인증 기간이 는다.
+    const etops = !!spec.etops;
+    if (etops) devCost *= CONFIG.etopsDevMult;
+
     if (derivative) {
       const key = reEngined ? (inFamily ? 'familyReEngined' : 'reEngined') : inFamily ? 'family' : 'plain';
       const rate = CONFIG.derivRates[key];

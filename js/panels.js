@@ -209,6 +209,9 @@
 
     const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year) || {}).id;
     const substituted = spec.engine && effectiveEngine !== spec.engine;
+    // 원형이 이미 패밀리면 소속은 승계된다 — 선투자 토글을 다시 켜 봐야
+    // 얻는 게 없으므로 아예 잠근다 (design.js 도 중복 청구하지 않는다).
+    const inheritsFamily = D.evaluate({ ...spec, year }).inFamily;
     const engines = Engines.available(spec.segment, year)
       .slice()
       .sort((a, b) => a.eff - b.eff)
@@ -262,9 +265,15 @@
           <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
           <h3 style="margin-top:18px">착수 옵션</h3>
           <div class="mats">
-            <button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
+            ${
+              inheritsFamily
+                ? `<button class="mat on" disabled>
+              <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
+            </button>`
+                : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
               <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 26%(일반 41%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
-            </button>
+            </button>`
+            }
             <button class="mat ${spec.etops ? 'on' : ''}" data-action="design-etops">
               <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
             </button>
@@ -390,7 +399,7 @@
         rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%</td></tr>`);
         if (p.phase === 'production') {
           rows.push(`<tr><th>생산 / 인도</th><td>${num(p.produced)}기 / ${num(p.delivered)}기</td></tr>`);
-          rows.push(`<tr><th>현재 대당 원가</th><td>${money(D.unitCostAt(p.unitCostBase, p.produced + 1))} <span class="muted">(학습곡선)</span></td></tr>`);
+          rows.push(`<tr><th>현재 대당 원가</th><td>${money(E.currentUnitCost(s, p))} <span class="muted">(학습곡선·조달)</span></td></tr>`);
           rows.push(`<tr><th>미인도 재고</th><td>${p.stock}기</td></tr>`);
         }
 
@@ -621,7 +630,7 @@
     const sc = B.scoreBid(s, rfp, p, bid.discount);
     if (sc.blocked) return `<p class="warn-box">${sc.blocked} — 이 기종으로는 입찰할 수 없다.</p>`;
 
-    const unitCost = D.unitCostAt(p.unitCostBase, p.produced + 1);
+    const unitCost = E.currentUnitCost(s, p);
     const margin = sc.price - unitCost;
     const total = sc.price * rfp.qty;
 
