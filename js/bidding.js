@@ -78,6 +78,9 @@
     const fieldKind = onProfile ? airline.field || 'normal' : 'normal';
     const reqField = FIELD_REQUIREMENT[fieldKind] || 0;
     const reqEtops = range >= ETOPS_RANGE_KM;
+    // 노선 설명도 마찬가지다. 본거지 노선명을 그대로 붙이면 "단거리 지선 · 짧은
+    // 활주로"라고 적힌 광동체 공고가 요구 이착륙 성능 0으로 나가 서로 모순된다.
+    const route = onProfile ? airline.route || '' : `${seg.name} 신규 진출 (노선망 밖)`;
 
     // 발주 규모: 세그먼트가 작을수록 대량. 수요지수가 곱해진다.
     const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
@@ -98,7 +101,7 @@
       reqField,
       fieldKind,
       reqEtops,
-      route: airline.route || '',
+      route,
       qty,
       priceSensitivity: airline.priceSensitivity,
       prestige: airline.prestige,

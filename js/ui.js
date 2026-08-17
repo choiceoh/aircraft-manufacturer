@@ -524,6 +524,10 @@
   function boot() {
     const saved = load();
     ui.state = saved || E.newGame(randomSeed());
+    // 설계 초안은 ui 리터럴에서 연도 없이(=1998) 만들어졌다. 세이브를 불러왔으면
+    // 그 시점으로 다시 잡아 준다 — 안 그러면 2015년 세이브가 1998년 기본 엔진으로
+    // 열리고, 그 엔진이 아직 팔리는 물건이면 대체 안내조차 뜨지 않는다.
+    ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state.turn));
     document.addEventListener('click', onClick);
     document.addEventListener('input', onInput);
     document.addEventListener('change', onChange);

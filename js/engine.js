@@ -490,18 +490,21 @@
     ensureShape(s);
     s.cash -= cost;
     s.pending.capex += cost;
+    const capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult));
     s.lines.push({
       id: 'line-' + s.nextId++,
       programId: p.id,
       grade: grade.id,
       paidCost: cost, // 폐쇄 환급의 근거 — 등급별 건설비가 다르다
-      capacity: Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult)),
+      capacity,
       ramp: 0.15,
       partial: 0,
       idle: false,
       builtTurn: s.turn,
     });
-    pushLog(s, 'good', `${p.name} 전용 조립 라인 신설 (${fmtMoney(seg.lineCost)}). 최대 분기 ${seg.lineMaxRate}기.`);
+    // 로그는 영구 경영 기록이다. 세그먼트 기준값을 적으면 현금 지출·라인 능력과
+    // 어긋나므로(고속 협동체 라인이 $1.54B·25기인데 $880M·16기로 남는다) 실제 값을 쓴다.
+    pushLog(s, 'good', `${p.name} 전용 ${grade.name} 조립 라인 신설 (${fmtMoney(cost)}). 최대 분기 ${capacity}기.`);
     return { ok: true };
   }
 

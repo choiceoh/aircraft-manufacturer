@@ -2302,3 +2302,65 @@ test('addToFleet 은 선단 장부만 건드린다', () => {
   const body = src.slice(src.indexOf('function addToFleet('), src.indexOf('function rngFor('));
   assert.ok(!/p\.wing === undefined|buildShockSchedule|LINE_GRADES/.test(body), 'addToFleet 안에 마이그레이션 사본이 남아 있다');
 });
+
+test('라인 건설 로그가 등급별 실제 비용·능력을 남긴다', () => {
+  const s = E.newGame(31);
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50, abreast: 6, wing: 45 }, 'A').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  s.cash = 300000;
+
+  const before = s.cash;
+  assert.ok(E.buildLine(s, p.id, 'highRate').ok);
+  const line = s.lines[s.lines.length - 1];
+  const paid = before - s.cash;
+  const entry = s.log.find((l) => /조립 라인 신설/.test(l.text));
+  assert.ok(entry, '건설 로그가 있어야 한다');
+
+  assert.ok(entry.text.includes(E.fmtMoney(paid)), `로그 금액이 실제 지출과 같아야 한다: ${entry.text}`);
+  assert.ok(new RegExp(`분기 ${line.capacity}기`).test(entry.text), `로그 능력이 라인 능력과 같아야 한다: ${entry.text}`);
+  // 세그먼트 기준값이 그대로 적히면 안 된다 — 고속 라인은 둘 다 더 커야 한다.
+  assert.ok(paid > Data.SEGMENTS.narrow.lineCost, '고속 라인은 기준가보다 비싸다 (전제 확인)');
+  assert.ok(!entry.text.includes(E.fmtMoney(Data.SEGMENTS.narrow.lineCost)), '기준가를 적으면 안 된다');
+  assert.ok(!new RegExp(`분기 ${Data.SEGMENTS.narrow.lineMaxRate}기`).test(entry.text), '기준 능력을 적으면 안 된다');
+});
+
+test('패밀리 안내 문구가 실제 파생형 요율과 일치한다', () => {
+  const s = E.newGame(32);
+  const spec = D.defaultSpec('narrow', E.yearOf(s.turn));
+  const html = P.renderDesign(s, spec, '신규');
+  const fam = Math.round(Data.CONFIG.derivRates.family.cost * 100);
+  const plain = Math.round(Data.CONFIG.derivRates.plain.cost * 100);
+
+  assert.ok(html.includes(`${fam}%(일반 ${plain}%)`), `안내가 실제 요율(${fam}/${plain})을 써야 한다`);
+  // 옛 표(26/41)가 남아 있으면 안 된다.
+  assert.ok(!/26%\(일반 41%\)/.test(html), '옛 요율 표기가 남아 있다');
+});
+
+test('노선망 밖 공고는 본거지 노선 설명을 달고 나가지 않는다', () => {
+  const s = E.newGame(33);
+  const rng = R.createRng(33);
+  const routes = new Set(Data.AIRLINES.map((a) => a.route).filter(Boolean));
+  let off = 0;
+  for (let i = 0; i < 6000; i++) {
+    const rfp = B.makeRfp(s, rng);
+    const airline = Data.AIRLINES.find((a) => a.id === rfp.airlineId);
+    if (rfp.segment === airline.bias) {
+      assert.strictEqual(rfp.route, airline.route || '', '자기 급 발주는 본거지 노선 설명을 유지해야 한다');
+      continue;
+    }
+    off++;
+    assert.ok(!routes.has(rfp.route), `노선망 밖인데 본거지 노선 설명이 붙었다: ${airline.name} → ${rfp.route}`);
+    assert.ok(rfp.route.includes(Data.SEGMENTS[rfp.segment].name), `발주한 급을 설명해야 한다: ${rfp.route}`);
+  }
+  assert.ok(off > 300, '표본에 노선망 밖 발주가 충분해야 한다 (' + off + ')');
+});
+
+test('부팅이 불러온 시점으로 설계 초안을 다시 잡는다', () => {
+  // ui.js 는 DOM 에 묶여 있어 여기서 실행할 수 없다. 동작 자체는 헤드리스
+  // 브라우저로 확인했고(2015 세이브 → CFM56-7B, 되돌리면 CFM56-5B), 여기서는
+  // 그 한 줄이 사라지는 회귀만 막는다.
+  const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
+  const boot = src.slice(src.indexOf('function boot()'), src.indexOf('root.AirlinerUI'));
+  assert.ok(/ui\.spec\s*=\s*D\.defaultSpec\([^)]*E\.yearOf\(ui\.state\.turn\)\)/.test(boot), 'boot() 이 불러온 턴으로 설계 초안을 다시 잡아야 한다');
+});

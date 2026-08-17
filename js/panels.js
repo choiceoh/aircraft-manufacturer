@@ -271,7 +271,7 @@
               <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
             </button>`
                 : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
-              <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 26%(일반 41%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
+              <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 신규 설계 대비 22%(일반 34%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
             </button>`
             }
             <button class="mat ${spec.etops ? 'on' : ''}" data-action="design-etops">
