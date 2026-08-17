@@ -293,6 +293,17 @@
         const eta = E.projectedQuarters(s, p);
         const rows = [];
         rows.push(`<tr><th>세그먼트</th><td>${SEGMENTS[p.segment].name} · ${p.seats}석 · ${num(p.range)}km</td></tr>`);
+        // 엔진은 되돌릴 수 없는 선택이고 이후 파생형 비용(같은 엔진 34% vs 재장착 58%)을
+        // 좌우한다. 화면에 없으면 플레이어가 자기 기체의 엔진을 확인할 방법이 없다.
+        const inst = Engines.get(p.engine);
+        if (inst) {
+          const gone = !Engines.inService(inst, E.yearOf(s.turn));
+          rows.push(
+            `<tr><th>엔진</th><td>${esc(inst.name)} <span class="muted">${esc(inst.maker)}</span>${
+              gone ? ' <span class="warn">단산 — 파생형은 재장착</span>' : ''
+            }</td></tr>`,
+          );
+        }
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
         rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%</td></tr>`);
@@ -532,7 +543,7 @@
         <div class="card">
           <h3>차입 / 상환</h3>
           <p class="muted">이번 분기 적용 등급 <b>${E.quarterGrade(s)}</b> · 이자율 ${(E.quarterRate(s) * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
-          <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 이자율은 <b>분기 시작 시</b> 고정되므로, 지금 차입해도 이번 분기 청구는 위 등급 기준이다 — 현재 등급 <b>${rating.grade}</b>이 다음 분기에 적용된다.</p>
+          <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 이자율은 <b>분기 시작 시</b> 고정되므로, 지금 차입해도 이번 분기 청구는 위 등급 기준이다. 현재 잠정 등급은 <b>${rating.grade}</b> — 다음 분기 이자율은 이번 분기의 개발·생산·인도가 모두 끝난 뒤 다시 매겨진다.</p>
           <div class="row wrap">
             <button data-action="borrow" data-amt="1000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(1000, room))} 차입</button>
             <button data-action="borrow" data-amt="3000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(3000, room))} 차입</button>

@@ -1682,3 +1682,19 @@ test('리스사 발주는 현금만 주지 않고 실제 주문을 남긴다', (
   // 선수금은 계약 규모에 비례해야 한다 — 무상 지급이 아니다.
   assert.ok(Math.abs(income - order.qty * order.unitPrice * Data.CONFIG.depositRate) < 1);
 });
+
+test('프로그램 화면에 장착 엔진이 표시된다', () => {
+  // 엔진은 되돌릴 수 없는 선택이고 이후 파생형 비용을 좌우한다.
+  const s = E.newGame(2);
+  const legacy = s.programs.find((p) => p.legacy);
+  const eng = EN.get(legacy.engine);
+  assert.ok(eng);
+
+  const html = P.renderPrograms(s);
+  assert.ok(html.includes(eng.name), `장착 엔진(${eng.name})이 보여야 한다`);
+
+  // 단산 이후에는 파생형이 재장착이 된다는 것도 알려야 한다.
+  s.turn = (2010 - 1998) * 4;
+  assert.strictEqual(EN.inService(eng, E.yearOf(s.turn)), false, '전제: 그 시점엔 단산');
+  assert.ok(/단산/.test(P.renderPrograms(s)), '단산 표시가 있어야 한다');
+});
