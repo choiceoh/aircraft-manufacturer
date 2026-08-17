@@ -2364,3 +2364,53 @@ test('부팅이 불러온 시점으로 설계 초안을 다시 잡는다', () =>
   const boot = src.slice(src.indexOf('function boot()'), src.indexOf('root.AirlinerUI'));
   assert.ok(/ui\.spec\s*=\s*D\.defaultSpec\([^)]*E\.yearOf\(ui\.state\.turn\)\)/.test(boot), 'boot() 이 불러온 턴으로 설계 초안을 다시 잡아야 한다');
 });
+
+test('라인 전환은 급까지 같아야 한다', () => {
+  const s = E.newGame(41);
+  // 5열은 리저널·협동체 양쪽에 있다 — 열 수만 보면 통과해 버리는 조합.
+  assert.ok(E.launchProgram(s, { segment: 'regional', seats: 90, range: 2400, tech: 50, abreast: 5, wing: 40 }, 'RJ').ok);
+  const rj = s.programs[s.programs.length - 1];
+  rj.phase = 'production';
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 150, range: 4200, tech: 50, abreast: 5, wing: 45 }, 'NB').ok);
+  const nb = s.programs[s.programs.length - 1];
+  nb.phase = 'production';
+  assert.strictEqual(rj.abreast, nb.abreast, '전제: 열 수는 같다');
+
+  s.cash = 300000;
+  assert.ok(E.buildLine(s, rj.id, 'standard').ok);
+  const line = s.lines[s.lines.length - 1];
+
+  const r = E.retoolLine(s, line.id, nb.id);
+  assert.strictEqual(r.ok, false, '급이 다르면 전환할 수 없어야 한다');
+  assert.ok(/급이 달라/.test(r.error), r.error);
+  assert.strictEqual(line.programId, rj.id, '거절됐으면 라인이 그대로여야 한다');
+
+  // 화면도 같은 규칙을 써야 한다 — 눌러도 거절당하는 버튼을 내보내면 안 된다.
+  const html = P.renderProduction(s);
+  assert.ok(!new RegExp(`data-target="${nb.id}"`).test(html), '급이 다른 대상을 전환 버튼으로 내보내면 안 된다');
+});
+
+test('전환 후에도 라인 자산 기준이 새로 세운 라인과 같다', () => {
+  const s = E.newGame(42);
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 160, range: 4600, tech: 50, abreast: 6, wing: 45 }, 'A').ok);
+  const a = s.programs[s.programs.length - 1];
+  a.phase = 'production';
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 200, range: 4800, tech: 50, abreast: 6, wing: 45 }, 'B').ok);
+  const b = s.programs[s.programs.length - 1];
+  b.phase = 'production';
+
+  s.cash = 300000;
+  assert.ok(E.buildLine(s, a.id, 'classic').ok);
+  const line = s.lines[s.lines.length - 1];
+  const fresh = Math.round(Data.SEGMENTS.narrow.lineCost * Data.LINE_GRADES.classic.costMult);
+  assert.strictEqual(line.paidCost, fresh, '전제: 건설비가 등급값이다');
+
+  // 급·등급이 고정된 전환만 허용되므로, 몇 번을 갈아타도 이 라인은 여전히
+  // "그 급 그 등급의 라인"이다 — 자산 기준이 새로 세운 라인과 같아야 한다.
+  for (let i = 0; i < 6; i++) {
+    s.cash = 300000;
+    assert.ok(E.retoolLine(s, line.id, line.programId === a.id ? b.id : a.id).ok);
+  }
+  assert.strictEqual(line.paidCost, fresh, '전환이 라인 자산 기준을 흔들면 안 된다');
+  assert.strictEqual(line.grade, 'classic', '등급은 전환으로 바뀌지 않는다');
+});

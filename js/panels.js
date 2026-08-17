@@ -454,13 +454,14 @@
 
   // ─────────────────────────────── 생산 ───────────────────────────────
 
-  /** 같은 동체 단면이라야 치구를 재활용할 수 있다 — 패밀리가 생산에서도 값을 하는 지점. */
+  /**
+   * 같은 급·같은 동체 단면이라야 치구를 재활용할 수 있다 — 패밀리가 생산에서도
+   * 값을 하는 지점. 판정은 엔진의 공유 함수를 그대로 쓴다. 화면이 따로 판정하면
+   * 눌러도 거절당하는 버튼이 뜨거나(느슨하면) 되는 전환이 가려진다(빡빡하면).
+   */
   function retoolTargets(s, line, from) {
     const targets = s.programs.filter(
-      (t) =>
-        t.phase === 'production' &&
-        t.id !== line.programId &&
-        (from === undefined || from.abreast === undefined || t.abreast === undefined || t.abreast === from.abreast),
+      (t) => t.phase === 'production' && t.id !== line.programId && E.retoolCompatibility(from, t).ok,
     );
     if (!targets.length) return '';
     const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;

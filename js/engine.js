@@ -533,6 +533,27 @@
    * 생산 설비까지 재활용하게 만드는 지점이다(실제로도 같은 최종조립라인에서
    * 같은 계열 변형을 굴린다).
    */
+  /**
+   * 치구를 재활용할 수 있는 전환인가.
+   * 화면(전환 버튼 노출)과 실행이 반드시 같은 규칙을 쓰도록 여기 한 곳에만 둔다.
+   *
+   * 열 수만 같으면 된다고 보면 안 된다 — 5열 리저널과 5열 협동체는 동체 직경부터
+   * 다른 별개 기체다(7열 협동체 ↔ 7열 광동체도 마찬가지). 급이 다르면 치구가
+   * 아니라 건물부터 다시 봐야 하므로, 급까지 같아야 전환을 허용한다.
+   */
+  function retoolCompatibility(from, to) {
+    if (!from || from.abreast === undefined || !to || to.abreast === undefined) {
+      return { ok: false, error: '동체 단면을 알 수 없어 치구 재활용 여부를 판단할 수 없습니다.' };
+    }
+    if (from.segment !== to.segment) {
+      return { ok: false, error: '급이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
+    }
+    if (from.abreast !== to.abreast) {
+      return { ok: false, error: '동체 단면이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
+    }
+    return { ok: true };
+  }
+
   function retoolLine(s, lineId, targetProgramId) {
     const line = s.lines.find((l) => l.id === lineId);
     if (!line) return { ok: false, error: '라인을 찾을 수 없습니다.' };
@@ -540,12 +561,8 @@
     const to = s.programs.find((x) => x.id === targetProgramId);
     if (!to || to.phase !== 'production') return { ok: false, error: '양산 가능한 기종이 아닙니다.' };
     if (to.id === line.programId) return { ok: false, error: '이미 그 기종의 라인입니다.' };
-    if (from === undefined || from.abreast === undefined || to.abreast === undefined) {
-      return { ok: false, error: '동체 단면을 알 수 없어 치구 재활용 여부를 판단할 수 없습니다.' };
-    }
-    if (from.abreast !== to.abreast) {
-      return { ok: false, error: '동체 단면이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
-    }
+    const compat = retoolCompatibility(from, to);
+    if (!compat.ok) return compat;
 
     const seg = SEGMENTS[to.segment];
     const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
@@ -555,6 +572,9 @@
     ensureShape(s);
     s.cash -= cost;
     s.pending.capex += cost;
+    // paidCost 는 건드리지 않는다. 급·등급이 같은 전환만 허용되므로 전환 후에도
+    // 이 라인은 "그 급 그 등급의 라인" 그대로고, 새로 세우는 값도 같다. 전환비는
+    // 그 분기의 capex 로 끝나는 지출이지 라인 가치를 올리는 돈이 아니다.
     line.programId = to.id;
     line.capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult));
     line.ramp = 0.15; // 전환 후에는 램프업을 다시 올린다
@@ -1364,6 +1384,7 @@
     cancelProgram,
     buildLine,
     retoolLine,
+    retoolCompatibility,
     setOutsourcing,
     closeLine,
     toggleLine,
