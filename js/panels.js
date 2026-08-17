@@ -519,7 +519,7 @@
       <section class="grid2">
         <div class="card">
           <h3>차입 / 상환</h3>
-          <p class="muted">신용등급 <b>${rating.grade}</b> · 분기 이자율 ${(CONFIG.interestPerQuarter * rating.mult * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
+          <p class="muted">신용등급 <b>${rating.grade}</b> · 분기 이자율 ${(E.interestRate(s) * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
           <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 등급이 내려가면 같은 차입에도 이자가 더 나간다.</p>
           <div class="row wrap">
             <button data-action="borrow" data-amt="1000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(1000, room))} 차입</button>
@@ -527,7 +527,7 @@
             <button data-action="repay" data-amt="1000" ${s.cash < 1 || s.debt < 1 ? 'disabled' : ''}>${money(Math.min(1000, s.cash, s.debt))} 상환</button>
             <button data-action="repay" data-amt="3000" ${s.cash < 1 || s.debt < 1 ? 'disabled' : ''}>${money(Math.min(3000, s.cash, s.debt))} 상환</button>
           </div>
-          <p class="hint">분기 이자 ${money(s.debt * (CONFIG.interestPerQuarter + (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0)))}</p>
+          <p class="hint">분기 이자 ${money(s.debt * E.interestRate(s))}</p>
         </div>
         <div class="card">
           <h3>인력</h3>

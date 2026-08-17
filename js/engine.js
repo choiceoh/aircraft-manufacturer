@@ -876,12 +876,9 @@
   }
 
   function settleFinance(s, report) {
-    // 기본금리 × 신용등급 배수 + 신용경색 가산.
-    const rating = creditRating(s);
-    const rate =
-      CONFIG.interestPerQuarter * rating.mult + (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0);
+    const rate = interestRate(s);
     const interest = s.debt * rate;
-    s.rating = rating.grade;
+    s.rating = creditRating(s).grade;
     report.rate = Math.round(rate * 10000) / 100;
     const overhead =
       CONFIG.fixedOverheadPerQuarter +
@@ -1139,6 +1136,18 @@
     return RATINGS[idx];
   }
 
+  /**
+   * 이번 분기에 실제로 적용될 이자율 — 기본금리 × 신용등급 배수 + 신용경색 가산.
+   * 정산과 화면이 반드시 같은 값을 쓰도록 여기 한 곳에만 둔다. 화면이 따로
+   * 계산하면 등급이 BBB 가 아닐 때 표시와 청구가 어긋난다.
+   */
+  function interestRate(s) {
+    return (
+      CONFIG.interestPerQuarter * creditRating(s).mult +
+      (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0)
+    );
+  }
+
   function netWorth(s) {
     const assetValue =
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase, 0) +
@@ -1225,6 +1234,7 @@
     marketShare,
     netWorth,
     creditRating,
+    interestRate,
     finalScore,
     projectedQuarters,
     ensureShape,

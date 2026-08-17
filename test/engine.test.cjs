@@ -1485,3 +1485,32 @@ test('결함 위험 상한은 설계와 개발 페널티가 같은 값을 쓴다
     assert.ok(p.defectRisk >= cap, `상한에서 내려갔다 (${p.defectRisk})`);
   }
 });
+
+test('화면에 표시되는 분기 이자가 실제 청구액과 같다', () => {
+  // 화면이 이자율을 따로 계산하면 등급이 BBB 가 아닐 때 표시와 청구가 어긋난다
+  // (AA 는 과대, BB~CCC 는 과소). 차입·상환 판단을 직접 오도한다.
+  for (const seed of [2, 5, 9]) {
+    const s = E.newGame(seed);
+    E.borrow(s, 5000); // 등급을 BBB 밖으로 밀어낸다
+    s.effects.rateBump = 0.008;
+    s.effects.rateBumpQuarters = 3;
+
+    const html = P.renderFinance(s);
+    const m = /분기 이자 ([^<]+)/.exec(html);
+    assert.ok(m, '분기 이자 표시가 있어야 한다');
+    const shown = m[1].trim();
+
+    // 정산 직전 상태로 고정한다 — endTurn 이 돌면 등급 산정 근거(현금·이력)가 바뀐다.
+    const debtBefore = s.debt;
+    const rateBefore = E.interestRate(s);
+    assert.strictEqual(shown, P.money(debtBefore * rateBefore), `seed ${seed}: 화면 표시가 어긋난다`);
+
+    const r = E.endTurn(s);
+    assert.ok(r.ok);
+    // 그리고 그 값이 실제로 청구된 이자와 일치해야 한다.
+    assert.ok(
+      Math.abs(r.report.interest - debtBefore * rateBefore) < 1,
+      `seed ${seed}: 표시 ${Math.round(debtBefore * rateBefore)} ≠ 청구 ${Math.round(r.report.interest)}`,
+    );
+  }
+});
