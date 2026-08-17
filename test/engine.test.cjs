@@ -1878,3 +1878,80 @@ test('패밀리는 항공사 공통성을 형제 기종끼리 나눈다', () => 
     `형제 기종은 무관한 기종보다 크게 인정돼야 한다 (형제 ${withSibling.parts.common} vs 타 기종 ${withOutsider.parts.common})`,
   );
 });
+
+// ─────────────────── 부위별 소재 · 리뷰 회귀 ───────────────────
+
+test('동체 소재는 객실을, 날개 소재는 연비를 지배한다', () => {
+  // 한 덩어리 3택은 복합재로 갈수록 다 좋아지는 한 방향 다이얼이었다.
+  const b = { segment: 'narrow', seats: 180, range: 5500, tech: 50, abreast: 6, wing: 45, engine: 'cfm56-5b', year: 2000 };
+  const base = D.evaluate({ ...b, fuselage: 'aluminum', wingMat: 'aluminum' });
+  const fusOnly = D.evaluate({ ...b, fuselage: 'composite', wingMat: 'aluminum' });
+  const wingOnly = D.evaluate({ ...b, fuselage: 'aluminum', wingMat: 'composite' });
+
+  assert.ok(fusOnly.comfort - base.comfort > wingOnly.comfort - base.comfort, '객실은 동체가 지배해야 한다');
+  assert.ok(wingOnly.efficiency - base.efficiency > fusOnly.efficiency - base.efficiency, '연비는 날개가 지배해야 한다');
+  assert.ok(fusOnly.defectRisk > wingOnly.defectRisk, '동체 복합재가 더 위험해야 한다 (여압 사이클)');
+});
+
+test('고종횡비 날개는 복합재라야 이득이 산다', () => {
+  const b = { segment: 'wide', seats: 300, range: 13000, tech: 60, abreast: 9, engine: 'trent700', fuselage: 'aluminum', year: 2005 };
+  const hiAl = D.evaluate({ ...b, wing: 90, wingMat: 'aluminum' });
+  const hiCf = D.evaluate({ ...b, wing: 90, wingMat: 'composite' });
+  const loAl = D.evaluate({ ...b, wing: 15, wingMat: 'aluminum' });
+  const loCf = D.evaluate({ ...b, wing: 15, wingMat: 'composite' });
+
+  // 종횡비가 높을수록 소재 차이가 커야 한다 — 중량이 이득을 갉아먹기 때문.
+  assert.ok(hiCf.efficiency - hiAl.efficiency > loCf.efficiency - loAl.efficiency,
+    `고종횡비에서 소재 이득이 더 커야 한다 (고 ${hiCf.efficiency - hiAl.efficiency} vs 저 ${loCf.efficiency - loAl.efficiency})`);
+});
+
+test('옛 단일 소재 설계안도 그대로 평가된다', () => {
+  // 세이브와 기존 코드가 spec.material 만 들고 있어도 깨지면 안 된다.
+  for (const m of ['aluminum', 'hybrid', 'composite']) {
+    const r = D.evaluate({ segment: 'narrow', seats: 180, range: 5500, tech: 50, material: m, year: 2000 });
+    assert.ok(r.devCost > 0 && r.efficiency > 0, m + ' 평가 실패');
+    assert.ok(r.fuselage && r.wingMat, '부위별 소재로 옮겨져야 한다');
+  }
+});
+
+test('패밀리 계보는 2대째 파생형까지 이어진다', () => {
+  // 파생형은 familyId 를 물려받지만 family 플래그는 물려받지 않는다.
+  // derivedFrom.family 를 착수 옵션으로 판정하면 손자 세대가 일반 요율을 문다.
+  const s = E.newGame(5);
+  s.cash = 200000;
+  const spec = { segment: 'narrow', seats: 170, range: 5000, tech: 50, fuselage: 'aluminum', wingMat: 'aluminum', abreast: 6, wing: 45, family: true };
+  assert.ok(E.launchProgram(s, spec, 'F1').ok);
+  const root = s.programs[s.programs.length - 1];
+  root.phase = 'production';
+
+  assert.ok(E.launchProgram(s, E.derivativeSpec(root, 15), 'F2').ok);
+  const child = s.programs[s.programs.length - 1];
+  child.phase = 'production';
+  assert.strictEqual(child.familyId, root.familyId);
+  assert.strictEqual(child.inFamily, true, '1대째 파생형이 패밀리 요율을 받아야 한다');
+
+  // 손자 — 여기서 계보가 끊기면 안 된다.
+  const grandSpec = E.derivativeSpec(child, 15);
+  assert.strictEqual(grandSpec.derivedFrom.family, true, '2대째도 패밀리 소속으로 판정돼야 한다');
+  assert.strictEqual(D.evaluate({ ...grandSpec, year: E.yearOf(s.turn) }).inFamily, true);
+});
+
+test('ETOPS 개념이 없던 세이브의 장거리 기종은 자격을 이어받는다', () => {
+  // 그러지 않으면 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데
+  // 소급 취득 수단이 없어 프로그램이 통째로 죽는다.
+  const s = E.newGame(6);
+  s.cash = 200000;
+  E.launchProgram(s, { segment: 'wide', seats: 300, range: 13000, tech: 60, fuselage: 'aluminum', wingMat: 'hybrid', abreast: 9, wing: 60 }, 'WB');
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  delete p.etops; // v1 세이브 재현
+
+  E.ensureShape(s);
+  assert.strictEqual(p.etops, true, '장거리 기종은 자격을 받아야 한다');
+
+  // 단거리 기종까지 공짜로 주면 안 된다.
+  const short = s.programs.find((x) => x.legacy);
+  delete short.etops;
+  E.ensureShape(s);
+  assert.strictEqual(short.etops, false);
+});

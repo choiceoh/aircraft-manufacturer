@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, MATERIALS, CONFIG, ETOPS_RANGE_KM, AIRLINES } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, AIRLINES, UPGAUGE_PER_YEAR } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
@@ -47,7 +47,13 @@
 
   /** 항공사별 수요 프로필 — 설계를 어디에 맞출지 정하는 근거다. */
   function airlineDemandTable(s) {
+    // 표시 대역에도 업게이지를 반영한다. 1998년 값을 그대로 두면 후반에
+    // 이 표를 보고 설계한 기체가 실제 발주와 한 급 어긋난다.
+    const up = 1 + (s.turn / 4) * UPGAUGE_PER_YEAR;
     const rows = AIRLINES.map((a) => {
+      const seg = SEGMENTS[a.bias];
+      const lo = Math.round(Math.min(seg.seats.max, Math.max(seg.seats.min, a.seatBand[0] * up)));
+      const hi = Math.round(Math.min(seg.seats.max, Math.max(seg.seats.min, a.seatBand[1] * up)));
       const rel = Math.round(s.relations[a.id] ?? 40);
       const ours = Object.values((s.fleets && s.fleets[a.id]) || {}).reduce((x, y) => x + y, 0);
       const constraint =
@@ -55,7 +61,7 @@
       return `<tr>
           <td>${esc(a.name)}</td>
           <td>${SEGMENTS[a.bias].name}</td>
-          <td>${a.seatBand[0]}~${a.seatBand[1]}석</td>
+          <td>${lo}~${hi}석</td>
           <td>${num(a.rangeBand[0])}~${num(a.rangeBand[1])}km</td>
           <td>${constraint}</td>
           <td>${rel}</td>
@@ -63,7 +69,7 @@
         </tr>`;
     }).join('');
     return `<table class="hist">
-        <tr><th>항공사</th><th>주력</th><th>좌석대</th><th>항속대</th><th>제약</th><th>관계</th><th>보유</th></tr>
+        <tr><th>항공사</th><th>주력</th><th>좌석대 <span class="muted">(현재)</span></th><th>항속대</th><th>제약</th><th>관계</th><th>보유</th></tr>
         ${rows}
       </table>`;
   }
@@ -173,14 +179,18 @@
          </button>`,
     ).join('');
 
-    const mats = Object.values(MATERIALS)
-      .map(
-        (m) =>
-          `<button class="mat ${m.id === spec.material ? 'on' : ''}" data-action="design-mat" data-mat="${m.id}">
-             <b>${m.name}</b><span>${m.desc}</span>
+    const legacyMat = LEGACY_MATERIAL_MAP[spec.material] || LEGACY_MATERIAL_MAP.aluminum;
+    const partPicker = (table, key, current) =>
+      Object.values(table)
+        .map(
+          (m) =>
+            `<button class="mat ${m.id === current ? 'on' : ''}" data-action="design-${key}" data-mat="${m.id}">
+             <b>${esc(m.name)}</b><span>${esc(m.desc)}</span>
            </button>`,
-      )
-      .join('');
+        )
+        .join('');
+    const fusMats = partPicker(FUSELAGE_MATERIALS, 'fuselage', spec.fuselage || legacyMat.fuselage);
+    const wingMats = partPicker(WING_MATERIALS, 'wingmat', spec.wingMat || legacyMat.wingMat);
 
     // 그 시점에 실제로 살 수 있는 엔진만 보여준다. 성숙도가 덜 찬 신형은 경고를 단다.
     const year = E.yearOf(s.turn);
@@ -241,8 +251,12 @@
           <h3 style="margin-top:18px">동체 단면</h3>
           <div class="mats">${sections}</div>
           <p class="hint">좁게 많이 태우면 좌석당 연비·원가가 좋아지고 객실 점수가 떨어진다. 단면을 바꾸면 형식증명을 물려받을 수 없다 — 파생형의 뿌리가 되는 결정이다.</p>
-          <h3 style="margin-top:18px">주 구조재</h3>
-          <div class="mats">${mats}</div>
+          <h3 style="margin-top:18px">동체 소재</h3>
+          <div class="mats">${fusMats}</div>
+          <p class="hint">동체는 여압 사이클이 걸려 개발이 가장 어렵다. 대신 넓은 단면·높은 여압으로 <b>객실이 크게 좋아진다</b>.</p>
+          <h3 style="margin-top:18px">날개 소재</h3>
+          <div class="mats">${wingMats}</div>
+          <p class="hint">날개는 가벼워야 종횡비를 높일 수 있다. <b>고종횡비 장거리 날개는 사실상 복합재라야 성립한다</b> — 알루미늄으로 밀어붙이면 중량이 연비 이득을 갉아먹는다.</p>
           <h3 style="margin-top:18px">엔진</h3>
           <div class="mats">${engines}</div>
           <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
@@ -327,8 +341,12 @@
         ev.derivative
           ? `<p class="hint">${esc(spec.derivedFrom.name)} 파생형으로 인정 — ${
               ev.reEngined
-                ? '엔진을 갈아 끼운 <b>재장착</b>이라 개발비 42%·기간 28% 절감'
-                : '개발비 66%·기간 50% 절감'
+                ? ev.inFamily
+                  ? '패밀리 내 <b>재장착</b>이라 개발비 56%·기간 40% 절감'
+                  : '엔진을 갈아 끼운 <b>재장착</b>이라 개발비 42%·기간 28% 절감'
+                : ev.inFamily
+                  ? '<b>패밀리 내 파생형</b>이라 개발비 78%·기간 64% 절감'
+                  : '개발비 66%·기간 50% 절감'
             }이 적용됐다.</p>`
           : ''
       }
@@ -361,6 +379,12 @@
             }</td></tr>`,
           );
         }
+        // ETOPS 는 되돌릴 수 없고 9,000km 이상 노선의 응찰 자격을 좌우한다.
+        rows.push(
+          `<tr><th>인증 / 계보</th><td>${p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'}${
+            p.familyId ? ' · 패밀리' : ''
+          }${p.derivative ? ' · 파생형' : ''}</td></tr>`,
+        );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
         rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%</td></tr>`);

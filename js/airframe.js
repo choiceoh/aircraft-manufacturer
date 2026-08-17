@@ -75,18 +75,24 @@
    * 항속거리와 짝이 맞아야 한다 — 단거리 노선용 기체에 장거리 날개를 달면
    * 원가만 오르고, 장거리 기체에 단거리 날개를 달면 연료를 태운다.
    */
-  function wingProfile(wing, rangeRatio) {
+  function wingProfile(wing, rangeRatio, relief) {
     const w = clamp(wing, 0, 100) / 100;
+    // 날개 소재의 경량 여유 (0=알루미늄, 1=전복합재). 고종횡비 날개는 가벼워야
+    // 성립한다 — 알루미늄으로 밀어붙이면 구조 중량이 이득을 갉아먹는다.
+    const r = clamp(relief === undefined ? 0 : relief, 0, 1);
 
     // 순항 효율: 장거리형일수록 좋다. 다만 짧은 노선에서는 그 이점을 못 쓴다.
-    const cruiseGain = (w - 0.45) * 14 * clamp(rangeRatio, 0.6, 1.4);
+    // 무거운 날개로 종횡비만 올리면 이득의 상당 부분이 중량으로 상쇄된다.
+    const heavyPenalty = Math.max(0, w - 0.5) * (1 - r) * 10;
+    const cruiseGain = (w - 0.45) * 14 * clamp(rangeRatio, 0.6, 1.4) - heavyPenalty;
 
     // 이착륙 성능 (0~100): 단거리형일수록 좋다. 항속이 길수록(=무거울수록) 나빠진다.
-    const field = clamp(88 - w * 52 - Math.max(0, rangeRatio - 1) * 26, 5, 99);
+    const field = clamp(88 - w * 52 - Math.max(0, rangeRatio - 1) * 26 + r * 6, 5, 99);
 
     // 구조 중량 → 원가·개발비. 고종횡비 날개는 휨하중이 커 구조가 비싸다.
-    const costMult = 1 + w * 0.1;
-    const devMult = 1 + w * 0.14;
+    // 복합재는 그 부담을 덜어 준다(대신 소재 자체가 비싸다 — data.js 쪽에서 청구된다).
+    const costMult = 1 + w * 0.1 * (1 - r * 0.45);
+    const devMult = 1 + w * 0.14 * (1 - r * 0.4);
 
     return {
       cruiseGain: Math.round(cruiseGain * 10) / 10,

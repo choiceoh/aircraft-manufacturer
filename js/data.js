@@ -103,41 +103,87 @@
   const SEGMENT_ORDER = ['regional', 'narrow', 'wide'];
 
   /** 주 구조재 선택 — 연비/개발비/개발리스크 트레이드오프 */
-  const MATERIALS = {
+  /**
+   * 부위별 소재 — 동체와 날개를 따로 고른다.
+   *
+   * 한 덩어리 3택이던 시절에는 복합재로 갈수록 다 좋아지고 다 비싸지는 한 방향
+   * 다이얼이라 결정이랄 게 없었다. 부위를 나누면 각각 성격이 갈린다:
+   *
+   *   동체 — 여압 사이클이 걸려 개발이 가장 어렵다. 대신 넓은 단면·높은 여압·큰 창으로
+   *          객실이 크게 좋아진다 (787이 실제로 판 것). 위험 ↔ 객실.
+   *   날개 — 가벼워야 종횡비를 높일 수 있다. 연비와 직결되지만 원가가 오른다.
+   *          고종횡비 장거리 날개는 사실상 복합재라야 성립한다. 연비 ↔ 원가.
+   *
+   * 그래서 "동체는 알루미늄, 날개만 복합재"(777 방식) 같은 실제 조합이 생긴다.
+   */
+  const FUSELAGE_MATERIALS = {
     aluminum: {
-      id: 'aluminum',
-      name: '알루미늄 합금',
-      desc: '검증된 공법. 개발이 순탄하고 원가가 낮다.',
-      devCostMult: 1.0,
-      devTimeMult: 1.0,
-      unitCostMult: 1.0,
-      efficiencyBonus: 0,
-      comfortBonus: 0,
-      riskBonus: 0,
+      id: 'aluminum', name: '알루미늄 동체', desc: '검증된 여압 구조. 개발이 순탄하다.',
+      devCostMult: 1.0, devTimeMult: 1.0, unitCostMult: 1.0, comfortBonus: 0, efficiencyBonus: 0, riskBonus: 0,
     },
-    hybrid: {
-      id: 'hybrid',
-      name: '복합재 부분 적용',
-      desc: '날개·꼬리만 복합재. 무난한 절충안.',
-      devCostMult: 1.18,
-      devTimeMult: 1.08,
-      unitCostMult: 1.06,
-      efficiencyBonus: 7,
-      comfortBonus: 4,
-      riskBonus: 0.05,
+    alloy: {
+      id: 'alloy', name: '신합금 동체', desc: '3세대 알루미늄-리튬. 조금 가볍고 조금 비싸다.',
+      devCostMult: 1.09, devTimeMult: 1.04, unitCostMult: 1.05, comfortBonus: 3, efficiencyBonus: 3, riskBonus: 0.02,
     },
     composite: {
-      id: 'composite',
-      name: '전기체 복합재',
-      desc: '동체까지 복합재. 연비와 객실이 압도적이지만 개발이 미끄러진다.',
-      devCostMult: 1.35,
-      devTimeMult: 1.25,
-      unitCostMult: 1.15,
-      efficiencyBonus: 18,
-      comfortBonus: 11,
-      riskBonus: 0.14,
+      id: 'composite', name: '복합재 동체', desc: '여압 사이클 검증이 관문. 객실 환경은 압도적이다.',
+      devCostMult: 1.3, devTimeMult: 1.22, unitCostMult: 1.12, comfortBonus: 14, efficiencyBonus: 5, riskBonus: 0.13,
     },
   };
+
+  const WING_MATERIALS = {
+    aluminum: {
+      id: 'aluminum', name: '알루미늄 날개', desc: '무겁지만 싸고 확실하다.',
+      devCostMult: 1.0, devTimeMult: 1.0, unitCostMult: 1.0, efficiencyBonus: 0, riskBonus: 0, aspectRelief: 0,
+    },
+    hybrid: {
+      id: 'hybrid', name: '복합재 외피 날개', desc: '외피만 복합재. 무난한 절충.',
+      devCostMult: 1.12, devTimeMult: 1.06, unitCostMult: 1.06, efficiencyBonus: 5, riskBonus: 0.03, aspectRelief: 0.4,
+    },
+    composite: {
+      id: 'composite', name: '전복합재 날개', desc: '가볍다. 고종횡비 장거리 날개는 사실상 이것뿐이다.',
+      devCostMult: 1.26, devTimeMult: 1.14, unitCostMult: 1.13, efficiencyBonus: 11, riskBonus: 0.07, aspectRelief: 1,
+    },
+  };
+
+  /**
+   * 조립 라인 등급 — 지금까지 라인은 전부 같았고 "돈 되면 늘린다"가 전부였다.
+   *
+   *   costMult  : 건설비 배수
+   *   rateMult  : 분기당 생산 능력 배수
+   *   rampMult  : 램프업 속도 배수 (자동화 라인은 안정화가 오래 걸린다)
+   *   overhead  : 라인 유지비 배수
+   *
+   * 재래식은 싸고 빨리 도는 대신 물량이 안 나오고, 고속 라인은 반대다.
+   * 수요가 확실한 기종에만 고속 라인을 거는 것이 맞다.
+   */
+  const LINE_GRADES = {
+    classic: { id: 'classic', name: '재래식 라인', desc: '싸고 빨리 안정된다. 물량은 적다.', costMult: 0.72, rateMult: 0.72, rampMult: 1.35, overhead: 0.85 },
+    standard: { id: 'standard', name: '표준 라인', desc: '무난한 기준선.', costMult: 1.0, rateMult: 1.0, rampMult: 1.0, overhead: 1.0 },
+    highRate: { id: 'highRate', name: '고속 자동화 라인', desc: '물량이 크게 늘지만 비싸고 안정화가 느리다.', costMult: 1.75, rateMult: 1.55, rampMult: 0.65, overhead: 1.3 },
+  };
+
+  /** 라인 전환 비용 (신규 건설 대비). 같은 동체 단면이라야 치구를 재활용할 수 있다. */
+  const RETOOL_COST_RATE = 0.35;
+
+  /**
+   * 외주 비중 — 원가 ↔ 공급 차질 위험.
+   * 787 이 실제로 겪은 트레이드오프다. 외주를 늘리면 단가가 내려가지만
+   * 공급망 사고가 잦아지고 길어진다.
+   */
+  const OUTSOURCING = {
+    low: { id: 'low', name: '수직계열 (외주 20%)', costMult: 1.06, supplyRisk: 0.5 },
+    mid: { id: 'mid', name: '균형 (외주 50%)', costMult: 1.0, supplyRisk: 1.0 },
+    high: { id: 'high', name: '광범위 외주 (80%)', costMult: 0.91, supplyRisk: 1.9 },
+  };
+
+  /** 옛 단일 소재 선택을 부위별 조합으로 옮긴다 (세이브 · 기존 코드 호환). */
+  const LEGACY_MATERIAL_MAP = {
+    aluminum: { fuselage: 'aluminum', wingMat: 'aluminum' },
+    hybrid: { fuselage: 'aluminum', wingMat: 'hybrid' },
+    composite: { fuselage: 'composite', wingMat: 'composite' },
+  };
+
 
   /** 항공사 — 수주전 상대이자 관계 관리 대상 */
   /**
@@ -639,7 +685,12 @@
     CONFIG,
     SEGMENTS,
     SEGMENT_ORDER,
-    MATERIALS,
+    FUSELAGE_MATERIALS,
+    WING_MATERIALS,
+    LEGACY_MATERIAL_MAP,
+    LINE_GRADES,
+    RETOOL_COST_RATE,
+    OUTSOURCING,
     AIRLINES,
     FIELD_REQUIREMENT,
     UPGAUGE_PER_YEAR,

@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, MATERIALS, CONFIG } = root.AirlinerData;
+  const { SEGMENTS, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG } = root.AirlinerData;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
 
@@ -23,8 +23,13 @@
     const d = spec.derivedFrom;
     if (!d) return false;
     // 원형 정보가 없는 옛 설계안은 보수적으로 할인하지 않는다.
-    if (d.material === undefined || d.tech === undefined || d.range === undefined) return false;
-    if (d.material !== spec.material) return false;
+    if (d.tech === undefined || d.range === undefined) return false;
+    if (d.material === undefined && d.fuselage === undefined) return false;
+    const dFus = d.fuselage || (LEGACY_MATERIAL_MAP[d.material] || {}).fuselage;
+    const dWing = d.wingMat || (LEGACY_MATERIAL_MAP[d.material] || {}).wingMat;
+    const sFus = spec.fuselage || (LEGACY_MATERIAL_MAP[spec.material] || {}).fuselage;
+    const sWing = spec.wingMat || (LEGACY_MATERIAL_MAP[spec.material] || {}).wingMat;
+    if (dFus !== sFus || dWing !== sWing) return false;
     // 동체 단면을 바꾸면 형식증명을 물려받을 수 없다 — 동체 직경은 구조 설계의
     // 출발점이라 사실상 새 기체다. 이게 패밀리 전략의 근거이기도 하다:
     // 단면을 한 번 정하면 그 위에서만 싸게 늘리고 줄일 수 있다.
@@ -41,8 +46,12 @@
    */
   function evaluate(spec) {
     const seg = SEGMENTS[spec.segment];
-    const mat = MATERIALS[spec.material];
-    if (!seg || !mat) throw new Error('알 수 없는 세그먼트/소재: ' + spec.segment + '/' + spec.material);
+    if (!seg) throw new Error('알 수 없는 세그먼트: ' + spec.segment);
+
+    // 부위별 소재. 옛 단일 선택(spec.material)만 있으면 조합으로 옮긴다.
+    const legacy = LEGACY_MATERIAL_MAP[spec.material] || LEGACY_MATERIAL_MAP.aluminum;
+    const fus = FUSELAGE_MATERIALS[spec.fuselage || legacy.fuselage] || FUSELAGE_MATERIALS.aluminum;
+    const wmat = WING_MATERIALS[spec.wingMat || legacy.wingMat] || WING_MATERIALS.aluminum;
 
     const seats = clamp(spec.seats, seg.seats.min, seg.seats.max);
     const range = clamp(spec.range, seg.range.min, seg.range.max);
@@ -60,7 +69,7 @@
 
     const seatRatio = seats / seg.seats.ref;
     const rangeRatio = range / seg.range.ref;
-    const wingP = Airframe.wingProfile(wing, rangeRatio);
+    const wingP = Airframe.wingProfile(wing, rangeRatio, wmat.aspectRelief);
 
     // 개발비: 좌석은 초선형(대형화가 비싸다), 항속은 완만, 기술은 강하게 작용.
     let devCost =
@@ -68,13 +77,14 @@
       Math.pow(seatRatio, 1.15) *
       Math.pow(rangeRatio, 0.55) *
       (1 + (tech / 100) * 0.9) *
-      mat.devCostMult *
+      fus.devCostMult *
+      wmat.devCostMult *
       eng.devMult *
       sec.devMult *
       wingP.devMult;
 
     let devQuarters =
-      seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * mat.devTimeMult * eng.timeMult;
+      seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * fus.devTimeMult * wmat.devTimeMult * eng.timeMult;
 
     let engineersNeeded = seg.engineersNeeded * Math.pow(seatRatio, 0.5) * (1 + (tech / 100) * 0.4);
 
@@ -111,14 +121,14 @@
     // 연비 지수(0~100). 기술 투자 + 소재가 좌우하고, 과도한 항속은 구조중량으로 깎인다.
     const rangePenalty = Math.max(0, rangeRatio - 1) * 9;
     const efficiency = clamp(
-      (22 + tech * 0.62 + mat.efficiencyBonus + eng.eff - rangePenalty) * sec.effPerSeat * (0.72 + secFit * 0.28) +
+      (22 + tech * 0.62 + fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff - rangePenalty) * sec.effPerSeat * (0.72 + secFit * 0.28) +
         wingP.cruiseGain,
       5,
       99,
     );
 
     // 객실 쾌적성 — 항공사 프리미엄 노선 평가에 반영.
-    const comfort = clamp(38 + tech * 0.28 + mat.comfortBonus + eng.comfort + sec.comfort * 2.2, 10, 99);
+    const comfort = clamp(38 + tech * 0.28 + fus.comfortBonus + eng.comfort + sec.comfort * 2.2, 10, 99);
 
     // 표준 생산원가: 크기·항속에 비례, 기술/소재가 올린다.
     const unitCostBase =
@@ -126,7 +136,8 @@
       Math.pow(seatRatio, 0.92) *
       Math.pow(rangeRatio, 0.3) *
       (1 + (tech / 100) * 0.3) *
-      mat.unitCostMult *
+      fus.unitCostMult *
+      wmat.unitCostMult *
       eng.costMult *
       sec.costPerSeat *
       wingP.costMult;
@@ -137,12 +148,12 @@
       Math.pow(seatRatio, 0.95) *
       Math.pow(rangeRatio, 0.34) *
       (1 + (tech / 100) * 0.42) *
-      (1 + (mat.efficiencyBonus + eng.eff) / 130);
+      (1 + (fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff) / 130);
 
     // 개발 리스크: 기술을 밀어붙이고 복합재를 쓸수록 결함 확률이 오른다.
     // 엔진 신뢰성과 성숙도가 곱으로 얹힌다 — 신형 엔진 초도 채택이 실제로 위험한 이유.
     const defectRisk = clamp(
-      (0.05 + (tech / 100) * 0.22 + mat.riskBonus) * eng.riskMult * engMaturity,
+      (0.05 + (tech / 100) * 0.22 + fus.riskBonus + wmat.riskBonus) * eng.riskMult * engMaturity,
       0.03,
       CONFIG.defectRiskMax,
     );
@@ -152,7 +163,12 @@
       seats: Math.round(seats),
       range: Math.round(range),
       tech: Math.round(tech),
-      material: mat.id,
+      fuselage: fus.id,
+      wingMat: wmat.id,
+      fuselageName: fus.name,
+      wingMatName: wmat.name,
+      // 옛 표시 코드 호환: 대략적인 단일 등급으로 접어서도 노출한다.
+      material: fus.id === 'composite' ? 'composite' : wmat.id === 'aluminum' ? 'aluminum' : 'hybrid',
       engine: eng.id,
       engineName: eng.name,
       engineMaker: eng.maker,
@@ -206,6 +222,8 @@
       range: seg.range.ref,
       tech: 50,
       material: 'aluminum',
+      fuselage: 'aluminum',
+      wingMat: 'aluminum',
       abreast: Airframe.DEFAULT_ABREAST[segmentId],
       wing: 45,
       engine: eng ? eng.id : undefined,

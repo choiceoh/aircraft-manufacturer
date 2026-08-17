@@ -7,7 +7,8 @@
 (function (root) {
   'use strict';
 
-  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL, FICTIONAL_SHOCKS, HISTORICAL_ODDS } = root.AirlinerData;
+  const { CONFIG, SEGMENTS, AIRLINES, EVENTS, HISTORICAL, FICTIONAL_SHOCKS, HISTORICAL_ODDS, ETOPS_RANGE_KM } =
+    root.AirlinerData;
   const { MANUFACTURERS } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
@@ -215,6 +216,12 @@
       }
     }
 
+    // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
+    // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
+    for (const p of s.programs) {
+      if (p.etops === undefined) p.etops = p.range >= ETOPS_RANGE_KM;
+    }
+
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
     // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
     // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
@@ -313,6 +320,12 @@
         const shipped = o.qty - (o.cancelled || 0) - o.remaining;
         if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
       }
+    }
+
+    // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
+    // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
+    for (const p of s.programs) {
+      if (p.etops === undefined) p.etops = p.range >= ETOPS_RANGE_KM;
     }
 
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
@@ -427,7 +440,10 @@
         range: base.range,
         engine: base.engine,
         abreast: base.abreast,
-        family: base.family === true,
+        // 착수 옵션(base.family)이 아니라 패밀리 소속으로 판정한다. 파생형은
+        // familyId 를 물려받지만 family 플래그는 물려받지 않아서, 2대째 파생형이
+        // 같은 패밀리인데도 일반 요율을 물게 된다.
+        family: !!base.familyId,
       },
     };
   }

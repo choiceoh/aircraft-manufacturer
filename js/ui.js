@@ -170,8 +170,13 @@
         render();
         break;
 
-      case 'design-mat':
-        ui.spec.material = btn.dataset.mat;
+      case 'design-fuselage':
+        ui.spec.fuselage = btn.dataset.mat;
+        render();
+        break;
+
+      case 'design-wingmat':
+        ui.spec.wingMat = btn.dataset.mat;
         render();
         break;
 
