@@ -180,6 +180,21 @@
         render();
         break;
 
+      case 'design-abreast':
+        ui.spec.abreast = Number(btn.dataset.abreast);
+        render();
+        break;
+
+      case 'design-family':
+        ui.spec.family = !ui.spec.family;
+        render();
+        break;
+
+      case 'design-etops':
+        ui.spec.etops = !ui.spec.etops;
+        render();
+        break;
+
       case 'derive': {
         const base = s.programs.find((p) => p.id === btn.dataset.id);
         if (base) {

@@ -7,7 +7,8 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR } = root.AirlinerData;
+  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, UPGAUGE_PER_YEAR } =
+    root.AirlinerData;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
 
@@ -18,8 +19,13 @@
    * 밸런스상 중요: 예전에는 경쟁사마다 난수를 뽑아 최댓값을 쓰는 방식이라 경쟁사 수(3)에서
    * 오는 +5점 정도의 편향이 문턱에 섞여 있었다. 지금은 제조사가 8곳이라 그 방식을 쓰면
    * 문턱이 제조사 수에 따라 멋대로 오르므로, 추첨은 한 번만 하고 편향을 이 상수로 명시한다.
+   *
+   * 항공사에 노선망을 주고 나서 4 → 6 으로 올렸다. 요구사양이 세그먼트 대역에서
+   * 균등하게 뽑히던 시절에는 플레이어의 제원 적합도가 평균적으로 낮아 이기기가
+   * 어려웠는데, 수요가 특정 대역에 몰리자 맞춤 설계의 적합도가 80%대로 뛰면서
+   * 평균 마진이 +3 이 됐다. 기성 기종의 기득권을 그만큼 더 인정한다.
    */
-  const RIVAL_BID_EDGE = 4;
+  const RIVAL_BID_EDGE = 6;
 
   /** 선단 공통성이 줄 수 있는 최대 가산점 (입찰 점수 0~100 척도). */
   const COMMONALITY_BONUS = 6;
@@ -42,12 +48,31 @@
 
   function makeRfp(state, rng) {
     const airline = rng.pick(AIRLINES);
-    // 항공사는 자기 성향 세그먼트를 자주, 그러나 항상은 아니게 고른다.
-    const segmentId = rng.next() < 0.55 ? airline.bias : rng.pick(['regional', 'narrow', 'wide']);
+    // 대부분은 자기 노선망 안에서 발주하고, 가끔 인접 세그먼트로 넘어간다.
+    const onProfile = rng.next() < 0.85;
+    const segmentId = onProfile ? airline.bias : rng.pick(['regional', 'narrow', 'wide']);
     const seg = SEGMENTS[segmentId];
 
-    const seats = Math.round(rng.range(seg.seats.min * 1.05, seg.seats.max * 0.92));
-    const range = Math.round(rng.range(seg.range.min * 1.1, seg.range.max * 0.88));
+    let seats;
+    let range;
+    if (onProfile && airline.seatBand) {
+      // 노선망 안의 발주 — 선호 대역 안에서 뽑는다. 이게 설계 포지셔닝을 베팅으로 만든다.
+      // 대역은 해마다 조금씩 커진다(업게이지). 승계 기종이 시간이 갈수록 작아진다.
+      const up = 1 + (state.turn / 4) * UPGAUGE_PER_YEAR;
+      seats = Math.round(rng.range(airline.seatBand[0], airline.seatBand[1]) * up);
+      range = Math.round(rng.range(airline.rangeBand[0], airline.rangeBand[1]));
+    } else {
+      // 노선망 밖 발주 — 그 세그먼트의 일반적인 범위.
+      seats = Math.round(rng.range(seg.seats.min * 1.05, seg.seats.max * 0.92));
+      range = Math.round(rng.range(seg.range.min * 1.1, seg.range.max * 0.88));
+    }
+    seats = Math.round(clamp(seats, seg.seats.min, seg.seats.max));
+    range = Math.round(clamp(range, seg.range.min, seg.range.max));
+
+    // 활주로 제약은 항공사 본거지의 성질이므로 노선망 안 발주에만 붙는다.
+    const fieldKind = onProfile ? airline.field || 'normal' : 'normal';
+    const reqField = FIELD_REQUIREMENT[fieldKind] || 0;
+    const reqEtops = range >= ETOPS_RANGE_KM;
 
     // 발주 규모: 세그먼트가 작을수록 대량. 수요지수가 곱해진다.
     const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
@@ -65,6 +90,10 @@
       segmentName: seg.name,
       reqSeats: seats,
       reqRange: range,
+      reqField,
+      fieldKind,
+      reqEtops,
+      route: airline.route || '',
       qty,
       priceSensitivity: airline.priceSensitivity,
       prestige: airline.prestige,
@@ -112,6 +141,14 @@
     if (program.seats < rfp.reqSeats * 0.8) {
       return { total: 0, parts: {}, blocked: '좌석수 부족', price: 0 };
     }
+    // 짧은 활주로·고온고지 노선은 이착륙 성능이 모자라면 애초에 못 뛴다.
+    if (rfp.reqField && (program.fieldPerf ?? 100) < rfp.reqField) {
+      return { total: 0, parts: {}, blocked: '이착륙 성능 미달', price: 0 };
+    }
+    // 장거리 노선은 ETOPS 인증이 없으면 취항 자체가 불가능하다.
+    if (rfp.reqEtops && !program.etops) {
+      return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
+    }
 
     // 좌석 적합도: 모자라도, 지나치게 커도 감점(공석은 곧 비용).
     const seatDelta = (program.seats - rfp.reqSeats) / rfp.reqSeats;
@@ -141,7 +178,20 @@
     const fleet = (state.fleets && state.fleets[rfp.airlineId]) || {};
     const sameType = fleet[program.id] || 0;
     const anyOurs = Object.values(fleet).reduce((a, b) => a + b, 0);
-    const commonality = clamp(sameType / 25, 0, 1) * 0.75 + clamp((anyOurs - sameType) / 60, 0, 1) * 0.25;
+
+    // 같은 패밀리는 조종석·정비가 공통이라 사실상 같은 기종에 가깝다.
+    // 패밀리 선투자가 개발비뿐 아니라 영업에서도 회수되는 지점이다.
+    let famUnits = 0;
+    if (program.familyId) {
+      for (const [pid, n] of Object.entries(fleet)) {
+        if (pid === program.id) continue;
+        const other = state.programs.find((x) => x.id === pid);
+        if (other && other.familyId === program.familyId) famUnits += n;
+      }
+    }
+    const effectiveSame = sameType + famUnits * 0.7;
+    const commonality =
+      clamp(effectiveSame / 25, 0, 1) * 0.75 + clamp((anyOurs - sameType - famUnits) / 60, 0, 1) * 0.25;
 
     // 가중치를 시장 상황에 맞춰 재배분한 뒤 합이 1이 되도록 정규화한다.
     const w = {

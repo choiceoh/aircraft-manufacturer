@@ -33,6 +33,21 @@
     // 결함 위험 상한. 설계 계산(design)과 개발 중 페널티(engine) 양쪽이 이 값을 쓴다.
     // 두 곳에 각각 박아 두면 한쪽만 올렸을 때 "악재가 위험을 낮추는" 역전이 생긴다.
     defectRiskMax: 0.75,
+    // 패밀리 개발 — 처음에 공통 구조·조종석을 설계해 두는 값. 비싸지만 이후
+    // 같은 단면의 파생형이 훨씬 싸고, 항공사 공통성도 패밀리 단위로 쌓인다.
+    familyDevMult: 1.22,
+    familyTimeMult: 1.08,
+    // 파생형 개발비·기간 배수 (패밀리 여부 × 엔진 교체 여부).
+    // 재장착이어도 패밀리면 공통 구조·조종석 덕을 본다 — A320neo 가 그랬다.
+    derivRates: {
+      plain: { cost: 0.34, time: 0.5, eng: 0.55 },
+      family: { cost: 0.22, time: 0.36, eng: 0.45 },
+      reEngined: { cost: 0.58, time: 0.72, eng: 0.75 },
+      familyReEngined: { cost: 0.44, time: 0.6, eng: 0.62 },
+    },
+    // ETOPS — 쌍발기로 대양을 건널 자격. 없으면 장거리 노선 응찰 자체가 막힌다.
+    etopsDevMult: 1.08,
+    etopsCertQuarters: 1,
     rampPerQuarter: 0.22, // 라인 가동률 상승 속도
   };
 
@@ -125,20 +140,57 @@
   };
 
   /** 항공사 — 수주전 상대이자 관계 관리 대상 */
+  /**
+   * 항공사 — 각자 노선망이 다르다.
+   *
+   *   seatBand / rangeBand : 이 항공사가 실제로 발주하는 크기·거리대
+   *   field                : 활주로 제약 ('short' 짧은 활주로, 'hot' 고온고지)
+   *
+   * 요구사양을 세그먼트 대역에서 균등 난수로 뽑던 시절에는 최적해가 늘 대역
+   * 중앙이라 좌석·항속 결정이 사실상 무의미했다. 항공사마다 수요가 몰린 지점을
+   * 주면 "누구를 노릴 것인가"가 곧 설계가 된다 — 저비용 고밀도 vertex 를 겨냥한
+   * 235석 7열 기체와, 프리미엄 장거리 albion 을 겨냥한 280석 7열 기체는
+   * 완전히 다른 비행기다.
+   */
   const AIRLINES = [
-    { id: 'hanul', name: '한울항공', home: '동아시아', bias: 'narrow', priceSensitivity: 0.9, prestige: 0.8 },
-    { id: 'carta', name: '카르타 에어', home: '중동', bias: 'wide', priceSensitivity: 0.5, prestige: 1.25 },
-    { id: 'nordic', name: '노르딕윙스', home: '북유럽', bias: 'regional', priceSensitivity: 1.15, prestige: 0.7 },
-    { id: 'panamer', name: '판아메르 항공', home: '북미', bias: 'narrow', priceSensitivity: 1.05, prestige: 1.0 },
-    { id: 'asialink', name: '아시아링크', home: '동남아', bias: 'wide', priceSensitivity: 1.2, prestige: 0.85 },
-    { id: 'albion', name: '알비온 항공', home: '서유럽', bias: 'wide', priceSensitivity: 0.75, prestige: 1.15 },
-    { id: 'meridian', name: '메리디안 항공', home: '남미', bias: 'narrow', priceSensitivity: 1.3, prestige: 0.6 },
-    { id: 'sahara', name: '사하라 에어', home: '아프리카', bias: 'regional', priceSensitivity: 1.25, prestige: 0.55 },
-    { id: 'oceanic', name: '오세아닉', home: '오세아니아', bias: 'wide', priceSensitivity: 0.95, prestige: 0.9 },
-    { id: 'kosmo', name: '코스모항공', home: '중앙아시아', bias: 'narrow', priceSensitivity: 1.35, prestige: 0.5 },
-    { id: 'lumen', name: '루멘 에어라인', home: '북미', bias: 'regional', priceSensitivity: 1.1, prestige: 0.75 },
-    { id: 'vertex', name: '버텍스 제트', home: '서유럽', bias: 'narrow', priceSensitivity: 1.4, prestige: 0.45 },
+    { id: 'hanul', name: '한울항공', home: '동아시아', bias: 'narrow', priceSensitivity: 0.9, prestige: 0.8,
+      seatBand: [150, 185], rangeBand: [3000, 4800], field: 'normal', route: '조밀 단거리 간선' },
+    { id: 'carta', name: '카르타 에어', home: '중동', bias: 'wide', priceSensitivity: 0.5, prestige: 1.25,
+      seatBand: [280, 400], rangeBand: [12000, 16000], field: 'normal', route: '허브 초장거리' },
+    { id: 'nordic', name: '노르딕윙스', home: '북유럽', bias: 'regional', priceSensitivity: 1.15, prestige: 0.7,
+      seatBand: [68, 95], rangeBand: [1400, 2600], field: 'short', route: '단거리 지선 · 짧은 활주로' },
+    { id: 'panamer', name: '판아메르 항공', home: '북미', bias: 'narrow', priceSensitivity: 1.05, prestige: 1.0,
+      seatBand: [170, 205], rangeBand: [5200, 7200], field: 'normal', route: '대륙횡단 (장거리 협동체)' },
+    { id: 'asialink', name: '아시아링크', home: '동남아', bias: 'wide', priceSensitivity: 1.2, prestige: 0.85,
+      seatBand: [330, 430], rangeBand: [7000, 9800], field: 'normal', route: '역내 고밀도 중장거리' },
+    { id: 'albion', name: '알비온 항공', home: '서유럽', bias: 'wide', priceSensitivity: 0.75, prestige: 1.15,
+      seatBand: [250, 330], rangeBand: [10000, 14000], field: 'normal', route: '프리미엄 장거리' },
+    { id: 'meridian', name: '메리디안 항공', home: '남미', bias: 'narrow', priceSensitivity: 1.3, prestige: 0.6,
+      seatBand: [125, 160], rangeBand: [2900, 4400], field: 'hot', route: '고온고지 소형 간선' },
+    { id: 'sahara', name: '사하라 에어', home: '아프리카', bias: 'regional', priceSensitivity: 1.25, prestige: 0.55,
+      seatBand: [62, 88], rangeBand: [1600, 3000], field: 'hot', route: '고온 오지 노선' },
+    { id: 'oceanic', name: '오세아닉', home: '오세아니아', bias: 'wide', priceSensitivity: 0.95, prestige: 0.9,
+      seatBand: [232, 275], rangeBand: [11000, 15000], field: 'normal', route: '저밀도 장거리 (얇은 노선)' },
+    { id: 'kosmo', name: '코스모항공', home: '중앙아시아', bias: 'narrow', priceSensitivity: 1.35, prestige: 0.5,
+      seatBand: [140, 175], rangeBand: [3400, 5200], field: 'hot', route: '고지 공항 간선' },
+    { id: 'lumen', name: '루멘 에어라인', home: '북미', bias: 'regional', priceSensitivity: 1.1, prestige: 0.75,
+      seatBand: [100, 128], rangeBand: [1800, 3400], field: 'normal', route: '지선 피더 (대형 리저널)' },
+    { id: 'vertex', name: '버텍스 제트', home: '서유럽', bias: 'narrow', priceSensitivity: 1.4, prestige: 0.45,
+      seatBand: [205, 240], rangeBand: [2900, 4600], field: 'normal', route: '저비용 초고밀도' },
   ];
+
+  /**
+   * 업게이지 추세 — 항공사 평균 좌석수는 해마다 오른다(1998~2017 실제 현상).
+   * 게임에서는 승계 기종이 서서히 작아지는 압력이 된다: 1998년 주류였던 150석
+   * DN-150 이 2010년대에는 한 급 아래가 되어, 후속기를 띄우지 않으면 시장에서 밀린다.
+   */
+  const UPGAUGE_PER_YEAR = 0.008;
+
+  /** 활주로 제약별 요구 이착륙 성능 (설계의 fieldPerf 가 이 값 이상이어야 응찰 가능). */
+  const FIELD_REQUIREMENT = { normal: 0, short: 64, hot: 58 };
+
+  /** 이 거리를 넘는 노선은 ETOPS 인증을 요구한다. */
+  const ETOPS_RANGE_KM = 9000;
 
   /**
    * 경쟁 제조사는 `js/fleet.js`의 실존 제조사·실기종 카탈로그에서 나온다.
@@ -589,6 +641,9 @@
     SEGMENT_ORDER,
     MATERIALS,
     AIRLINES,
+    FIELD_REQUIREMENT,
+    UPGAUGE_PER_YEAR,
+    ETOPS_RANGE_KM,
     RIVAL_STRENGTH_CAP,
     RIVAL_STRENGTH_FLOOR,
     RIVAL_DRIFT_LIMIT,

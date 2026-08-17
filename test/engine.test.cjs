@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'data.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
   require(path.join(JS, f));
 }
 
@@ -1056,13 +1056,15 @@ test('단산된 엔진을 쓰던 기종의 파생형은 재장착으로 처리�
 test('선단 공통성: 우리 기체를 굴리는 항공사에서 점수가 더 높다', () => {
   const s = E.newGame(8);
   const p = s.programs.find((x) => x.phase === 'production');
+  // 항공사마다 노선망이 달라졌으므로, DN-150 이 실제로 응찰 가능한 공고를 찾아야 한다.
   const rng = R.createRng(1);
-  const rfps = [];
-  for (let i = 0; i < 60 && rfps.length < 1; i++) {
-    for (const r of B.generateRfps(s, rng)) if (r.segment === 'narrow') rfps.push(r);
+  let rfp = null;
+  for (let i = 0; i < 300 && !rfp; i++) {
+    for (const r of B.generateRfps(s, rng)) {
+      if (!rfp && r.segment === 'narrow' && !B.scoreBid(s, r, p, 0.1).blocked) rfp = r;
+    }
   }
-  const rfp = rfps[0];
-  assert.ok(rfp, '협동체 공고를 하나 만들어야 한다');
+  assert.ok(rfp, '응찰 가능한 협동체 공고를 하나 찾아야 한다');
 
   // 같은 공고를 두 상태에서 채점한다: 선단 없음 → 선단 보유.
   const airline = rfp.airlineId;
@@ -1697,4 +1699,182 @@ test('프로그램 화면에 장착 엔진이 표시된다', () => {
   s.turn = (2010 - 1998) * 4;
   assert.strictEqual(EN.inService(eng, E.yearOf(s.turn)), false, '전제: 그 시점엔 단산');
   assert.ok(/단산/.test(P.renderPrograms(s)), '단산 표시가 있어야 한다');
+});
+
+// ─────────────────── 형상 설계 · 시장 구조 · 패밀리 ───────────────────
+
+const { AirlinerAirframe: AF } = globalThis;
+
+test('동체 단면은 객실 ↔ 연비·원가의 양방향 트레이드오프다', () => {
+  // 한 방향 다이얼(기술 슬라이더)과 달리, 어느 쪽에도 정답이 없어야 한다.
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum', wing: 45, year: 2000 };
+  const wide = D.evaluate({ ...base, abreast: 5 }); // 넓은 좌석
+  const dense = D.evaluate({ ...base, abreast: 7 }); // 고밀도
+
+  assert.ok(wide.comfort > dense.comfort, '좌석을 덜 넣으면 객실이 좋아야 한다');
+  assert.ok(dense.efficiency > wide.efficiency, '많이 태우면 좌석당 연비가 좋아야 한다');
+  assert.ok(dense.unitCostBase < wide.unitCostBase, '많이 태우면 좌석당 원가가 낮아야 한다');
+});
+
+test('날개는 순항 연비 ↔ 이착륙 성능의 양방향 트레이드오프다', () => {
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum', abreast: 6, year: 2000 };
+  const short = D.evaluate({ ...base, wing: 0 });
+  const long = D.evaluate({ ...base, wing: 100 });
+
+  assert.ok(long.efficiency > short.efficiency, '장거리형이 순항 연비가 좋아야 한다');
+  assert.ok(short.fieldPerf > long.fieldPerf, '단거리형이 이착륙 성능이 좋아야 한다');
+  assert.ok(long.unitCostBase > short.unitCostBase, '고종횡비 날개는 구조가 비싸야 한다');
+  assert.ok(long.devCost > short.devCost);
+});
+
+test('단면에 맞지 않는 좌석수는 효율이 깎인다', () => {
+  const base = { segment: 'wide', range: 12000, tech: 50, material: 'aluminum', abreast: 10, wing: 50, year: 2005 };
+  const fit = D.evaluate({ ...base, seats: 380 }); // 38열 — 적정
+  const stubby = D.evaluate({ ...base, seats: 235 }); // 23.5열 — 뭉툭
+  assert.strictEqual(fit.sectionFit, 100);
+  assert.ok(stubby.sectionFit < 100, `뭉툭한 동체는 적합도가 낮아야 한다 (${stubby.sectionFit})`);
+  assert.ok(stubby.efficiency < fit.efficiency);
+});
+
+test('짧은 활주로·고온고지 노선은 이착륙 성능 미달이면 실격이다', () => {
+  const s = E.newGame(4);
+  const p = s.programs.find((x) => x.phase === 'production');
+  const rfp = {
+    id: 'r1', segment: p.segment, reqSeats: p.seats, reqRange: Math.round(p.range * 0.7),
+    reqField: 80, fieldKind: 'short', priceSensitivity: 1, prestige: 1, airlineId: 'nordic', qty: 10,
+  };
+  p.fieldPerf = 50;
+  assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, '이착륙 성능 미달');
+  p.fieldPerf = 85;
+  assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, null);
+});
+
+test('ETOPS 없이는 장거리 노선에 응찰할 수 없다', () => {
+  const s = E.newGame(4);
+  const p = s.programs.find((x) => x.phase === 'production');
+  p.range = 14000;
+  p.seats = 300;
+  const rfp = {
+    id: 'r2', segment: p.segment, reqSeats: 280, reqRange: Data.ETOPS_RANGE_KM + 1000,
+    reqField: 0, reqEtops: true, priceSensitivity: 1, prestige: 1, airlineId: 'carta', qty: 10,
+  };
+  p.etops = false;
+  assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, 'ETOPS 미인증');
+  p.etops = true;
+  assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, null);
+});
+
+test('RFP 요구사양이 항공사 노선망 안에서 나온다', () => {
+  // 균등 난수 시절에는 최적해가 늘 세그먼트 중앙이라 좌석·항속 결정이 무의미했다.
+  const s = E.newGame(11);
+  const rng = R.createRng(3);
+  const byAirline = {};
+  for (let i = 0; i < 900; i++) {
+    for (const r of B.generateRfps(s, rng)) {
+      (byAirline[r.airlineId] = byAirline[r.airlineId] || []).push(r);
+    }
+  }
+
+  let checked = 0;
+  for (const a of Data.AIRLINES) {
+    const mine = (byAirline[a.id] || []).filter((r) => r.segment === a.bias);
+    if (mine.length < 25) continue;
+    const avg = mine.reduce((x, r) => x + r.reqSeats, 0) / mine.length;
+    const mid = (a.seatBand[0] + a.seatBand[1]) / 2;
+    // 노선망 밖 발주가 15% 섞이므로 정확히 중앙은 아니지만 그 근처여야 한다.
+    assert.ok(
+      Math.abs(avg - mid) < mid * 0.28,
+      `${a.name}: 평균 요구 ${Math.round(avg)}석이 선호대역 중앙 ${mid}석과 너무 멀다`,
+    );
+    checked++;
+  }
+  assert.ok(checked >= 8, `충분한 항공사를 검사해야 한다 (${checked})`);
+});
+
+test('업게이지: 요구 좌석수가 해가 갈수록 커진다', () => {
+  const s = E.newGame(7);
+  const rng = R.createRng(4);
+  const sample = (turn) => {
+    s.turn = turn;
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < 500; i++) {
+      for (const r of B.generateRfps(s, rng)) {
+        if (r.segment === 'narrow') {
+          sum += r.reqSeats;
+          n++;
+        }
+      }
+    }
+    return sum / n;
+  };
+  const early = sample(0);
+  const late = sample(76);
+  assert.ok(late > early * 1.06, `업게이지가 보여야 한다 (${early.toFixed(0)} → ${late.toFixed(0)})`);
+});
+
+test('동체 단면을 바꾸면 파생형이 아니다', () => {
+  // 동체 직경은 구조 설계의 출발점이라 형식증명을 물려받을 수 없다.
+  // 이게 패밀리 전략의 근거다 — 단면을 한 번 정하면 그 위에서만 싸게 늘린다.
+  const y = 2005;
+  const from = { id: 'x', name: '원형', tech: 50, material: 'aluminum', range: 5500, engine: 'cfm56-5b', abreast: 6 };
+  const base = { segment: 'narrow', seats: 200, range: 5500, tech: 50, material: 'aluminum', engine: 'cfm56-5b', wing: 45, year: y };
+
+  assert.strictEqual(D.evaluate({ ...base, abreast: 6, derivedFrom: from }).derivative, true);
+  assert.strictEqual(D.evaluate({ ...base, abreast: 7, derivedFrom: from }).derivative, false);
+});
+
+test('패밀리 선투자는 파생형 2기면 회수된다', () => {
+  const y = 2005;
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum', engine: 'cfm56-5b', abreast: 6, wing: 45, year: y };
+  const plain = D.evaluate(base);
+  const family = D.evaluate({ ...base, family: true });
+  assert.ok(family.devCost > plain.devCost, '패밀리는 선투자가 든다');
+
+  const from = { id: 'x', name: '원형', tech: 50, material: 'aluminum', range: 5500, engine: 'cfm56-5b', abreast: 6 };
+  const derivPlain = D.evaluate({ ...base, seats: 210, derivedFrom: { ...from, family: false } });
+  const derivFam = D.evaluate({ ...base, seats: 210, derivedFrom: { ...from, family: true } });
+  assert.ok(derivFam.devCost < derivPlain.devCost, '패밀리 파생형이 더 싸야 한다');
+  assert.strictEqual(derivFam.inFamily, true);
+
+  // 선투자 초과분 vs 파생형 2기의 절감액
+  const extra = family.devCost - plain.devCost;
+  const savedPer = derivPlain.devCost - derivFam.devCost;
+  assert.ok(savedPer * 2 >= extra, `파생형 2기로 회수돼야 한다 (선투자 ${extra}, 절감 ${savedPer}/기)`);
+});
+
+test('패밀리는 항공사 공통성을 형제 기종끼리 나눈다', () => {
+  const s = E.newGame(9);
+  s.cash = 90000;
+  const spec = { segment: 'narrow', seats: 175, range: 5000, tech: 50, material: 'hybrid', abreast: 6, wing: 45, family: true };
+  assert.ok(E.launchProgram(s, spec, 'FAM-1').ok);
+  const root1 = s.programs[s.programs.length - 1];
+  root1.phase = 'production';
+
+  const sib = { ...E.derivativeSpec(root1, 20) };
+  assert.ok(E.launchProgram(s, sib, 'FAM-2').ok);
+  const sibling = s.programs[s.programs.length - 1];
+  sibling.phase = 'production';
+  assert.strictEqual(sibling.familyId, root1.familyId, '파생형이 패밀리를 물려받아야 한다');
+
+  const rfp = {
+    id: 'r3', segment: 'narrow', reqSeats: sibling.seats, reqRange: sibling.range,
+    reqField: 0, priceSensitivity: 1, prestige: 1, airlineId: 'hanul', qty: 20,
+  };
+  s.relations.hanul = 50;
+
+  // 패밀리 효과를 분리하려면 "무관한 우리 기종"과 비교해야 한다.
+  // 빈 선단과 비교하면 일반 보유 가산만으로도 통과해 테스트가 무력해진다.
+  const outsider = s.programs.find((x) => x.legacy);
+  assert.ok(outsider && outsider.familyId !== sibling.familyId, '전제: 패밀리 밖 기종');
+
+  s.fleets.hanul = { [outsider.id]: 40 };
+  const withOutsider = B.scoreBid(s, rfp, sibling, 0.1);
+  s.fleets.hanul = { [root1.id]: 40 };
+  const withSibling = B.scoreBid(s, rfp, sibling, 0.1);
+
+  assert.ok(
+    withSibling.parts.common > withOutsider.parts.common,
+    `형제 기종은 무관한 기종보다 크게 인정돼야 한다 (형제 ${withSibling.parts.common} vs 타 기종 ${withOutsider.parts.common})`,
+  );
 });

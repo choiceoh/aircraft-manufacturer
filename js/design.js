@@ -7,6 +7,7 @@
 
   const { SEGMENTS, MATERIALS, CONFIG } = root.AirlinerData;
   const Engines = root.AirlinerEngines;
+  const Airframe = root.AirlinerAirframe;
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -24,6 +25,10 @@
     // 원형 정보가 없는 옛 설계안은 보수적으로 할인하지 않는다.
     if (d.material === undefined || d.tech === undefined || d.range === undefined) return false;
     if (d.material !== spec.material) return false;
+    // 동체 단면을 바꾸면 형식증명을 물려받을 수 없다 — 동체 직경은 구조 설계의
+    // 출발점이라 사실상 새 기체다. 이게 패밀리 전략의 근거이기도 하다:
+    // 단면을 한 번 정하면 그 위에서만 싸게 늘리고 줄일 수 있다.
+    if (d.abreast !== undefined && spec.abreast !== undefined && d.abreast !== spec.abreast) return false;
     if (tech > d.tech + DERIVATIVE_TOLERANCE.techUp) return false;
     if (Math.abs(range - d.range) > d.range * DERIVATIVE_TOLERANCE.rangeRatio) return false;
     return true;
@@ -48,8 +53,14 @@
     const eng = Engines.resolve(seg.id, spec.engine, spec.year);
     const engMaturity = eng ? Engines.maturityRisk(eng, spec.year) : 1;
 
+    // 동체 단면과 날개 — 양방향 트레이드오프 두 축.
+    const sec = Airframe.section(seg.id, spec.abreast);
+    const secFit = Airframe.sectionFit(sec, seats);
+    const wing = clamp(spec.wing === undefined ? 45 : spec.wing, 0, 100);
+
     const seatRatio = seats / seg.seats.ref;
     const rangeRatio = range / seg.range.ref;
+    const wingP = Airframe.wingProfile(wing, rangeRatio);
 
     // 개발비: 좌석은 초선형(대형화가 비싸다), 항속은 완만, 기술은 강하게 작용.
     let devCost =
@@ -58,7 +69,9 @@
       Math.pow(rangeRatio, 0.55) *
       (1 + (tech / 100) * 0.9) *
       mat.devCostMult *
-      eng.devMult;
+      eng.devMult *
+      sec.devMult *
+      wingP.devMult;
 
     let devQuarters =
       seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * mat.devTimeMult * eng.timeMult;
@@ -69,24 +82,43 @@
     // 단, 원형의 형식증명을 실제로 재사용할 수 있는 변경일 때만 인정한다.
     // 딱지만 붙인 채 소재·기술·항속을 갈아엎으면 신규 설계를 34% 가격에 사는 셈이라
     // 개발비 제약 자체가 무너진다 (동일 설계 기준 $18.6B → $6.3B).
+    // 패밀리로 개발하면 공통 구조·조종석 설계에 선투자한다.
+    const family = !!spec.family;
+    if (family) {
+      devCost *= CONFIG.familyDevMult;
+      devQuarters *= CONFIG.familyTimeMult;
+    }
+    // ETOPS 인증을 함께 받으면 개발비와 인증 기간이 는다.
+    const etops = !!spec.etops;
+    if (etops) devCost *= CONFIG.etopsDevMult;
+
     const derivative = isCompatibleDerivative(spec, range, tech);
     // 엔진을 갈아 끼운 파생형(재장착)은 형식증명은 물려받지만 개발비가 훨씬 크다.
     // A320neo·737 MAX 가 정확히 이 경우다 — 순수 동체 연장과 같은 값을 매기면 안 된다.
     // 원형 엔진을 알 수 없으면(엔진 개념이 없던 옛 설계안) 보수적으로 재장착으로 본다.
     // 실제로 그 시점 엔진으로 대체되므로 "같은 엔진"이라고 볼 근거가 없다.
     const reEngined = derivative && spec.derivedFrom.engine !== eng.id;
+    // 원형이 패밀리로 개발됐으면 파생형이 훨씬 싸다 — 패밀리 선투자의 회수 지점.
+    const inFamily = derivative && spec.derivedFrom.family === true;
     if (derivative) {
-      devCost *= reEngined ? 0.58 : 0.34;
-      devQuarters *= reEngined ? 0.72 : 0.5;
-      engineersNeeded *= reEngined ? 0.75 : 0.55;
+      const key = reEngined ? (inFamily ? 'familyReEngined' : 'reEngined') : inFamily ? 'family' : 'plain';
+      const rate = CONFIG.derivRates[key];
+      devCost *= rate.cost;
+      devQuarters *= rate.time;
+      engineersNeeded *= rate.eng;
     }
 
     // 연비 지수(0~100). 기술 투자 + 소재가 좌우하고, 과도한 항속은 구조중량으로 깎인다.
     const rangePenalty = Math.max(0, rangeRatio - 1) * 9;
-    const efficiency = clamp(22 + tech * 0.62 + mat.efficiencyBonus + eng.eff - rangePenalty, 5, 99);
+    const efficiency = clamp(
+      (22 + tech * 0.62 + mat.efficiencyBonus + eng.eff - rangePenalty) * sec.effPerSeat * (0.72 + secFit * 0.28) +
+        wingP.cruiseGain,
+      5,
+      99,
+    );
 
     // 객실 쾌적성 — 항공사 프리미엄 노선 평가에 반영.
-    const comfort = clamp(38 + tech * 0.28 + mat.comfortBonus + eng.comfort, 10, 99);
+    const comfort = clamp(38 + tech * 0.28 + mat.comfortBonus + eng.comfort + sec.comfort * 2.2, 10, 99);
 
     // 표준 생산원가: 크기·항속에 비례, 기술/소재가 올린다.
     const unitCostBase =
@@ -95,7 +127,9 @@
       Math.pow(rangeRatio, 0.3) *
       (1 + (tech / 100) * 0.3) *
       mat.unitCostMult *
-      eng.costMult;
+      eng.costMult *
+      sec.costPerSeat *
+      wingP.costMult;
 
     // 정가: 원가가 아니라 "시장이 값을 쳐주는 가치" 기준으로 만든다.
     const listPrice =
@@ -122,6 +156,12 @@
       engine: eng.id,
       engineName: eng.name,
       engineMaker: eng.maker,
+      abreast: sec.abreast,
+      sectionName: sec.name,
+      sectionFit: Math.round(secFit * 100),
+      wing: Math.round(wing),
+      fieldPerf: wingP.field,
+      payloadRange: Airframe.payloadRange(range, wing),
       // 성숙도 위험이 남아 있으면 UI가 경고할 수 있게 노출한다.
       engineImmature: Math.round((engMaturity - 1) * 100) / 100,
       devCost: Math.round(devCost),
@@ -132,7 +172,10 @@
       unitCostBase: Math.round(unitCostBase * 10) / 10,
       listPrice: Math.round(listPrice * 10) / 10,
       defectRisk: Math.round(defectRisk * 1000) / 1000,
-      certQuarters: seg.certQuarters,
+      certQuarters: seg.certQuarters + (etops ? CONFIG.etopsCertQuarters : 0),
+      family,
+      etops,
+      inFamily,
       // UI가 "파생형 할인이 적용됐는지"를 그대로 보여줄 수 있게 노출한다.
       derivative,
       reEngined,
@@ -163,6 +206,8 @@
       range: seg.range.ref,
       tech: 50,
       material: 'aluminum',
+      abreast: Airframe.DEFAULT_ABREAST[segmentId],
+      wing: 45,
       engine: eng ? eng.id : undefined,
       year: y,
     };

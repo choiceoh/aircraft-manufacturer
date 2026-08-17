@@ -386,6 +386,11 @@
       // 갈아엎어 신규 설계 비용을 전액 낸 설계에 파생형 딱지가 붙으면 안 된다.
       derivedFrom: evalSpec.derivative ? spec.derivedFrom : null,
     };
+    // 패밀리 계보 — 조종석·정비 공통성이 이 단위로 쌓인다. 패밀리로 착수하면
+    // 자기 자신이 뿌리가 되고, 그 패밀리의 파생형은 뿌리를 물려받는다.
+    const parent = evalSpec.derivative && spec.derivedFrom ? s.programs.find((x) => x.id === spec.derivedFrom.id) : null;
+    program.familyId = parent && parent.familyId ? parent.familyId : evalSpec.family ? program.id : null;
+
     s.cash -= upfront;
     // 착수금도 연구개발비다 — 리포트에 넣지 않으면 현금은 줄었는데
     // 재무표의 비용·손익으로는 설명되지 않고, 총 R&D도 8% 적게 보고된다.
@@ -410,6 +415,9 @@
       tech: base.tech,
       material: base.material,
       engine: base.engine,
+      abreast: base.abreast,
+      wing: base.wing,
+      etops: base.etops,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
         id: base.id,
@@ -418,6 +426,8 @@
         material: base.material,
         range: base.range,
         engine: base.engine,
+        abreast: base.abreast,
+        family: base.family === true,
       },
     };
   }

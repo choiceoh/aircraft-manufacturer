@@ -5,9 +5,10 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, MATERIALS, CONFIG } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, MATERIALS, CONFIG, ETOPS_RANGE_KM, AIRLINES } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
+  const Airframe = root.AirlinerAirframe;
   const D = root.AirlinerDesign;
   const B = root.AirlinerBidding;
 
@@ -44,6 +45,29 @@
     return parts.length ? parts.join(' · ') : '<span class="muted">없음 (신규 계정)</span>';
   }
 
+  /** 항공사별 수요 프로필 — 설계를 어디에 맞출지 정하는 근거다. */
+  function airlineDemandTable(s) {
+    const rows = AIRLINES.map((a) => {
+      const rel = Math.round(s.relations[a.id] ?? 40);
+      const ours = Object.values((s.fleets && s.fleets[a.id]) || {}).reduce((x, y) => x + y, 0);
+      const constraint =
+        a.field === 'short' ? '짧은 활주로' : a.field === 'hot' ? '고온고지' : a.rangeBand[1] >= ETOPS_RANGE_KM ? 'ETOPS' : '—';
+      return `<tr>
+          <td>${esc(a.name)}</td>
+          <td>${SEGMENTS[a.bias].name}</td>
+          <td>${a.seatBand[0]}~${a.seatBand[1]}석</td>
+          <td>${num(a.rangeBand[0])}~${num(a.rangeBand[1])}km</td>
+          <td>${constraint}</td>
+          <td>${rel}</td>
+          <td>${ours ? num(ours) + '기' : '<span class="muted">—</span>'}</td>
+        </tr>`;
+    }).join('');
+    return `<table class="hist">
+        <tr><th>항공사</th><th>주력</th><th>좌석대</th><th>항속대</th><th>제약</th><th>관계</th><th>보유</th></tr>
+        ${rows}
+      </table>`;
+  }
+
   function renderOverview(s) {
     const warnings = [];
 
@@ -71,6 +95,12 @@
     const last = s.history[s.history.length - 1];
 
     return `
+      <section class="card">
+        <h3>항공사 수요 프로필</h3>
+        <p class="muted">각 항공사는 자기 노선망 안에서 발주한다. 설계를 어느 대역에 맞출지가 곧 누구를 고객으로 삼을지다.</p>
+        ${airlineDemandTable(s)}
+      </section>
+
       <section class="grid2">
         <div class="card">
           <h3>이번 분기 소식</h3>
@@ -157,6 +187,16 @@
     // 지정한 엔진이 이미 단산됐으면 evaluate 가 그 시점 엔진으로 대체한다.
     // 그 결과를 먼저 구해 두지 않으면 어느 버튼도 선택 표시가 안 되고,
     // 플레이어는 자기가 무슨 엔진으로 착수하는지 모른 채 버튼을 누르게 된다.
+    const sections = Airframe.sectionsFor(spec.segment)
+      .map((c) => {
+        const on = c.abreast === (spec.abreast ?? Airframe.DEFAULT_ABREAST[spec.segment]);
+        const band = `${Math.round(c.rows[0] * c.abreast)}~${Math.round(c.rows[1] * c.abreast)}석`;
+        return `<button class="mat ${on ? 'on' : ''}" data-action="design-abreast" data-abreast="${c.abreast}">
+             <b>${esc(c.name)}</b><span>적정 ${band} · 객실 ${c.comfort >= 0 ? '+' : ''}${c.comfort} · 좌석당 연비 ×${c.effPerSeat.toFixed(2)} · 원가 ×${c.costPerSeat.toFixed(2)}</span>
+           </button>`;
+      })
+      .join('');
+
     const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year) || {}).id;
     const substituted = spec.engine && effectiveEngine !== spec.engine;
     const engines = Engines.available(spec.segment, year)
@@ -196,11 +236,25 @@
           ${slider('range', '항속거리', spec.range, seg.range.min, seg.range.max, 100, 'km')}
           ${slider('tech', '기술 투자', spec.tech, 0, 100, 1, '')}
           <p class="hint">기술 투자를 올리면 연비·정가가 오르지만 개발비·기간·결함 위험이 함께 오른다.</p>
+          ${slider('wing', '날개 (단거리형 ↔ 장거리형)', spec.wing === undefined ? 45 : spec.wing, 0, 100, 1, '')}
+          <p class="hint">오른쪽으로 갈수록 순항 연비가 좋아지고 <b>이착륙 성능이 나빠진다</b>. 짧은 활주로·고온고지 노선은 왼쪽 설계가 아니면 응찰 자체가 막힌다.</p>
+          <h3 style="margin-top:18px">동체 단면</h3>
+          <div class="mats">${sections}</div>
+          <p class="hint">좁게 많이 태우면 좌석당 연비·원가가 좋아지고 객실 점수가 떨어진다. 단면을 바꾸면 형식증명을 물려받을 수 없다 — 파생형의 뿌리가 되는 결정이다.</p>
           <h3 style="margin-top:18px">주 구조재</h3>
           <div class="mats">${mats}</div>
           <h3 style="margin-top:18px">엔진</h3>
           <div class="mats">${engines}</div>
           <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
+          <h3 style="margin-top:18px">착수 옵션</h3>
+          <div class="mats">
+            <button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
+              <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 26%(일반 41%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
+            </button>
+            <button class="mat ${spec.etops ? 'on' : ''}" data-action="design-etops">
+              <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
+            </button>
+          </div>
           ${
             substituted
               ? `<p class="warn-box">원형 엔진은 더 이상 판매되지 않아 <b>${esc(
@@ -254,6 +308,9 @@
         <tr><th>인증 기간</th><td>${ev.certQuarters}분기</td></tr>
         <tr><th>필요 인력</th><td>${num(ev.engineersNeeded)}명 <span class="muted">(보유 ${num(s.engineers)}명)</span></td></tr>
         <tr><th>연비 지수</th><td>${ev.efficiency} ${bar(ev.efficiency, 'eff')}</td></tr>
+        <tr><th>이착륙 성능</th><td>${ev.fieldPerf} ${bar(ev.fieldPerf, 'eff')}</td></tr>
+        <tr><th>항속 (만석 / 감톤)</th><td>${num(ev.payloadRange.full)}km / ${num(ev.payloadRange.light)}km</td></tr>
+        <tr><th>단면 적합도</th><td class="${ev.sectionFit < 80 ? 'bad' : ''}">${ev.sectionFit}% <span class="muted">${esc(ev.sectionName)}</span></td></tr>
         <tr><th>객실 쾌적성</th><td>${ev.comfort} ${bar(ev.comfort, 'comfort')}</td></tr>
         <tr><th>표준 생산원가</th><td>${money(ev.unitCostBase)}</td></tr>
         <tr><th>정가</th><td>${money(ev.listPrice)}</td></tr>
@@ -444,6 +501,9 @@
           </div>
           <table class="spec">
             <tr><th>요구 기종</th><td>${rfp.segmentName} · ${rfp.reqSeats}석급 · ${num(rfp.reqRange)}km</td></tr>
+            <tr><th>노선 성격</th><td>${esc(rfp.route || '—')}${
+              rfp.reqField ? ` · <b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'} (이착륙 ${rfp.reqField} 이상)</b>` : ''
+            }${rfp.reqEtops ? ' · <b class="warn">ETOPS 필수</b>' : ''}</td></tr>
             <tr><th>가격 민감도</th><td>${rfp.priceSensitivity >= 1.2 ? '매우 높음' : rfp.priceSensitivity >= 1.0 ? '높음' : rfp.priceSensitivity >= 0.8 ? '보통' : '낮음 (프리미엄 중시)'}</td></tr>
             <tr><th>경쟁 강도</th><td>${rfp.rivalHint.label}</td></tr>
             <tr><th>맞붙을 기종</th><td>${esc(rfp.rivalHint.rival || '—')}</td></tr>
