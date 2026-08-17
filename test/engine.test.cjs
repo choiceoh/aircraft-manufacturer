@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'data.js', 'design.js', 'bidding.js', 'engine.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'data.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
   require(path.join(JS, f));
 }
 
@@ -21,6 +21,7 @@ const {
   AirlinerRng: R,
   AirlinerFleet: F,
   AirlinerBidding: B,
+  AirlinerPanels: P,
 } = globalThis;
 
 test('시드가 같으면 난수열이 같다 (재현성)', () => {
@@ -49,13 +50,15 @@ test('설계: 슬라이더 값이 세그먼트 범위로 클램프된다', () =>
 });
 
 test('파생형(호환 변경)은 원형보다 개발비·기간이 크게 싸다', () => {
-  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 60, material: 'aluminum' };
+  // 엔진까지 같아야 "순수 동체 연장"이다. 원형 엔진을 명시하지 않으면 보수적으로
+  // 재장착으로 잡히므로(옛 세이브의 우회를 막기 위한 규칙) 여기서 못박아 둔다.
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 60, material: 'aluminum', engine: 'cfm56-5b', year: 2000 };
   const orig = D.evaluate(base);
   // 좌석수만 늘린 동체 연장형 — 형식증명을 물려받을 수 있는 전형적인 파생형.
   const deriv = D.evaluate({
     ...base,
     seats: 200,
-    derivedFrom: { id: 'x', name: 'y', tech: 60, material: 'aluminum', range: 5500 },
+    derivedFrom: { id: 'x', name: 'y', tech: 60, material: 'aluminum', range: 5500, engine: 'cfm56-5b' },
   });
   assert.strictEqual(deriv.derivative, true, '호환 변경은 파생형으로 인정돼야 한다');
   assert.ok(deriv.devCost < orig.devCost * 0.5);
@@ -1336,4 +1339,121 @@ test('defaultSpec 은 연도를 안 줘도 그 시대 엔진을 고른다', () =
   // 화면에 뜨는 선택지 안에 실제로 들어 있어야 선택 상태가 표시된다.
   const shown = EN.available('narrow', Data.CONFIG.startYear).map((e) => e.id);
   assert.ok(shown.includes(spec.engine), '기본 엔진이 그 시점 선택지에 있어야 한다');
+});
+
+test('품질 강화 표시 가격과 실제 청구액이 같다', () => {
+  // UI 는 devCost*0.06, 엔진은 3.5% 를 청구하면 표시가 71% 비싸다 — 현금이
+  // 빠듯한 플레이어의 선택 자체를 왜곡한다. 상수를 공유해야 한다.
+  const s = E.newGame(2);
+  s.cash = 40000;
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'hybrid' }, 'Q');
+  const p = s.programs[s.programs.length - 1];
+
+  // 화면에 실제로 렌더되는 문자열에서 가격을 읽어, 청구액과 대조한다.
+  const html = P.renderPrograms(s);
+  const m = /품질 강화 \(\d\/3\) · ([^<]+)/.exec(html);
+  assert.ok(m, '품질 강화 버튼이 렌더돼야 한다');
+  const shownText = m[1].trim();
+
+  const before = s.cash;
+  const r = E.investQuality(s, p.id);
+  assert.ok(r.ok, r.error);
+  const charged = Math.round(before - s.cash);
+
+  assert.strictEqual(shownText, P.money(charged), `표시 ${shownText} ≠ 청구 ${P.money(charged)}`);
+});
+
+test('과잉 배치 페널티가 결함 위험을 낮추지 않는다', () => {
+  // 상한이 0.6 이면 엔진 배수까지 붙어 0.6 을 넘긴 설계에서는 이 "악재"가
+  // 오히려 위험을 낮춘다 — 악재가 보상이 되는 역전.
+  const s = E.newGame(3);
+  s.cash = 60000;
+  E.launchProgram(s, { segment: 'wide', seats: 320, range: 13000, tech: 98, material: 'composite' }, 'HI');
+  const p = s.programs[s.programs.length - 1];
+  p.defectRisk = 0.72; // 엔진 배수까지 붙으면 실제로 나올 수 있는 값
+  p.share = 100;
+  s.engineers = 60000; // 과잉 배치를 강제한다
+
+  let min = p.defectRisk;
+  for (let i = 0; i < 30 && !s.gameOver && p.phase === 'dev'; i++) {
+    const before = p.defectRisk;
+    if (!E.endTurn(s).ok) break;
+    s.cash = 60000;
+    assert.ok(p.defectRisk >= before, `결함 위험이 내려갔다 (${before} → ${p.defectRisk})`);
+    min = Math.min(min, p.defectRisk);
+  }
+  assert.ok(min >= 0.72, '어떤 경로로도 초기 위험 아래로 떨어지면 안 된다');
+});
+
+test('입찰 총점은 공통성 가산을 얹어도 0~100 을 넘지 않는다', () => {
+  const s = E.newGame(5);
+  const p = s.programs.find((x) => x.phase === 'production');
+
+  // 모든 항목을 최대로 민다. 제원은 정확히 일치시켜 specFit 을 1로 만든다 —
+  // 무작위 공고로는 적합도가 깎여 상한을 시험하지 못한다.
+  s.reputation = 100;
+  p.efficiency = 99;
+  p.comfort = 99;
+  p.listPrice = 1;
+
+  const rfp = {
+    id: 'rfp-max',
+    turn: s.turn,
+    airlineId: 'panamer',
+    airlineName: '판아메르 항공',
+    segment: p.segment,
+    segmentName: '협동체',
+    reqSeats: p.seats,
+    reqRange: p.range,
+    qty: 50,
+    priceSensitivity: 1.4,
+    prestige: 1,
+    relation: 100,
+  };
+  s.relations.panamer = 100;
+  // 공통성 최대치는 "같은 기종 깊이 + 우리 다른 기종 보유"를 둘 다 요구한다.
+  s.fleets.panamer = { [p.id]: 500, 'prog-other': 100 };
+
+  const sc = B.scoreBid(s, rfp, p, Data.CONFIG.maxDiscount);
+  assert.ok(sc.total > 90, `상한 근처까지 올라가야 시험이 된다 (${sc.total})`);
+  assert.ok(sc.total <= 100, `총점이 척도를 넘었다 (${sc.total})`);
+  assert.strictEqual(sc.parts.common, 100, '공통성이 최대여야 한다');
+});
+
+test('선단 개념이 없던 세이브도 승계 선단과 인도 실적을 복원한다', () => {
+  const s = E.newGame(7);
+  const legacy = s.programs.find((p) => p.legacy);
+  // 주문 하나를 절반 인도한 상태로 만든다.
+  const order = s.backlog[0];
+  order.remaining = order.qty - 10;
+
+  delete s.fleets; // v1 세이브 재현
+  E.ensureShape(s);
+
+  assert.ok(s.fleets, '선단 장부가 만들어져야 한다');
+  assert.strictEqual(s.fleets.panamer[legacy.id] >= 62, true, '승계 선단이 복원돼야 한다');
+  assert.strictEqual(s.fleets.hanul[legacy.id] >= 48, true);
+  // 인도된 10기가 그 항공사 선단에 반영돼야 한다.
+  const expected = order.airlineId === 'panamer' ? 72 : 58;
+  assert.strictEqual(s.fleets[order.airlineId][legacy.id], expected, '남은 주문 기록에서 인도분을 복원해야 한다');
+});
+
+test('입찰 점수 내역에 선단 공통성이 표시된다', () => {
+  // 최대 6점이라 ±4 분할 경계보다 크다 — 화면에 없으면 결과를 설명할 수 없다.
+  const s = E.newGame(11);
+  const p = s.programs.find((x) => x.phase === 'production');
+  const rng = R.createRng(4);
+  let rfp = null;
+  for (let i = 0; i < 200 && !rfp; i++) {
+    for (const r of B.generateRfps(s, rng)) {
+      if (!rfp && r.segment === 'narrow' && !B.scoreBid(s, r, p, 0.1).blocked) rfp = r;
+    }
+  }
+  assert.ok(rfp);
+  s.rfps = [rfp];
+  E.setBid(s, rfp.id, p.id, 0.1);
+  s.fleets[rfp.airlineId] = { [p.id]: 40 };
+
+  const html = P.renderBidInfo(s, rfp);
+  assert.ok(/선단 공통성/.test(html), '점수 내역에 공통성 항목이 있어야 한다');
 });

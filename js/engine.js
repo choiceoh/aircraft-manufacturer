@@ -194,7 +194,21 @@
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
-    if (!s.fleets) s.fleets = {};
+    if (!s.fleets) {
+      // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
+      // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
+      // 승계분을 다시 심고, 남아 있는 주문 기록에서 실제 인도분을 복원한다.
+      s.fleets = {};
+      const legacy = s.programs.find((p) => p.legacy);
+      if (legacy) {
+        s.fleets.panamer = { [legacy.id]: 62 };
+        s.fleets.hanul = { [legacy.id]: 48 };
+      }
+      for (const o of s.backlog || []) {
+        const shipped = o.qty - (o.cancelled || 0) - o.remaining;
+        if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
+      }
+    }
 
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
     // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
@@ -269,7 +283,21 @@
 
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
   function addToFleet(s, airlineId, programId, n) {
-    if (!s.fleets) s.fleets = {};
+    if (!s.fleets) {
+      // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
+      // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
+      // 승계분을 다시 심고, 남아 있는 주문 기록에서 실제 인도분을 복원한다.
+      s.fleets = {};
+      const legacy = s.programs.find((p) => p.legacy);
+      if (legacy) {
+        s.fleets.panamer = { [legacy.id]: 62 };
+        s.fleets.hanul = { [legacy.id]: 48 };
+      }
+      for (const o of s.backlog || []) {
+        const shipped = o.qty - (o.cancelled || 0) - o.remaining;
+        if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
+      }
+    }
 
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
     // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
@@ -377,14 +405,14 @@
     if (p.qualityInvests >= 3) return { ok: false, error: '품질 투자는 3회까지입니다.' };
     // 개발비의 3.5%. 예전 6%는 현금이 가장 마른 개발 구간에 부담이 몰리는 반면
     // 효과는 양산 이후에나 나타나, 투자할수록 손해인 함정 선택지였다.
-    const cost = Math.round(p.devCost * 0.035);
+    const cost = Math.round(p.devCost * CONFIG.qualityInvestRate);
     if (s.cash < cost) return { ok: false, error: `${fmtMoney(cost)}이 부족합니다.` };
     ensureShape(s);
     s.cash -= cost;
     s.pending.rdCost += cost;
     p.spent += cost; // 매몰비용 표시가 실제 지출과 어긋나지 않게
     p.qualityInvests++;
-    p.defectRisk = Math.round(p.defectRisk * 0.62 * 1000) / 1000;
+    p.defectRisk = Math.round(p.defectRisk * CONFIG.qualityRiskMult * 1000) / 1000;
     pushLog(s, 'program', `${p.name} 추가 시험·검증에 ${fmtMoney(cost)} 투입. 결함 위험 ${(p.defectRisk * 100).toFixed(1)}%로 하락.`);
     return { ok: true };
   }
@@ -711,7 +739,9 @@
 
       // 인력을 과도하게 밀어넣으면 설계 검증이 얕아진다.
       if (ratio > 1.25 && rng.chance(0.35)) {
-        p.defectRisk = Math.round(Math.min(0.6, p.defectRisk * 1.08) * 1000) / 1000;
+        // 상한이 0.6 이면 엔진 배수까지 붙어 0.6을 넘긴 설계에서는 이 "악재"가
+        // 오히려 위험을 낮춘다. 페널티는 절대 현재 위험보다 낮아질 수 없다.
+        p.defectRisk = Math.round(Math.max(p.defectRisk, Math.min(0.75, p.defectRisk * 1.08)) * 1000) / 1000;
       }
 
       const before = p.progress;

@@ -168,8 +168,12 @@
       // 더 어렵게 만들 뿐 공통성의 취지(기존 계정이 유리하다)와 반대다.
       commonality * COMMONALITY_BONUS;
 
+    // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
+    // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
+    const bounded = clamp(total, 0, 100);
+
     return {
-      total: Math.round(total * 10) / 10,
+      total: Math.round(bounded * 10) / 10,
       parts: {
         spec: Math.round(specFit * 100),
         price: Math.round(priceScore * 100),

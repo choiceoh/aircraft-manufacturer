@@ -306,7 +306,7 @@
               <p class="hint">배분 0%는 동결 — 진행도와 개발비 지출이 모두 멈춘다. 필요 인력 ${num(p.engineersNeeded)}명.</p>
               <div class="row">
                 <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>
-                  품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * 0.06)}
+                  품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * CONFIG.qualityInvestRate)}
                 </button>
                 <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
               </div>
@@ -315,7 +315,7 @@
           // 중단 버튼이 없으면 인증 프로그램 3개가 슬롯을 물고 신규 착수가 영영 막힌다.
           control = `<div class="devctl"><p class="cert">형식증명 심사 중 — 잔여 ${p.certRemaining}분기</p>
             <div class="row">
-              <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * 0.06)}</button>
+              <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * CONFIG.qualityInvestRate)}</button>
               <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
             </div></div>`;
         } else if (p.phase === 'production') {
@@ -485,6 +485,7 @@
       <div class="parts">
         ${part('제원 적합', sc.parts.spec)}${part('가격', sc.parts.price)}${part('연비', sc.parts.eff)}
         ${part('객실', sc.parts.comfort)}${part('평판', sc.parts.rep)}${part('관계', sc.parts.rel)}
+        ${part('선단 공통성', sc.parts.common)}
       </div>
       <div class="row"><button class="ghost" data-action="withdraw" data-rfp="${rfp.id}">입찰 포기</button></div>`;
   }

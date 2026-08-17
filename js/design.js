@@ -72,7 +72,9 @@
     const derivative = isCompatibleDerivative(spec, range, tech);
     // 엔진을 갈아 끼운 파생형(재장착)은 형식증명은 물려받지만 개발비가 훨씬 크다.
     // A320neo·737 MAX 가 정확히 이 경우다 — 순수 동체 연장과 같은 값을 매기면 안 된다.
-    const reEngined = derivative && spec.derivedFrom.engine !== undefined && spec.derivedFrom.engine !== eng.id;
+    // 원형 엔진을 알 수 없으면(엔진 개념이 없던 옛 설계안) 보수적으로 재장착으로 본다.
+    // 실제로 그 시점 엔진으로 대체되므로 "같은 엔진"이라고 볼 근거가 없다.
+    const reEngined = derivative && spec.derivedFrom.engine !== eng.id;
     if (derivative) {
       devCost *= reEngined ? 0.58 : 0.34;
       devQuarters *= reEngined ? 0.72 : 0.5;
