@@ -79,6 +79,7 @@
     const rng = rngFor(s);
     s.shocks = buildShockSchedule(s, rng);
     s.rfps = generateRfps(s, rng);
+    s.ratingForQuarter = creditRating(s).grade;
     s.rateForQuarter = interestRate(s);
     saveRng(s, rng);
 
@@ -196,6 +197,7 @@
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
+    if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
@@ -295,6 +297,7 @@
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
   function addToFleet(s, airlineId, programId, n) {
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
+    if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
@@ -658,7 +661,10 @@
     s.rfps = generateRfps(s, rng);
     s.bids = {};
 
-    // 다음 분기에 적용될 이자율을 지금 확정한다 — 화면이 보여줄 값이자 청구할 값.
+    // 다음 분기에 적용될 이자율과 등급을 지금 함께 확정한다. 둘을 따로 두면
+    // 분기 중 차입으로 등급만 바뀌어 "등급 B · 이자율 1.60%(=BBB 값)" 같은
+    // 자기모순이 화면에 뜬다.
+    s.ratingForQuarter = creditRating(s).grade;
     s.rateForQuarter = interestRate(s);
 
     // 이벤트(결함 수리비 등)가 현금을 빼앗아 지급불능이 된 경우도 즉시 종료다.
@@ -1179,6 +1185,11 @@
     return typeof s.rateForQuarter === 'number' ? s.rateForQuarter : interestRate(s);
   }
 
+  /** 그 이자율을 만든 등급. 지금 차입해도 이번 분기 청구는 이 등급 기준이다. */
+  function quarterGrade(s) {
+    return typeof s.ratingForQuarter === 'string' ? s.ratingForQuarter : creditRating(s).grade;
+  }
+
   function netWorth(s) {
     const assetValue =
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase, 0) +
@@ -1267,6 +1278,7 @@
     creditRating,
     interestRate,
     quarterRate,
+    quarterGrade,
     finalScore,
     projectedQuarters,
     ensureShape,

@@ -154,12 +154,17 @@
 
     // 그 시점에 실제로 살 수 있는 엔진만 보여준다. 성숙도가 덜 찬 신형은 경고를 단다.
     const year = E.yearOf(s.turn);
+    // 지정한 엔진이 이미 단산됐으면 evaluate 가 그 시점 엔진으로 대체한다.
+    // 그 결과를 먼저 구해 두지 않으면 어느 버튼도 선택 표시가 안 되고,
+    // 플레이어는 자기가 무슨 엔진으로 착수하는지 모른 채 버튼을 누르게 된다.
+    const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year) || {}).id;
+    const substituted = spec.engine && effectiveEngine !== spec.engine;
     const engines = Engines.available(spec.segment, year)
       .slice()
       .sort((a, b) => a.eff - b.eff)
       .map((e) => {
         const immature = Engines.maturityRisk(e, year) > 1;
-        const on = e.id === (spec.engine || (Engines.defaultFor(spec.segment, year) || {}).id);
+        const on = e.id === effectiveEngine;
         return `<button class="mat ${on ? 'on' : ''}" data-action="design-eng" data-eng="${e.id}">
              <b>${esc(e.name)}</b>
              <span>${esc(e.maker)} · 연비 ${e.eff >= 0 ? '+' : ''}${e.eff} · 단가 ×${e.costMult.toFixed(2)}${
@@ -196,6 +201,13 @@
           <h3 style="margin-top:18px">엔진</h3>
           <div class="mats">${engines}</div>
           <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
+          ${
+            substituted
+              ? `<p class="warn-box">원형 엔진은 더 이상 판매되지 않아 <b>${esc(
+                  (Engines.get(effectiveEngine) || {}).name || '',
+                )}</b>로 대체된다 — 재장착이라 파생형 할인이 줄어든다.</p>`
+              : ''
+          }
         </div>
         <div class="card" id="design-preview">${renderDesignPreview(s, spec, designName)}</div>
       </section>
@@ -519,8 +531,8 @@
       <section class="grid2">
         <div class="card">
           <h3>차입 / 상환</h3>
-          <p class="muted">신용등급 <b>${rating.grade}</b> · 분기 이자율 ${(E.quarterRate(s) * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
-          <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 등급이 내려가면 같은 차입에도 이자가 더 나간다.</p>
+          <p class="muted">이번 분기 적용 등급 <b>${E.quarterGrade(s)}</b> · 이자율 ${(E.quarterRate(s) * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
+          <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 이자율은 <b>분기 시작 시</b> 고정되므로, 지금 차입해도 이번 분기 청구는 위 등급 기준이다 — 현재 등급 <b>${rating.grade}</b>이 다음 분기에 적용된다.</p>
           <div class="row wrap">
             <button data-action="borrow" data-amt="1000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(1000, room))} 차입</button>
             <button data-action="borrow" data-amt="3000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(3000, room))} 차입</button>

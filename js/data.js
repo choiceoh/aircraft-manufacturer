@@ -524,9 +524,29 @@
       apply: (s, h) => {
         s.market.demandIndex = Math.min(2.0, s.market.demandIndex * 1.3);
         s.effects.demandBoomQuarters = Math.max(s.effects.demandBoomQuarters || 0, 4);
-        const cash = Math.round(h.rng.range(120, 300));
-        h.income(cash);
-        return `대형 리스사가 기단 교체 프로그램을 발표하며 선수금 ${h.fmt(cash)}을 걸었다. 시장이 달아오른다.`;
+        // 선수금만 주고 주문을 안 만들면 "계약 없는 공짜 현금"이 된다.
+        // 실제 발주를 백로그에 넣고, 그 선수금만큼만 현금을 준다.
+        const buildable = s.programs.filter((p) => p.phase === 'production');
+        if (!buildable.length) {
+          return '대형 리스사가 기단 교체 프로그램을 발표했다. 시장이 달아오르지만, 우리에겐 지금 팔 기체가 없다.';
+        }
+        const p = h.rng.pick(buildable);
+        const qty = h.rng.int(6, 18);
+        const unitPrice = Math.round(p.listPrice * 0.86 * 10) / 10;
+        const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
+        s.backlog.push({
+          id: 'ord-' + s.nextId++,
+          airlineId: 'leasing',
+          airlineName: '글로벌 리스',
+          programId: p.id,
+          programName: p.name,
+          qty,
+          remaining: qty,
+          unitPrice,
+          wonTurn: s.turn,
+        });
+        h.income(deposit);
+        return `글로벌 리스가 ${p.name} ${qty}기를 발주했다. 선수금 ${h.fmt(deposit)} 입금.`;
       },
     },
     {

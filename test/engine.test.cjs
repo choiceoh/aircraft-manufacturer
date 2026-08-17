@@ -1614,3 +1614,71 @@ test('마이그레이션된 일정에 영영 뜨지 않는 슬롯이 남지 않�
   }
   assert.ok(fired, `슬롯 ${next.turn} 이 발화해야 한다`);
 });
+
+test('표시 등급과 표시 이자율은 같은 시점 값이다', () => {
+  // 이자율만 분기 초에 고정하고 등급은 실시간으로 보여주면
+  // "등급 B · 이자율 1.60%(=BBB 값)" 같은 자기모순이 화면에 뜬다.
+  const s = E.newGame(3);
+  const grade0 = E.quarterGrade(s);
+  const rate0 = E.quarterRate(s);
+
+  E.borrow(s, Data.CONFIG.maxDebt); // 분기 중 차입으로 현재 등급을 떨어뜨린다
+  assert.notStrictEqual(E.creditRating(s).grade, grade0, '전제: 차입으로 현재 등급이 바뀌어야 한다');
+
+  // 이번 분기에 적용되는 등급·이자율은 둘 다 그대로여야 한다.
+  assert.strictEqual(E.quarterGrade(s), grade0);
+  assert.strictEqual(E.quarterRate(s), rate0);
+
+  // 그리고 그 등급이 실제로 그 이자율을 만든 등급이어야 한다.
+  const mult = rate0 / Data.CONFIG.interestPerQuarter;
+  const table = { AA: 0.78, A: 0.88, BBB: 1.0, BB: 1.14, B: 1.3, CCC: 1.5 };
+  assert.ok(Math.abs(mult - table[grade0]) < 0.001, `${grade0} 등급인데 배수가 ${mult.toFixed(3)}`);
+});
+
+test('단산된 엔진을 지정하면 대체될 엔진이 선택 표시된다', () => {
+  // 대체가 일어나는데 어느 버튼도 켜지지 않으면, 플레이어는 자기가 무슨 엔진으로
+  // 착수하는지 모른 채 버튼을 누르게 된다.
+  const s = E.newGame(6);
+  s.turn = (2010 - 1998) * 4;
+  const spec = { segment: 'narrow', seats: 180, range: 5500, tech: 50, material: 'aluminum', engine: 'cfm56-3' };
+  assert.strictEqual(EN.inService(EN.get('cfm56-3'), E.yearOf(s.turn)), false, '전제: 이미 단산된 엔진');
+
+  const html = P.renderDesign(s, spec, '');
+  const selected = html.match(/class="mat on" data-action="design-eng" data-eng="([^"]+)"/g) || [];
+  assert.strictEqual(selected.length, 1, `선택된 엔진 버튼이 정확히 하나여야 한다 (${selected.length})`);
+
+  const effective = D.evaluate({ ...spec, year: E.yearOf(s.turn) }).engine;
+  assert.ok(selected[0].includes(effective), '실제로 쓰일 엔진이 선택 표시돼야 한다');
+  assert.ok(/더 이상 판매되지 않아/.test(html), '대체됐다는 경고가 있어야 한다');
+});
+
+test('리스사 발주는 현금만 주지 않고 실제 주문을 남긴다', () => {
+  const shock = Data.FICTIONAL_SHOCKS.find((f) => f.id === 'lessor_boom');
+  assert.ok(shock);
+
+  const s = E.newGame(8);
+  E.ensureShape(s);
+  const backlogBefore = E.totalBacklog(s);
+  let income = 0;
+  const h = {
+    rng: R.createRng(7),
+    fmt: E.fmtMoney,
+    reputation: () => {},
+    income: (v) => {
+      income += v;
+      s.cash += v;
+      s.pending.revenue += v;
+    },
+    expense: () => {},
+  };
+
+  shock.apply(s, h);
+  assert.ok(income > 0, '선수금이 들어와야 한다');
+  assert.ok(E.totalBacklog(s) > backlogBefore, '선수금에는 실제 주문이 따라야 한다');
+
+  const order = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(order.airlineId, 'leasing');
+  assert.ok(order.remaining > 0 && order.unitPrice > 0);
+  // 선수금은 계약 규모에 비례해야 한다 — 무상 지급이 아니다.
+  assert.ok(Math.abs(income - order.qty * order.unitPrice * Data.CONFIG.depositRate) < 1);
+});
