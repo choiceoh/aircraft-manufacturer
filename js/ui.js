@@ -485,7 +485,7 @@
     const seed = randomSeed();
     ui.state = E.newGame(seed);
     ui.tab = 'overview';
-    ui.spec = D.defaultSpec('narrow');
+    ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
     ui.discountDraft = {};
     ui.designName = '';
     closeModal();

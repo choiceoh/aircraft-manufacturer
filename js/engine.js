@@ -195,6 +195,19 @@
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
     if (!s.fleets) s.fleets = {};
+
+    // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
+    // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
+    // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
+    for (const p of s.programs) {
+      if (p.engine && root.AirlinerEngines.get(p.engine)) continue;
+      const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
+      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(Math.max(0, born)));
+      if (!eng) continue;
+      p.engine = eng.id;
+      p.engineName = eng.name;
+      p.engineMaker = eng.maker;
+    }
     // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
     if (!Array.isArray(s.shocks)) s.shocks = buildShockSchedule(s, createRng(s.seed));
 
@@ -257,6 +270,19 @@
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
   function addToFleet(s, airlineId, programId, n) {
     if (!s.fleets) s.fleets = {};
+
+    // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
+    // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
+    // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
+    for (const p of s.programs) {
+      if (p.engine && root.AirlinerEngines.get(p.engine)) continue;
+      const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
+      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(Math.max(0, born)));
+      if (!eng) continue;
+      p.engine = eng.id;
+      p.engineName = eng.name;
+      p.engineMaker = eng.maker;
+    }
     // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
     if (!Array.isArray(s.shocks)) s.shocks = buildShockSchedule(s, createRng(s.seed));
     if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
@@ -721,7 +747,8 @@
           'bad',
           `${p.name} 형식증명 심사에서 설계 변경 요구가 나왔다. ${delay}분기 지연, 대응 비용 ${fmtMoney(cost)}.`,
         );
-        continue;
+        // continue 로 아래 감소분까지 건너뛰면 "1분기 지연"이 실제로는 2분기가 된다.
+        // 이번 분기 심사는 정상적으로 소진되고, 순증이 delay 만큼이어야 광고와 맞는다.
       }
 
       p.certRemaining -= 1;
@@ -1051,10 +1078,16 @@
     // 프로그램에 넣은 돈은 곧 형식증명을 받을 자산이지 사라진 돈이 아니다.
     // 이걸 빼면 개발 기간 내내(= 게임의 본편) 자동으로 최하등급이 되어,
     // 가장 현금이 마른 시점에 이자까지 올리는 사망 나선이 만들어진다.
-    const inProgress = s.programs
-      .filter((p) => p.phase === 'dev' || p.phase === 'cert')
-      .reduce((a, p) => a + p.spent * 0.6, 0);
-    const equity = Math.max(1, netWorth(s) + inProgress);
+    // 인증에 성공한 순간 이 값이 0이 되면, 현금도 자산도 그대로인데 등급만 떨어져
+    // 이자가 오른다. 양산 전이는 자산이 사라지는 사건이 아니므로 인도량에 따라
+    // 상각한다(약 300기에 걸쳐 소멸) — 회계상 개발비 자본화와 같은 취급이다.
+    const programValue = s.programs
+      .filter((p) => p.phase !== 'cancelled')
+      .reduce((a, p) => {
+        const amortized = p.phase === 'production' ? Math.max(0, 1 - p.delivered / 300) : 1;
+        return a + p.spent * 0.6 * amortized;
+      }, 0);
+    const equity = Math.max(1, netWorth(s) + programValue);
     // 부채/자기자본은 자기자본이 얇아지면 발산해, 어려운 회사를 자동으로 CCC로 밀어
     // 이자까지 올리는 사망 나선을 만든다. 0~1로 유계인 부채비율을 쓴다.
     const leverage = s.debt / (s.debt + equity);

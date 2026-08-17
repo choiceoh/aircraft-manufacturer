@@ -200,7 +200,7 @@
         <div class="card" id="design-preview">${renderDesignPreview(s, spec, designName)}</div>
       </section>
 
-      ${derivatives ? `<section class="card"><h3>파생형</h3><p class="muted">기존 형식증명을 물려받아 개발비 66%, 기간 50%를 아낀다.</p><div class="row">${derivatives}</div></section>` : ''}`;
+      ${derivatives ? `<section class="card"><h3>파생형</h3><p class="muted">기존 형식증명을 물려받아 개발비 66%, 기간 50%를 아낀다. 엔진까지 갈아 끼우면(재장착) 절감이 42%·28%로 줄어든다.</p><div class="row">${derivatives}</div></section>` : ''}`;
   }
 
   function slider(key, label, value, min, max, step, unit) {
@@ -254,7 +254,15 @@
           ? `<p class="warn-box">소재·기술·항속을 원형(${esc(spec.derivedFrom.name)})에서 너무 많이 바꿔 형식증명을 물려받을 수 없다. <b>신규 설계 비용</b>으로 계산된다.</p>`
           : ''
       }
-      ${ev.derivative ? `<p class="hint">${esc(spec.derivedFrom.name)} 파생형으로 인정 — 개발비·기간 할인이 적용됐다.</p>` : ''}
+      ${
+        ev.derivative
+          ? `<p class="hint">${esc(spec.derivedFrom.name)} 파생형으로 인정 — ${
+              ev.reEngined
+                ? '엔진을 갈아 끼운 <b>재장착</b>이라 개발비 42%·기간 28% 절감'
+                : '개발비 66%·기간 50% 절감'
+            }이 적용됐다.</p>`
+          : ''
+      }
       <div class="row">
         <input class="name-input" id="design-name" data-action="design-name" placeholder="기종명 (예: DN-200)" maxlength="18" value="${esc(designName || '')}">
         <button class="primary" data-action="launch" ${affordable ? '' : 'disabled'}>개발 착수 · ${money(upfront)}</button>

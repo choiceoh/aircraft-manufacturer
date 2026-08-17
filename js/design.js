@@ -146,7 +146,11 @@
   /** 설계 기본값 — 세그먼트를 고를 때마다 슬라이더를 이 값으로 되돌린다. */
   function defaultSpec(segmentId, year) {
     const seg = SEGMENTS[segmentId];
-    const eng = Engines.defaultFor(segmentId, year);
+    // 연도를 빼먹으면 available() 이 카탈로그 전체를 열어 1998년 게임에 2016년
+    // 엔진이 기본값으로 잡힌다. 화면에는 선택된 엔진이 없고, 미리보기·착수는
+    // 조용히 다른 엔진으로 계산되어 어긋난다. 없으면 게임 시작 연도로 본다.
+    const y = year === undefined ? CONFIG.startYear : year;
+    const eng = Engines.defaultFor(segmentId, y);
     return {
       segment: segmentId,
       seats: seg.seats.ref,
@@ -154,7 +158,7 @@
       tech: 50,
       material: 'aluminum',
       engine: eng ? eng.id : undefined,
-      year,
+      year: y,
     };
   }
 

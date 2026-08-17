@@ -1237,3 +1237,103 @@ test('인증 지연이 생기면 기간이 늘고 비용이 리포트에 잡힌�
   assert.ok(delays > 0, '결함 위험 60%로 40판을 돌리면 심사 지연이 나야 한다');
   assert.strictEqual(delays, costed, '심사 지연에는 항상 대응 비용이 따라야 한다');
 });
+
+// ────────────── 리뷰에서 잡힌 회귀 (엔진·인증·자산 평가) ──────────────
+
+test('인증 심사 지연은 광고한 분기 수만큼만 밀린다', () => {
+  // 지연 처리에서 이번 분기 감소분까지 건너뛰면 "1분기 지연"이 실제로는 2분기가 된다.
+  const s = E.newGame(12);
+  s.cash = 60000;
+  E.launchProgram(s, { segment: 'regional', seats: 90, range: 2500, tech: 95, material: 'composite' }, 'RISK');
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 100;
+  p.phase = 'cert';
+  p.defectRisk = 0.7;
+
+  let checked = 0;
+  for (let i = 0; i < 400 && checked < 6; i++) {
+    if (p.phase !== 'cert') {
+      p.phase = 'cert';
+      p.certRemaining = 4;
+    }
+    const before = p.certRemaining;
+    const logLen = s.log.length;
+    const r = E.endTurn(s);
+    if (!r.ok) break;
+    s.cash = 60000;
+
+    let delay = 0;
+    for (let k = 0; k < s.log.length - logLen; k++) {
+      const m = /형식증명 심사에서 설계 변경 요구가 나왔다\. (\d+)분기 지연/.exec(s.log[k].text);
+      if (m) delay = Number(m[1]);
+    }
+    if (!delay || p.phase !== 'cert') continue;
+
+    // 정상 분기는 -1. 지연이면 순증 delay-1 이어야 "delay 분기 지연"과 맞는다.
+    assert.strictEqual(
+      p.certRemaining - before,
+      delay - 1,
+      `${delay}분기 지연인데 잔여가 ${before} → ${p.certRemaining} 로 변했다`,
+    );
+    checked++;
+  }
+  assert.ok(checked > 0, '지연 사례를 최소 하나는 관측해야 한다');
+});
+
+test('인증에 성공해도 신용등급이 떨어지지 않는다', () => {
+  // 개발 자산을 dev/cert 에만 인정하면, 양산 전이 순간 자산이 통째로 사라져
+  // 현금도 부채도 그대로인데 등급만 내려가고 이자가 오른다.
+  // 개발 자산이 자기자본에서 실제로 유의미한 몫이어야 절벽이 드러난다.
+  // 현금이 넉넉하면 어느 쪽이든 같은 등급이라 테스트가 무력해진다.
+  const s = E.newGame(6);
+  s.cash = 6000;
+  s.debt = 6000;
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 60, material: 'hybrid' }, 'DEV');
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'cert';
+  p.progress = 100;
+  p.spent = p.devCost * 0.9;
+  p.certRemaining = 1;
+
+  const before = E.creditRating(s);
+  p.phase = 'production'; // 다른 상태는 건드리지 않고 전이만 시킨다
+  const after = E.creditRating(s);
+  assert.strictEqual(
+    after.grade,
+    before.grade,
+    `인증 성공만으로 등급이 바뀌면 안 된다 (${before.grade} → ${after.grade})`,
+  );
+});
+
+test('엔진 개념이 없던 세이브의 프로그램에도 엔진이 채워진다', () => {
+  const s = E.newGame(9);
+  const p = s.programs.find((x) => x.legacy);
+  delete p.engine; // v1 세이브 재현
+  delete p.engineName;
+
+  E.ensureShape(s);
+  assert.ok(p.engine, '마이그레이션이 엔진을 채워야 한다');
+  assert.ok(EN.get(p.engine), '카탈로그에 있는 엔진이어야 한다');
+
+  // 이 기종의 파생형에 다른 엔진을 달면 재장착으로 잡혀야 한다.
+  s.turn = (2016 - 1998) * 4;
+  const spec = { ...E.derivativeSpec(p, 20), engine: 'leap-1a', year: E.yearOf(s.turn) };
+  const ev = D.evaluate(spec);
+  assert.strictEqual(ev.derivative, true);
+  assert.strictEqual(ev.reEngined, true, 'v1 세이브에서 온 기종도 재장착 비용을 내야 한다');
+});
+
+test('defaultSpec 은 연도를 안 줘도 그 시대 엔진을 고른다', () => {
+  // 연도를 빼먹으면 카탈로그 전체가 열려 1998년 게임에 2016년 엔진이 잡힌다.
+  const spec = D.defaultSpec('narrow');
+  const eng = EN.get(spec.engine);
+  assert.ok(eng, '기본 엔진이 있어야 한다');
+  assert.ok(
+    EN.inService(eng, Data.CONFIG.startYear),
+    `${eng.name} 은 ${Data.CONFIG.startYear}년에 살 수 없다`,
+  );
+
+  // 화면에 뜨는 선택지 안에 실제로 들어 있어야 선택 상태가 표시된다.
+  const shown = EN.available('narrow', Data.CONFIG.startYear).map((e) => e.id);
+  assert.ok(shown.includes(spec.engine), '기본 엔진이 그 시점 선택지에 있어야 한다');
+});
