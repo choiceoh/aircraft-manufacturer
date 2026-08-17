@@ -741,7 +741,8 @@
       if (ratio > 1.25 && rng.chance(0.35)) {
         // 상한이 0.6 이면 엔진 배수까지 붙어 0.6을 넘긴 설계에서는 이 "악재"가
         // 오히려 위험을 낮춘다. 페널티는 절대 현재 위험보다 낮아질 수 없다.
-        p.defectRisk = Math.round(Math.max(p.defectRisk, Math.min(0.75, p.defectRisk * 1.08)) * 1000) / 1000;
+        p.defectRisk =
+          Math.round(Math.max(p.defectRisk, Math.min(CONFIG.defectRiskMax, p.defectRisk * 1.08)) * 1000) / 1000;
       }
 
       const before = p.progress;

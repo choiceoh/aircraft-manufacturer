@@ -107,7 +107,11 @@
 
     // 개발 리스크: 기술을 밀어붙이고 복합재를 쓸수록 결함 확률이 오른다.
     // 엔진 신뢰성과 성숙도가 곱으로 얹힌다 — 신형 엔진 초도 채택이 실제로 위험한 이유.
-    const defectRisk = clamp((0.05 + (tech / 100) * 0.22 + mat.riskBonus) * eng.riskMult * engMaturity, 0.03, 0.75);
+    const defectRisk = clamp(
+      (0.05 + (tech / 100) * 0.22 + mat.riskBonus) * eng.riskMult * engMaturity,
+      0.03,
+      CONFIG.defectRiskMax,
+    );
 
     return {
       segment: seg.id,

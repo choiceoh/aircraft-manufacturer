@@ -1457,3 +1457,31 @@ test('입찰 점수 내역에 선단 공통성이 표시된다', () => {
   const html = P.renderBidInfo(s, rfp);
   assert.ok(/선단 공통성/.test(html), '점수 내역에 공통성 항목이 있어야 한다');
 });
+
+test('결함 위험 상한은 설계와 개발 페널티가 같은 값을 쓴다', () => {
+  // 두 곳에 각각 박아 두면 한쪽만 올렸을 때 "악재가 위험을 낮추는" 역전이 생긴다.
+  const cap = Data.CONFIG.defectRiskMax;
+  assert.ok(cap > 0.6, '상한이 옛 하드코딩 값(0.6)보다 커야 이 회귀가 의미 있다');
+
+  // 설계가 실제로 상한까지 갈 수 있는지 — 갈 수 없으면 이 테스트는 공회전이다.
+  const worst = D.evaluate({
+    segment: 'wide', seats: 400, range: 15000, tech: 100, material: 'composite',
+    engine: 'trent1000', year: 2011, // 취항 첫 해 = 성숙도 위험 최대
+  });
+  assert.strictEqual(worst.defectRisk, cap, `최악 설계가 상한에 닿아야 한다 (${worst.defectRisk})`);
+
+  // 상한에 닿은 프로그램에 개발 중 과잉 배치 페널티가 걸려도 내려가면 안 된다.
+  const s = E.newGame(3);
+  s.cash = 60000;
+  E.launchProgram(s, { segment: 'wide', seats: 400, range: 15000, tech: 100, material: 'composite' }, 'MAX');
+  const p = s.programs[s.programs.length - 1];
+  p.defectRisk = cap;
+  p.share = 100;
+  s.engineers = 80000; // 과잉 배치 강제
+
+  for (let i = 0; i < 25 && !s.gameOver && p.phase === 'dev'; i++) {
+    if (!E.endTurn(s).ok) break;
+    s.cash = 60000;
+    assert.ok(p.defectRisk >= cap, `상한에서 내려갔다 (${p.defectRisk})`);
+  }
+});

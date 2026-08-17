@@ -30,6 +30,9 @@
     maxDiscount: 0.35,
     qualityInvestRate: 0.035, // 품질 강화 1회 비용 (개발비 대비). UI 표시와 실제 청구가 이 값을 공유한다.
     qualityRiskMult: 0.62, // 1회당 결함 위험 배수
+    // 결함 위험 상한. 설계 계산(design)과 개발 중 페널티(engine) 양쪽이 이 값을 쓴다.
+    // 두 곳에 각각 박아 두면 한쪽만 올렸을 때 "악재가 위험을 낮추는" 역전이 생긴다.
+    defectRiskMax: 0.75,
     rampPerQuarter: 0.22, // 라인 가동률 상승 속도
   };
 
