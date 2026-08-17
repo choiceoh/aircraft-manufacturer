@@ -1500,17 +1500,117 @@ test('화면에 표시되는 분기 이자가 실제 청구액과 같다', () =>
     assert.ok(m, '분기 이자 표시가 있어야 한다');
     const shown = m[1].trim();
 
-    // 정산 직전 상태로 고정한다 — endTurn 이 돌면 등급 산정 근거(현금·이력)가 바뀐다.
+    // 이자율은 분기 시작 시 고정된다 — 그 분기의 생산·인도로 등급이 흔들려도
+    // 플레이어가 보고 판단한 값 그대로 청구돼야 한다.
     const debtBefore = s.debt;
-    const rateBefore = E.interestRate(s);
+    const rateBefore = E.quarterRate(s);
     assert.strictEqual(shown, P.money(debtBefore * rateBefore), `seed ${seed}: 화면 표시가 어긋난다`);
 
     const r = E.endTurn(s);
     assert.ok(r.ok);
-    // 그리고 그 값이 실제로 청구된 이자와 일치해야 한다.
     assert.ok(
-      Math.abs(r.report.interest - debtBefore * rateBefore) < 1,
+      Math.abs(r.report.interest - debtBefore * rateBefore) < 0.01,
       `seed ${seed}: 표시 ${Math.round(debtBefore * rateBefore)} ≠ 청구 ${Math.round(r.report.interest)}`,
     );
   }
+});
+
+test('분기 중 등급이 바뀌어도 고지한 이자율로 청구한다', () => {
+  // 생산·인도로 현금이 등급 문턱을 넘으면, 정산 시점에 다시 계산할 경우
+  // 화면에서 보고 판단한 이자와 실제 청구가 달라진다.
+  const s = E.newGame(1);
+  E.borrow(s, 6000);
+  const quoted = E.quarterRate(s);
+  const debtBefore = s.debt;
+
+  // 분기 중 대량 인도로 현금을 크게 늘려 등급 근거를 흔든다.
+  const p = s.programs.find((x) => x.phase === 'production');
+  p.stock = 40;
+
+  const r = E.endTurn(s);
+  assert.ok(r.ok);
+  assert.ok(r.report.delivered > 0, '전제: 이 분기에 인도가 있어야 한다');
+  assert.ok(
+    Math.abs(r.report.interest - debtBefore * quoted) < 0.01,
+    `고지 ${Math.round(debtBefore * quoted)} ≠ 청구 ${Math.round(r.report.interest)}`,
+  );
+});
+
+test('rd 가 없던 옛 이력은 수익성 판정에 영향을 주지 않는다', () => {
+  // 옛 행의 net 에는 개발비가 그대로 들어 있어, 그대로 쓰면 세이브를 불러온 것만으로
+  // 등급이 떨어진다. rd 를 복원할 방법은 없으므로 그 행을 판정에서 빼는 게 유일한 답이다.
+  // (등급이 원래대로 돌아오지는 않는다 — 옛 행이 아예 무시된다는 것이 계약이다.)
+  const s = E.newGame(4);
+  s.cash = 5000;
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 60, material: 'hybrid' }, 'DEV');
+  for (let i = 0; i < 4; i++) {
+    E.endTurn(s);
+    s.cash = Math.max(s.cash, 5000);
+  }
+  assert.ok(s.history.length >= 4);
+
+  // v1 세이브 재현: rd 가 없다.
+  for (const h of s.history) delete h.rd;
+  const base = E.creditRating(s).grade;
+
+  // 그 행들의 손익을 아무리 왜곡해도 등급이 흔들리면 안 된다.
+  for (const h of s.history) h.net = -999999;
+  assert.strictEqual(E.creditRating(s).grade, base, 'rd 없는 행이 등급을 움직였다');
+
+  for (const h of s.history) h.net = 999999;
+  assert.strictEqual(E.creditRating(s).grade, base, 'rd 없는 행이 등급을 움직였다');
+});
+
+test('승계 기종 마이그레이션은 새 게임과 같은 엔진을 준다', () => {
+  // launchTurn 을 0 으로 클램프하면 1998년 기준 엔진이 잡혀, 새 게임의 같은
+  // 기체와 달라지고 2000년 이후 파생형 비용까지 34% vs 58% 로 어긋난다.
+  const fresh = E.newGame(5);
+  const freshLegacy = fresh.programs.find((p) => p.legacy);
+
+  const old = E.newGame(5);
+  const oldLegacy = old.programs.find((p) => p.legacy);
+  delete oldLegacy.engine;
+  delete oldLegacy.engineName;
+  E.ensureShape(old);
+
+  assert.strictEqual(oldLegacy.engine, freshLegacy.engine, '마이그레이션 결과가 새 게임과 같아야 한다');
+
+  // 2016년 파생형은 양쪽 모두 재장착으로 잡혀야 한다.
+  const y = E.yearOf((2016 - 1998) * 4);
+  const a = D.evaluate({ ...E.derivativeSpec(freshLegacy, 20), year: y });
+  const b = D.evaluate({ ...E.derivativeSpec(oldLegacy, 20), year: y });
+  assert.strictEqual(a.reEngined, true);
+  assert.strictEqual(b.reEngined, true, '마이그레이션된 기체도 재장착 비용을 내야 한다');
+  assert.strictEqual(a.devCost, b.devCost);
+});
+
+test('마이그레이션된 일정에 영영 뜨지 않는 슬롯이 남지 않는다', () => {
+  // 충격은 endTurn 이 턴을 올린 뒤 발화한다. 불러온 턴 이하의 슬롯은 죽은 항목이다.
+  for (const turn of [0, 14, 30, 55]) {
+    const s = E.newGame(21);
+    s.turn = turn;
+    delete s.shocks;
+    E.ensureShape(s);
+
+    assert.ok(Array.isArray(s.shocks));
+    for (const slot of s.shocks) {
+      assert.ok(slot.turn > turn, `턴 ${turn} 에서 불러왔는데 슬롯 ${slot.turn} 이 남아 있다`);
+    }
+  }
+
+  // 남은 슬롯은 실제로 발화해야 한다 — 필터가 미래 슬롯까지 지우면 안 된다.
+  const s = E.newGame(21);
+  s.turn = 10;
+  delete s.shocks;
+  E.ensureShape(s);
+  const next = s.shocks[0];
+  assert.ok(next, '미래 슬롯은 남아 있어야 한다');
+
+  let fired = false;
+  while (!s.gameOver && s.turn <= next.turn) {
+    s.cash = Math.max(s.cash, 60000);
+    E.endTurn(s);
+    if (s.turn === next.turn && s.events.some((e) => e.shock)) fired = true;
+  }
+  assert.ok(fired, `슬롯 ${next.turn} 이 발화해야 한다`);
 });

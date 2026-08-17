@@ -79,6 +79,7 @@
     const rng = rngFor(s);
     s.shocks = buildShockSchedule(s, rng);
     s.rfps = generateRfps(s, rng);
+    s.rateForQuarter = interestRate(s);
     saveRng(s, rng);
 
     pushLog(
@@ -194,6 +195,8 @@
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
+    if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
+
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
       // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
@@ -215,15 +218,23 @@
     // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
     for (const p of s.programs) {
       if (p.engine && root.AirlinerEngines.get(p.engine)) continue;
+      // launchTurn 은 승계 기종이면 음수다(DN-150 = -40 = 1988년). 0으로 클램프하면
+      // 1998년 기준 엔진이 잡혀 새 게임의 같은 기체와 달라지고, 2000년 이후에는
+      // 단산 여부가 갈려 파생형 비용까지 34% vs 58% 로 어긋난다.
       const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
-      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(Math.max(0, born)));
+      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(born));
       if (!eng) continue;
       p.engine = eng.id;
       p.engineName = eng.name;
       p.engineMaker = eng.maker;
     }
     // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
-    if (!Array.isArray(s.shocks)) s.shocks = buildShockSchedule(s, createRng(s.seed));
+    // 이미 지난 분기의 슬롯은 버린다 — 충격은 endTurn 이 턴을 올린 뒤 발화하므로
+    // 현재 턴 이하 슬롯은 영영 뜨지 않는 죽은 항목이 되고, 그 시점 충격은 옛 규칙
+    // 아래서 이미 한 번 지나갔다.
+    if (!Array.isArray(s.shocks)) {
+      s.shocks = buildShockSchedule(s, createRng(s.seed)).filter((x) => x.turn > s.turn);
+    }
 
     // 가상 경쟁사(strength 스칼라)를 쓰던 세이브는 실존 제조사 명단으로 갈아끼운다.
     // 옛 strength 는 새 카탈로그와 척도가 달라 옮겨올 수 없으므로 보정치는 0에서 시작한다.
@@ -283,6 +294,8 @@
 
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
   function addToFleet(s, airlineId, programId, n) {
+    if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
+
     if (!s.fleets) {
       // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
       // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
@@ -304,15 +317,23 @@
     // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
     for (const p of s.programs) {
       if (p.engine && root.AirlinerEngines.get(p.engine)) continue;
+      // launchTurn 은 승계 기종이면 음수다(DN-150 = -40 = 1988년). 0으로 클램프하면
+      // 1998년 기준 엔진이 잡혀 새 게임의 같은 기체와 달라지고, 2000년 이후에는
+      // 단산 여부가 갈려 파생형 비용까지 34% vs 58% 로 어긋난다.
       const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
-      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(Math.max(0, born)));
+      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(born));
       if (!eng) continue;
       p.engine = eng.id;
       p.engineName = eng.name;
       p.engineMaker = eng.maker;
     }
     // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
-    if (!Array.isArray(s.shocks)) s.shocks = buildShockSchedule(s, createRng(s.seed));
+    // 이미 지난 분기의 슬롯은 버린다 — 충격은 endTurn 이 턴을 올린 뒤 발화하므로
+    // 현재 턴 이하 슬롯은 영영 뜨지 않는 죽은 항목이 되고, 그 시점 충격은 옛 규칙
+    // 아래서 이미 한 번 지나갔다.
+    if (!Array.isArray(s.shocks)) {
+      s.shocks = buildShockSchedule(s, createRng(s.seed)).filter((x) => x.turn > s.turn);
+    }
     if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
     s.fleets[airlineId][programId] = (s.fleets[airlineId][programId] || 0) + n;
   }
@@ -637,6 +658,9 @@
     s.rfps = generateRfps(s, rng);
     s.bids = {};
 
+    // 다음 분기에 적용될 이자율을 지금 확정한다 — 화면이 보여줄 값이자 청구할 값.
+    s.rateForQuarter = interestRate(s);
+
     // 이벤트(결함 수리비 등)가 현금을 빼앗아 지급불능이 된 경우도 즉시 종료다.
     // 정산 직후 검사만 두면, 이벤트발 지급불능은 다음 분기 내내 살아남아
     // 재고 처분 등으로 회생할 수 있다.
@@ -876,7 +900,9 @@
   }
 
   function settleFinance(s, report) {
-    const rate = interestRate(s);
+    // 화면에 고지한 값을 그대로 청구한다. 정산 시점에 다시 계산하면 그 분기의
+    // 생산·인도로 등급이 바뀌어, 플레이어가 보고 판단한 이자와 실제가 달라진다.
+    const rate = typeof s.rateForQuarter === 'number' ? s.rateForQuarter : interestRate(s);
     const interest = s.debt * rate;
     s.rating = creditRating(s).grade;
     report.rate = Math.round(rate * 10000) / 100;
@@ -1121,10 +1147,10 @@
     const leverage = s.debt / (s.debt + equity);
     // 최근 4분기 손익 평균을 자기자본 대비로 본다.
     // 개발비 차감 전 손익으로 본다 — 신제품에 투자 중인 회사를 적자로 읽지 않도록.
-    const recent = s.history.slice(-4);
-    const profit = recent.length
-      ? recent.reduce((a, h) => a + h.net + (h.rd || 0), 0) / recent.length
-      : 0;
+    // rd 가 없던 옛 이력은 net 안에 개발비가 그대로 들어 있어, 그대로 쓰면
+    // 세이브를 불러온 것만으로 등급이 떨어진다. 복원할 수 없는 값이므로 제외한다.
+    const recent = s.history.slice(-4).filter((h) => typeof h.rd === 'number');
+    const profit = recent.length ? recent.reduce((a, h) => a + h.net + h.rd, 0) / recent.length : 0;
     const profitability = profit / equity;
 
     // 0(최악) ~ 1(최고) 점수로 합성.
@@ -1146,6 +1172,11 @@
       CONFIG.interestPerQuarter * creditRating(s).mult +
       (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0)
     );
+  }
+
+  /** 이번 분기에 실제로 청구될 이자율 — 분기 시작 시 고정된 값. 화면은 이걸 보여준다. */
+  function quarterRate(s) {
+    return typeof s.rateForQuarter === 'number' ? s.rateForQuarter : interestRate(s);
   }
 
   function netWorth(s) {
@@ -1235,6 +1266,7 @@
     netWorth,
     creditRating,
     interestRate,
+    quarterRate,
     finalScore,
     projectedQuarters,
     ensureShape,
