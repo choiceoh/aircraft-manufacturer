@@ -324,6 +324,10 @@
       if (lbl) lbl.textContent = P.num(ui.spec[key]) + unit;
       const prev = document.getElementById('design-preview');
       if (prev) prev.innerHTML = P.renderDesignPreview(s, ui.spec, ui.designName);
+      // 착수 옵션도 지금 값에 달려 있다 — 항속·기술·날개를 움직이면 패밀리 승계가
+      // 끊기거나 ETOPS 가 값을 하게 된다. 미리보기만 갈면 여기가 옛 상태로 남는다.
+      const opts = document.getElementById('design-options');
+      if (opts) opts.innerHTML = P.renderDesignOptions(s, ui.spec);
     } else if (el.dataset.action === 'share') {
       const p = s.programs.find((x) => x.id === el.dataset.id);
       if (!p) return;

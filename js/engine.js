@@ -16,6 +16,7 @@
     FICTIONAL_SHOCKS,
     HISTORICAL_ODDS,
     ETOPS_RANGE_KM,
+    ETOPS_USEFUL_RANGE,
     LINE_GRADES,
     RETOOL_COST_RATE,
     OUTSOURCING,
@@ -260,8 +261,11 @@
 
     // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
     // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
+    // 기준은 요구 항속이 아니라 **닿을 수 있는 노선**이다 — 응찰은 요구의
+    // RANGE_TOLERANCE 만 채우면 되므로 8,100km 기체도 9,000km 공고에 들어갈 수
+    // 있었다. 9,000 으로 자르면 그 구간(8,100~8,999)이 통째로 영구 실격된다.
     for (const p of s.programs) {
-      if (p.etops === undefined) p.etops = p.range >= ETOPS_RANGE_KM;
+      if (p.etops === undefined) p.etops = p.range >= ETOPS_USEFUL_RANGE;
     }
 
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의

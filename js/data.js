@@ -239,6 +239,18 @@
   const ETOPS_RANGE_KM = 9000;
 
   /**
+   * 요구 항속 대비 허용 부족분 — 이만큼만 채우면 응찰할 수 있다.
+   * 즉 항속 R인 기체가 실제로 노릴 수 있는 노선은 R / RANGE_TOLERANCE 까지다.
+   *
+   * 입찰 실격 판정과 ETOPS 판단이 반드시 같은 값을 봐야 한다. 따로 두면
+   * 8,100~8,999km 기체처럼 "9,000km 노선에 응찰은 되는데 ETOPS 는 못 받는" 사각이 생긴다.
+   */
+  const RANGE_TOLERANCE = 0.9;
+
+  /** ETOPS 가 값을 하는 최소 항속 — 이 아래로는 인증해 봐야 닿을 노선이 없다. */
+  const ETOPS_USEFUL_RANGE = ETOPS_RANGE_KM * RANGE_TOLERANCE;
+
+  /**
    * 경쟁 제조사는 `js/fleet.js`의 실존 제조사·실기종 카탈로그에서 나온다.
    * 세그먼트별 경쟁력은 고정값이 아니라 "그 시점에 실제로 팔리던 기종"에서 유도되고,
    * 아래 이벤트는 거기에 얹히는 보정치(drift)만 움직인다.
@@ -698,6 +710,8 @@
     FIELD_REQUIREMENT,
     UPGAUGE_PER_YEAR,
     ETOPS_RANGE_KM,
+    RANGE_TOLERANCE,
+    ETOPS_USEFUL_RANGE,
     RIVAL_STRENGTH_CAP,
     RIVAL_STRENGTH_FLOOR,
     RIVAL_DRIFT_LIMIT,

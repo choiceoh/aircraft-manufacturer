@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
@@ -209,9 +209,6 @@
 
     const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year) || {}).id;
     const substituted = spec.engine && effectiveEngine !== spec.engine;
-    // 원형이 이미 패밀리면 소속은 승계된다 — 선투자 토글을 다시 켜 봐야
-    // 얻는 게 없으므로 아예 잠근다 (design.js 도 중복 청구하지 않는다).
-    const inheritsFamily = D.evaluate({ ...spec, year }).inFamily;
     const engines = Engines.available(spec.segment, year)
       .slice()
       .sort((a, b) => a.eff - b.eff)
@@ -264,20 +261,7 @@
           <div class="mats">${engines}</div>
           <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
           <h3 style="margin-top:18px">착수 옵션</h3>
-          <div class="mats">
-            ${
-              inheritsFamily
-                ? `<button class="mat on" disabled>
-              <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
-            </button>`
-                : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
-              <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 신규 설계 대비 22%(일반 34%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
-            </button>`
-            }
-            <button class="mat ${spec.etops ? 'on' : ''}" data-action="design-etops">
-              <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
-            </button>
-          </div>
+          <div class="mats" id="design-options">${renderDesignOptions(s, spec)}</div>
           ${
             substituted
               ? `<p class="warn-box">원형 엔진은 더 이상 판매되지 않아 <b>${esc(
@@ -290,6 +274,35 @@
       </section>
 
       ${derivatives ? `<section class="card"><h3>파생형</h3><p class="muted">기존 형식증명을 물려받아 개발비 66%, 기간 50%를 아낀다. 엔진까지 갈아 끼우면(재장착) 절감이 42%·28%로 줄어든다.</p><div class="row">${derivatives}</div></section>` : ''}`;
+  }
+
+  /**
+   * 착수 옵션 — 패밀리·ETOPS.
+   *
+   * 이 블록은 **슬라이더를 움직이면 같이 갈아끼워야 한다**. 두 옵션 다 지금의
+   * 항속·기술·날개 값에 따라 의미가 달라지기 때문이다: 파생형 허용 오차를 넘기면
+   * 패밀리 승계가 끊기고, 항속이 짧으면 ETOPS 는 값을 못 한다. 미리보기만 새로
+   * 그리면 여기가 옛 상태로 남아 실제 착수 결과와 어긋난다.
+   */
+  function renderDesignOptions(s, spec) {
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn) });
+    const family = ev.inFamily
+      ? `<button class="mat on" disabled>
+          <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
+        </button>`
+      : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
+          <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 신규 설계 대비 22%(일반 34%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
+        </button>`;
+    const etops = ev.etopsUsable
+      ? `<button class="mat ${ev.etops ? 'on' : ''}" data-action="design-etops">
+          <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
+        </button>`
+      : `<button class="mat" disabled>
+          <b>ETOPS 인증</b><span>이 항속(${num(ev.range)}km)으로는 ${num(ETOPS_RANGE_KM)}km 노선에 닿지 않는다. <b>${num(
+          Math.ceil(ETOPS_USEFUL_RANGE),
+        )}km 이상</b>부터 값을 한다.</span>
+        </button>`;
+    return family + etops;
   }
 
   function slider(key, label, value, min, max, step, unit) {
@@ -719,6 +732,7 @@
   root.AirlinerPanels = {
     renderOverview,
     renderDesign,
+    renderDesignOptions,
     renderDesignPreview,
     renderPrograms,
     renderProduction,

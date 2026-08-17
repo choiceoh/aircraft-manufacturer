@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG } = root.AirlinerData;
+  const { SEGMENTS, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_USEFUL_RANGE } = root.AirlinerData;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
 
@@ -115,7 +115,11 @@
       devQuarters *= CONFIG.familyTimeMult;
     }
     // ETOPS 인증을 함께 받으면 개발비와 인증 기간이 는다.
-    const etops = !!spec.etops;
+    // 단, **닿을 노선이 있어야** 값을 한다. 리저널(최대 4,800km)·협동체(7,800km)는
+    // ETOPS 요구 노선(9,000km~)에 애초에 응찰할 수 없으므로, 인증을 켜도 개발비만
+    // 늘고 얻는 게 없는 한 방향 지출이 된다 — 그런 결정은 아예 청구하지 않는다.
+    const etopsUsable = range >= ETOPS_USEFUL_RANGE;
+    const etops = !!spec.etops && etopsUsable;
     if (etops) devCost *= CONFIG.etopsDevMult;
 
     if (derivative) {
@@ -199,6 +203,7 @@
       certQuarters: seg.certQuarters + (etops ? CONFIG.etopsCertQuarters : 0),
       family,
       etops,
+      etopsUsable,
       inFamily,
       // UI가 "파생형 할인이 적용됐는지"를 그대로 보여줄 수 있게 노출한다.
       derivative,

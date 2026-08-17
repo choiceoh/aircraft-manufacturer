@@ -2414,3 +2414,85 @@ test('전환 후에도 라인 자산 기준이 새로 세운 라인과 같다', 
   assert.strictEqual(line.paidCost, fresh, '전환이 라인 자산 기준을 흔들면 안 된다');
   assert.strictEqual(line.grade, 'classic', '등급은 전환으로 바뀌지 않는다');
 });
+
+test('ETOPS 는 닿을 노선이 있을 때만 청구된다', () => {
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 55, engine: 'cfm56-5b', abreast: 6, wing: 45, year: 2000 };
+  // 협동체 최대 항속(7,800km)으로도 9,000km 노선엔 닿지 않는다 — 켜도 값을 못 한다.
+  const off = D.evaluate({ ...base, range: Data.SEGMENTS.narrow.range.max });
+  const on = D.evaluate({ ...base, range: Data.SEGMENTS.narrow.range.max, etops: true });
+  assert.strictEqual(on.etopsUsable, false, '협동체는 ETOPS 를 쓸 수 없어야 한다');
+  assert.strictEqual(on.devCost, off.devCost, '쓸 수 없는 인증을 청구하면 안 된다');
+  assert.strictEqual(on.certQuarters, off.certQuarters, '인증 기간도 늘면 안 된다');
+  assert.strictEqual(on.etops, false, '자격이 붙었다고 표시해서도 안 된다');
+
+  // 광동체는 여전히 값을 치른다 — 옵션 자체를 죽인 게 아니다.
+  const wBase = { segment: 'wide', seats: 320, range: 12000, tech: 55, abreast: 9, wing: 60, year: 2000 };
+  const wOff = D.evaluate(wBase);
+  const wOn = D.evaluate({ ...wBase, etops: true });
+  assert.ok(wOn.etopsUsable, '광동체 장거리는 쓸 수 있어야 한다');
+  assert.ok(wOn.devCost > wOff.devCost, '광동체는 인증비를 물어야 한다');
+  assert.ok(wOn.certQuarters > wOff.certQuarters, '인증 기간도 늘어야 한다');
+
+  // 경계: 응찰 가능선(RANGE_TOLERANCE)과 같은 값을 써야 한다.
+  const edge = D.evaluate({ ...wBase, range: Math.ceil(Data.ETOPS_USEFUL_RANGE) });
+  const below = D.evaluate({ ...wBase, range: Math.floor(Data.ETOPS_USEFUL_RANGE) - 1 });
+  assert.ok(edge.etopsUsable, '닿는 항속은 허용해야 한다');
+  assert.strictEqual(below.etopsUsable, false, '못 닿는 항속은 막아야 한다');
+});
+
+test('세이브 ETOPS 마이그레이션이 응찰 가능선을 따른다', () => {
+  // 8,100~8,999km 광동체는 9,000km 공고에 응찰할 수 있었다 — 실격시키면 안 된다.
+  const s = E.newGame(51);
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 8500, tech: 55, abreast: 9, wing: 55 }, 'W').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  delete p.etops;
+  delete s.fleets;
+  E.ensureShape(s);
+  assert.strictEqual(p.etops, true, '9,000km 공고에 닿는 기체는 자격을 유지해야 한다');
+
+  // 실제로 그 공고에 응찰할 수 있어야 한다 (실격 사유가 없어야 한다).
+  const rfp = {
+    id: 'r', airlineId: 'carta', segment: 'wide', reqSeats: 290, reqRange: 9400,
+    reqField: 0, fieldKind: 'normal', reqEtops: true, qty: 10,
+    priceSensitivity: 0.5, prestige: 1.0, relation: 40,
+  };
+  assert.ok(!B.scoreBid(s, rfp, p, 0).blocked, '응찰이 막히면 안 된다');
+
+  // 닿지 않는 기체는 그대로 무자격이다.
+  const s2 = E.newGame(52);
+  assert.ok(E.launchProgram(s2, { segment: 'wide', seats: 300, range: 7000, tech: 55, abreast: 9, wing: 50 }, 'W2').ok);
+  const q = s2.programs[s2.programs.length - 1];
+  delete q.etops;
+  delete s2.fleets;
+  E.ensureShape(s2);
+  assert.strictEqual(q.etops, false, '닿지 않는 기체에 자격을 주면 안 된다');
+});
+
+test('착수 옵션이 슬라이더 값에 따라 다시 그려진다', () => {
+  const s = E.newGame(53);
+  const wide = { segment: 'wide', seats: 320, range: 12000, tech: 55, abreast: 9, wing: 60 };
+  const far = P.renderDesignOptions(s, wide);
+  const near = P.renderDesignOptions(s, { ...wide, range: 7000 });
+  assert.ok(/data-action="design-etops"/.test(far), '닿는 항속에서는 ETOPS 를 고를 수 있어야 한다');
+  assert.ok(!/data-action="design-etops"/.test(near), '못 닿는 항속에서는 고를 수 없어야 한다');
+  assert.ok(/닿지 않는다/.test(near), '왜 못 고르는지 알려야 한다');
+
+  // 패밀리 승계도 마찬가지 — 허용 오차를 넘으면 승계가 끊긴다.
+  const derivedFrom = { id: 'x', tech: 55, fuselage: 'aluminum', wingMat: 'aluminum', range: 12000, engine: 'trent700', abreast: 9, wing: 60, family: true };
+  const seed = { ...wide, engine: 'trent700', seats: 340, fuselage: 'aluminum', wingMat: 'aluminum', derivedFrom };
+  const inside = P.renderDesignOptions(s, seed);
+  const outside = P.renderDesignOptions(s, { ...seed, wing: 100 }); // 날개 재설계 = 새 기체
+  assert.ok(/패밀리 승계/.test(inside), '허용 범위 안이면 승계 표시');
+  assert.ok(/data-action="design-family"/.test(outside), '범위를 벗어나면 유료 옵션을 다시 열어야 한다');
+  assert.ok(!/패밀리 승계/.test(outside), '끊긴 승계를 계속 약속하면 안 된다');
+});
+
+test('슬라이더 입력이 착수 옵션 블록도 갈아끼운다', () => {
+  // DOM 교체라 node 로는 실행할 수 없다. 동작은 헤드리스 브라우저로 확인했고
+  // (광동체 12,000km → 7,000km 로 내리면 ETOPS 선택지가 사라짐, 되돌리면 남아 있음),
+  // 여기서는 그 한 줄이 사라지는 회귀만 막는다.
+  const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
+  const handler = src.slice(src.indexOf("design-input"), src.indexOf("} else if (el.dataset.action === 'share')"));
+  assert.ok(/design-options/.test(handler) && /renderDesignOptions/.test(handler), '슬라이더 입력이 착수 옵션도 다시 그려야 한다');
+});

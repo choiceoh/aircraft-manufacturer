@@ -7,7 +7,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, UPGAUGE_PER_YEAR } =
+  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, RANGE_TOLERANCE, UPGAUGE_PER_YEAR } =
     root.AirlinerData;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
@@ -141,8 +141,8 @@
     if (program.segment !== rfp.segment) {
       return { total: 0, parts: {}, blocked: '세그먼트 불일치', price: 0 };
     }
-    // 요구 항속의 90% 미만이면 노선 자체를 못 뛴다 — 실격.
-    if (program.range < rfp.reqRange * 0.9) {
+    // 요구 항속의 일정 비율에 못 미치면 노선 자체를 못 뛴다 — 실격.
+    if (program.range < rfp.reqRange * RANGE_TOLERANCE) {
       return { total: 0, parts: {}, blocked: '항속거리 부족', price: 0 };
     }
     // 좌석이 요구의 80% 미만이면 수송력 미달 — 실격.
