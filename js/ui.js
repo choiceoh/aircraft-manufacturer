@@ -326,6 +326,18 @@
         render();
         break;
 
+      case 'aftermarket': {
+        const r = E.upgradeAftermarket(s, btn.dataset.tier);
+        act(r, r.ok ? '서비스망 투자를 마쳤다.' : null);
+        break;
+      }
+
+      case 'freighter': {
+        const r = E.startFreighter(s, btn.dataset.id);
+        act(r, r.ok ? '화물형 개조에 착수했다.' : null);
+        break;
+      }
+
       case 'raise': {
         const r = E.raiseEquity(s, Number(btn.dataset.amt));
         act(r, r.ok ? '증자를 마쳤다. 지분이 희석됐다.' : null);

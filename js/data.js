@@ -257,6 +257,68 @@
    */
 
   /**
+   * 애프터마켓 — 부품·정비 사업.
+   *
+   * 지금까지 매출은 오직 신규 인도였다. 그래서 개발 공백기에는 경영할 거리가 없고
+   * 후속기 하나에 회사가 통째로 걸린다. 실제 제조사 이익의 큰 몫은 이미 팔아 둔
+   * 기체에서 나온다 — 굴러다니는 기체가 많을수록 안정적으로 들어오는 돈이다.
+   *
+   * 게임에서는 "초반의 인도 노력이 후반의 안정 수익으로 복리가 된다"는 장치다.
+   * 대당 금액이 작아야 한다 — 크면 한 번 팔고 나서 아무것도 안 해도 되는 게임이 된다.
+   */
+  // 인도 1기당 분기 수익 (M$). 이 값과 아래 투자비는 함께 움직여야 한다 — 처음
+  // 잡았던 0.085/900/2400 조합은 투자 회수에 67분기가 걸려, 고를 이유가 없는
+  // 함정 선택지였다. 지금은 선단 400기 기준 약 20분기에 회수된다.
+  const AFTERMARKET_PER_UNIT = 0.1;
+
+  const AFTERMARKET_TIERS = {
+    none: {
+      id: 'none',
+      name: '위탁 정비',
+      hint: '투자 없음. 부품 마진만 얇게 남는다',
+      cost: 0,
+      mult: 1,
+      relation: 0,
+    },
+    regional: {
+      id: 'regional',
+      name: '지역 정비 거점',
+      hint: '거점을 세워 마진을 늘리고 고객 관계를 얻는다',
+      cost: 500,
+      mult: 1.6,
+      relation: 2,
+    },
+    global: {
+      id: 'global',
+      name: '글로벌 서비스망',
+      hint: '전 세계 부품·정비를 직접 굴린다. 비싸지만 선단이 클수록 값을 한다',
+      cost: 1100,
+      mult: 2.3,
+      relation: 4,
+    },
+  };
+
+  const AFTERMARKET_ORDER = ['none', 'regional', 'global'];
+
+  /**
+   * 화물형 개조 사업.
+   *
+   * 여객 수요가 꺾이면 할 게 없어지는 구조를 깬다 — 화물 수요는 여객과 다르게 움직이고,
+   * 침체기에 오히려 늘기도 한다. 실제로 여객기 노후분의 화물기 개조는 제조사·개조사의
+   * 불황기 버팀목이었다.
+   */
+  const FREIGHTER = {
+    /** 개조 프로그램 착수비 (원 기종 개발비 대비) */
+    devRate: 0.12,
+    /** 착수 후 사업이 서기까지 걸리는 분기 */
+    quarters: 4,
+    /** 인도 1기당 분기 수익 (M$) */
+    perUnit: 0.09,
+    /** 여객 수요 침체 중에는 화물이 버틴다 */
+    slumpMult: 1.8,
+  };
+
+  /**
    * 입찰 조건 — 할인율 말고 무엇을 걸 수 있나.
    *
    * 할인 슬라이더 하나뿐일 때는 응찰만 하면 88% 이겼다(측정치). 결정이 하나면
@@ -793,6 +855,10 @@
     ETOPS_RANGE_KM,
     RANGE_TOLERANCE,
     ETOPS_USEFUL_RANGE,
+    AFTERMARKET_PER_UNIT,
+    AFTERMARKET_TIERS,
+    AFTERMARKET_ORDER,
+    FREIGHTER,
     BID_PLEDGES,
     BID_FINANCING,
     RIVAL_STRENGTH_CAP,

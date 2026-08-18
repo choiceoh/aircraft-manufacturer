@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE, BID_PLEDGES, BID_FINANCING } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE, BID_PLEDGES, BID_FINANCING, AFTERMARKET_TIERS, FREIGHTER } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
@@ -658,6 +658,7 @@
       .join('');
 
     return `
+      ${servicesCard(s)}
       <section class="card"><h3>조달 전략</h3>
         <p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
         <div class="mats">${sourcingButtons}</div>
@@ -669,6 +670,53 @@
       </section>
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
+  }
+
+  /**
+   * 서비스 사업 — 부품·정비와 화물형.
+   * 신규 인도만이 매출이면 개발 공백기에 경영할 거리가 없다. 이미 팔아 둔 기체가
+   * 얼마를 벌어다 주는지 여기서 보인다.
+   */
+  function servicesCard(s) {
+    const inc = E.serviceIncome(s);
+    const order = ['none', 'regional', 'global'];
+    const curIdx = order.indexOf(s.aftermarket);
+
+    const tiers = order
+      .map((id, i) => {
+        const t = AFTERMARKET_TIERS[id];
+        const owned = i <= curIdx;
+        const cost = t.cost - (AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none).cost;
+        return `<button class="mat ${owned ? 'on' : ''}" data-action="aftermarket" data-tier="${id}"
+                  ${owned || i !== curIdx + 1 ? 'disabled' : ''}>
+                  <b>${esc(t.name)}</b>
+                  <span>${owned ? '보유' : `${money(cost)} · 수익 ×${t.mult}`}</span>
+                  <span class="muted">${esc(t.hint)}</span>
+                </button>`;
+      })
+      .join('');
+
+    const freighters = s.programs.filter((p) => p.phase === 'production');
+    const freightButtons = freighters.length
+      ? freighters
+          .map((p) => {
+            if (p.freighter) return `<span class="tag good">${esc(p.name)} 화물형 운영 중</span>`;
+            if (p.freighterAt !== undefined) return `<span class="tag">${esc(p.name)} 개조 준비 중</span>`;
+            return `<button data-action="freighter" data-id="${p.id}">${esc(p.name)} 화물형 개조 · ${money(p.devCost * FREIGHTER.devRate)}</button>`;
+          })
+          .join('')
+      : '<span class="muted">양산 중인 기종이 없다.</span>';
+
+    return `
+      <section class="card">
+        <h3>서비스 사업</h3>
+        <p class="muted">이미 팔아 둔 기체가 벌어다 주는 돈이다. 선단 ${num(inc.fleet)}기 기준 이번 분기 <b>${money(inc.total)}</b>
+          <span class="muted">(부품·정비 ${money(inc.aftermarket)}${inc.freight ? ` · 화물 ${money(inc.freight)}` : ''})</span></p>
+        <div class="mats">${tiers}</div>
+        <h3 class="sub">화물형 개조</h3>
+        <p class="hint">여객 수요가 꺾여도 화물은 돈다. 침체 분기에는 화물 수익이 ${FREIGHTER.slumpMult}배가 된다 — 불황 헤지다.</p>
+        <div class="row wrap">${freightButtons}</div>
+      </section>`;
   }
 
   // ─────────────────────────────── 수주 ───────────────────────────────

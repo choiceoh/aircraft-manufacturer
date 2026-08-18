@@ -24,6 +24,9 @@
     LEGACY_MATERIAL_MAP,
     BID_PLEDGES,
     BID_FINANCING,
+    AFTERMARKET_PER_UNIT,
+    AFTERMARKET_TIERS,
+    FREIGHTER,
     RIVAL_DRIFT_LIMIT,
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
@@ -108,6 +111,8 @@
       pendingOutcomes: [],
       // 자체 금융으로 넘긴 대금 — { turn, amount, airlineName }. 분기마다 회수한다.
       receivables: [],
+      // 애프터마켓(부품·정비) 투자 수준. 인도한 기체가 쌓일수록 값을 한다.
+      aftermarket: 'none',
       // 5년 단위 이사회 목표. newGame 에서 첫 목표를 발령한다.
       mandate: null,
       // 증자 횟수와 누적 지분 희석 — 최종 점수에서 그만큼 우리 몫이 아니다.
@@ -259,6 +264,7 @@
     if (s.decision === undefined) s.decision = null;
     if (!Array.isArray(s.pendingOutcomes)) s.pendingOutcomes = [];
     if (!Array.isArray(s.receivables)) s.receivables = [];
+    if (!AFTERMARKET_TIERS[s.aftermarket]) s.aftermarket = 'none';
     if (s.mandate === undefined) s.mandate = null;
     if (typeof s.equityRounds !== 'number') s.equityRounds = 0;
     if (typeof s.equityDilution !== 'number') s.equityDilution = 0;
@@ -802,6 +808,7 @@
     runDeliveries(s, report);
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
+    runServices(s, report);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
@@ -1512,6 +1519,99 @@
 
   function fmtNum(n) {
     return Math.round(n).toLocaleString('en-US');
+  }
+
+  // ─────────────────────────────── 서비스 사업 ───────────────────────────────
+
+  /**
+   * 애프터마켓 투자. 한 번 올리면 내리지 않는다 — 거점을 세웠다 접었다 하는 건
+   * 사업이 아니라 회계 장난이다.
+   */
+  function upgradeAftermarket(s, tierId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const tier = AFTERMARKET_TIERS[tierId];
+    if (!tier) return { ok: false, error: '없는 투자 단계입니다.' };
+    const order = ['none', 'regional', 'global'];
+    if (order.indexOf(tierId) <= order.indexOf(s.aftermarket)) {
+      return { ok: false, error: '이미 그 이상으로 갖춰져 있습니다.' };
+    }
+    const cur = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
+    const cost = tier.cost - cur.cost;
+    if (s.cash < cost) return { ok: false, error: `투자비 ${fmtMoney(cost)}이 부족합니다.` };
+
+    s.cash -= cost;
+    s.pending.capex += cost;
+    s.aftermarket = tierId;
+    for (const a of AIRLINES) {
+      s.relations[a.id] = clamp((s.relations[a.id] ?? 40) + tier.relation, 0, 100);
+    }
+    pushLog(s, 'good', `${tier.name}에 ${fmtMoney(cost)}을 투자했다. 부품·정비 수익이 늘고 고객 관계가 올랐다.`);
+    return { ok: true };
+  }
+
+  /**
+   * 화물형 개조 사업 착수. 양산 중인 기종에만 붙는다 — 굴러다니는 기체가 있어야
+   * 개조할 것도 있다.
+   */
+  function startFreighter(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'production') return { ok: false, error: '양산 중인 기종만 화물형으로 개조할 수 있습니다.' };
+    if (p.freighter || p.freighterAt) return { ok: false, error: '이미 화물형 사업이 진행 중입니다.' };
+
+    const cost = Math.round(p.devCost * FREIGHTER.devRate);
+    if (s.cash < cost) return { ok: false, error: `개조 개발비 ${fmtMoney(cost)}이 부족합니다.` };
+    s.cash -= cost;
+    s.pending.rdCost += cost;
+    p.freighterAt = s.turn + FREIGHTER.quarters;
+    pushLog(
+      s,
+      'program',
+      `${p.name} 화물형 개조에 ${fmtMoney(cost)}을 투입했다. ${FREIGHTER.quarters}분기 뒤부터 개조 수익이 들어온다.`,
+    );
+    return { ok: true, cost };
+  }
+
+  /**
+   * 서비스 사업 정산 — 부품·정비와 화물 개조.
+   *
+   * 신규 인도만이 매출이면 개발 공백기에 경영할 거리가 없다. 여기 수익은 이미 팔아
+   * 둔 기체에서 나오므로, 초반의 인도 노력이 후반의 버팀목이 된다.
+   */
+  function runServices(s, report) {
+    const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
+    const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
+    const after = fleet * AFTERMARKET_PER_UNIT * tier.mult;
+
+    let freight = 0;
+    for (const p of s.programs) {
+      if (p.freighterAt !== undefined && !p.freighter && s.turn >= p.freighterAt) {
+        p.freighter = true;
+        delete p.freighterAt;
+        pushLog(s, 'good', `${p.name} 화물형 개조 사업이 문을 열었다.`);
+      }
+      if (p.freighter) freight += (p.delivered || 0) * FREIGHTER.perUnit;
+    }
+    // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
+    if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
+
+    const total = Math.round(after + freight);
+    if (total <= 0) return;
+    s.cash += total;
+    s.stats.revenue += total;
+    report.revenue += total;
+    report.services = total;
+  }
+
+  /** 화면이 읽는 서비스 수익 내역. */
+  function serviceIncome(s) {
+    const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
+    const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
+    const after = fleet * AFTERMARKET_PER_UNIT * tier.mult;
+    let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
+    if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
+    return { fleet, aftermarket: after, freight, total: after + freight, tier };
   }
 
   // ─────────────────────────────── 이사회 목표 ───────────────────────────────
@@ -2249,6 +2349,9 @@
     retoolLine,
     retoolCompatibility,
     setOutsourcing,
+    upgradeAftermarket,
+    startFreighter,
+    serviceIncome,
     closeLine,
     toggleLine,
     sellStock,

@@ -3233,3 +3233,96 @@ test('목표·증자 상태는 세이브 왕복을 견딘다', () => {
   assert.strictEqual(old.equityDilution, 0);
   assert.doesNotThrow(() => E.endTurn(old));
 });
+
+// ─────────────────────── 서비스 사업 ───────────────────────
+
+test('애프터마켓 수익은 선단에 비례하고 투자로 늘어난다', () => {
+  const s = E.newGame(251);
+  const base = E.serviceIncome(s);
+  assert.ok(base.fleet > 0, '승계 기종의 인도분이 선단으로 잡혀야 한다');
+  assert.ok(base.aftermarket > 0, '투자 없이도 부품 마진은 들어온다');
+
+  // 선단이 커지면 수익도 커진다.
+  const p = s.programs.find((x) => x.legacy);
+  p.delivered += 200;
+  assert.ok(E.serviceIncome(s).aftermarket > base.aftermarket, '선단이 늘었는데 수익이 그대로다');
+
+  s.cash = 9000;
+  const before = E.serviceIncome(s).aftermarket;
+  assert.ok(E.upgradeAftermarket(s, 'regional').ok);
+  assert.ok(E.serviceIncome(s).aftermarket > before, '투자했는데 수익이 그대로다');
+
+  // 실제 정산에도 반영된다.
+  const cashBefore = s.cash;
+  const r = E.endTurn(s);
+  assert.ok(r.report.services > 0, '서비스 수익이 리포트에 안 잡혔다');
+});
+
+test('서비스 투자는 단계를 건너뛰거나 되돌릴 수 없다', () => {
+  const s = E.newGame(253);
+  s.cash = 20000;
+  assert.ok(!E.upgradeAftermarket(s, 'nope').ok, '없는 단계가 통과했다');
+  assert.ok(E.upgradeAftermarket(s, 'regional').ok);
+  assert.ok(!E.upgradeAftermarket(s, 'regional').ok, '같은 단계를 두 번 샀다');
+  assert.ok(!E.upgradeAftermarket(s, 'none').ok, '투자를 되돌릴 수 있다');
+  assert.ok(E.upgradeAftermarket(s, 'global').ok);
+
+  // 자금이 모자라면 거부한다.
+  const poor = E.newGame(257);
+  poor.cash = 10;
+  assert.ok(!poor.cash || !E.upgradeAftermarket(poor, 'regional').ok, '돈 없이 투자가 통과했다');
+});
+
+test('화물형은 양산 기종에만 붙고 몇 분기 뒤에 열린다', () => {
+  const s = E.newGame(259);
+  s.cash = 12000;
+  const legacy = s.programs.find((p) => p.legacy);
+  assert.ok(E.startFreighter(s, legacy.id).ok);
+  assert.ok(!E.startFreighter(s, legacy.id).ok, '같은 기종에 두 번 착수됐다');
+  assert.strictEqual(E.serviceIncome(s).freight, 0, '개조가 끝나기 전에 수익이 들어온다');
+
+  // 착수한 분기의 정산이 한 번 끼므로, 약속한 N분기가 실제로 지나려면 N+1번 넘겨야 한다.
+  for (let i = 0; i <= Data.FREIGHTER.quarters; i++) {
+    s.cash = Math.max(s.cash, 9000);
+    E.endTurn(s);
+  }
+  assert.strictEqual(s.turn, Data.FREIGHTER.quarters + 1, '분기 진행이 예상과 다르다');
+  assert.ok(legacy.freighter, `${Data.FREIGHTER.quarters}분기가 지나도 사업이 안 열렸다`);
+  const normal = E.serviceIncome(s).freight;
+  assert.ok(normal > 0, '화물 수익이 안 들어온다');
+
+  // 침체기에는 화물이 버틴다 — 그게 이 사업의 존재 이유다.
+  s.effects.demandSlumpQuarters = 4;
+  assert.ok(E.serviceIncome(s).freight > normal, '침체기에 화물 수익이 늘지 않는다');
+
+  // 개발 중인 기종에는 붙지 않는다.
+  const dev = E.newGame(263);
+  dev.cash = 12000;
+  E.launchProgram(dev, { segment: 'narrow', seats: 180, range: 5400, tech: 50, fuselage: 'aluminum', wingMat: 'aluminum' }, 'DEV1');
+  const p = dev.programs.find((x) => x.name === 'DEV1');
+  assert.ok(!E.startFreighter(dev, p.id).ok, '개발 중인 기종에 화물형이 붙었다');
+});
+
+test('서비스 투자는 회수가 되는 값이어야 한다 (함정 선택지 금지)', () => {
+  // 처음 잡았던 값(0.085/900/2400)은 회수에 67분기가 걸려 고를 이유가 없었다.
+  const fleet = 400;
+  const per = Data.AFTERMARKET_PER_UNIT;
+  const tiers = Data.AFTERMARKET_TIERS;
+  const payback = (from, to) => {
+    const gain = fleet * per * (tiers[to].mult - tiers[from].mult);
+    return (tiers[to].cost - tiers[from].cost) / gain;
+  };
+  assert.ok(payback('none', 'regional') <= 28, `지역 거점 회수가 너무 길다 (${payback('none', 'regional').toFixed(0)}분기)`);
+  assert.ok(payback('regional', 'global') <= 28, `글로벌 서비스망 회수가 너무 길다 (${payback('regional', 'global').toFixed(0)}분기)`);
+  // 20년(80분기) 안에 회수도 안 되면 사업이 아니라 벌금이다.
+  assert.ok(payback('none', 'global') < 60);
+});
+
+test('서비스 사업이 없던 옛 세이브도 그대로 돈다', () => {
+  const s = E.newGame(269);
+  delete s.aftermarket;
+  E.ensureShape(s);
+  assert.strictEqual(s.aftermarket, 'none');
+  assert.doesNotThrow(() => E.endTurn(s));
+  assert.ok(E.serviceIncome(s).total > 0);
+});
