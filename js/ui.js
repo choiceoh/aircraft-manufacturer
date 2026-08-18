@@ -166,12 +166,37 @@
         break;
 
       case 'design-seg':
-        ui.spec = D.defaultSpec(btn.dataset.seg);
+        ui.spec = D.defaultSpec(btn.dataset.seg, E.yearOf(s.turn));
         render();
         break;
 
-      case 'design-mat':
-        ui.spec.material = btn.dataset.mat;
+      case 'design-fuselage':
+        ui.spec.fuselage = btn.dataset.mat;
+        render();
+        break;
+
+      case 'design-wingmat':
+        ui.spec.wingMat = btn.dataset.mat;
+        render();
+        break;
+
+      case 'design-eng':
+        ui.spec.engine = btn.dataset.eng;
+        render();
+        break;
+
+      case 'design-abreast':
+        ui.spec.abreast = Number(btn.dataset.abreast);
+        render();
+        break;
+
+      case 'design-family':
+        ui.spec.family = !ui.spec.family;
+        render();
+        break;
+
+      case 'design-etops':
+        ui.spec.etops = !ui.spec.etops;
         render();
         break;
 
@@ -211,8 +236,16 @@
         break;
       }
 
+      case 'set-outsourcing':
+        act(E.setOutsourcing(s, btn.dataset.level));
+        break;
+
+      case 'retool-line':
+        act(E.retoolLine(s, btn.dataset.id, btn.dataset.target));
+        break;
+
       case 'build-line':
-        act(E.buildLine(s, btn.dataset.id));
+        act(E.buildLine(s, btn.dataset.id, btn.dataset.grade));
         break;
 
       case 'toggle-line':
@@ -291,6 +324,10 @@
       if (lbl) lbl.textContent = P.num(ui.spec[key]) + unit;
       const prev = document.getElementById('design-preview');
       if (prev) prev.innerHTML = P.renderDesignPreview(s, ui.spec, ui.designName);
+      // 착수 옵션도 지금 값에 달려 있다 — 항속·기술·날개를 움직이면 패밀리 승계가
+      // 끊기거나 ETOPS 가 값을 하게 된다. 미리보기만 갈면 여기가 옛 상태로 남는다.
+      const opts = document.getElementById('design-options');
+      if (opts) opts.innerHTML = P.renderDesignOptions(s, ui.spec);
     } else if (el.dataset.action === 'share') {
       const p = s.programs.find((x) => x.id === el.dataset.id);
       if (!p) return;
@@ -480,7 +517,7 @@
     const seed = randomSeed();
     ui.state = E.newGame(seed);
     ui.tab = 'overview';
-    ui.spec = D.defaultSpec('narrow');
+    ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
     ui.discountDraft = {};
     ui.designName = '';
     closeModal();
@@ -491,6 +528,10 @@
   function boot() {
     const saved = load();
     ui.state = saved || E.newGame(randomSeed());
+    // 설계 초안은 ui 리터럴에서 연도 없이(=1998) 만들어졌다. 세이브를 불러왔으면
+    // 그 시점으로 다시 잡아 준다 — 안 그러면 2015년 세이브가 1998년 기본 엔진으로
+    // 열리고, 그 엔진이 아직 팔리는 물건이면 대체 안내조차 뜨지 않는다.
+    ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state.turn));
     document.addEventListener('click', onClick);
     document.addEventListener('input', onInput);
     document.addEventListener('change', onChange);

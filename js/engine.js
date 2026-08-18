@@ -7,7 +7,22 @@
 (function (root) {
   'use strict';
 
-  const { CONFIG, SEGMENTS, AIRLINES, EVENTS } = root.AirlinerData;
+  const {
+    CONFIG,
+    SEGMENTS,
+    AIRLINES,
+    EVENTS,
+    HISTORICAL,
+    FICTIONAL_SHOCKS,
+    HISTORICAL_ODDS,
+    ETOPS_RANGE_KM,
+    ETOPS_USEFUL_RANGE,
+    LINE_GRADES,
+    RETOOL_COST_RATE,
+    OUTSOURCING,
+    WING_MATERIALS,
+    LEGACY_MATERIAL_MAP,
+  } = root.AirlinerData;
   const { MANUFACTURERS } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
@@ -18,6 +33,11 @@
     const v = Math.round(m);
     if (Math.abs(v) >= 1000) return `$${(v / 1000).toFixed(2)}B`;
     return `$${v}M`;
+  }
+
+  /** 턴 인덱스 → 소수 연도 (1998.0 = 1998년 1분기). 엔진·기종 카탈로그가 이 값을 쓴다. */
+  function yearOf(turn) {
+    return CONFIG.startYear + turn / 4;
   }
 
   function turnLabel(turn) {
@@ -52,6 +72,8 @@
       lines: [],
       backlog: [],
       relations: {},
+      // 항공사별 우리 기체 보유량 (airlineId → programId → 대수). 선단 공통성 가산의 근거.
+      fleets: {},
       competitors: newCompetitors(),
       rfps: [],
       bids: {},
@@ -61,6 +83,10 @@
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
       pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 },
       events: [],
+      // 조달 전략 — 원가 ↔ 공급 차질 위험.
+      outsourcing: 'mid',
+      // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
+      shocks: [],
       gameOver: null,
     };
     for (const a of AIRLINES) s.relations[a.id] = 34 + (a.prestige < 0.8 ? 10 : 0);
@@ -68,7 +94,10 @@
     seedLegacyProgram(s);
 
     const rng = rngFor(s);
+    s.shocks = buildShockSchedule(s, rng);
     s.rfps = generateRfps(s, rng);
+    s.ratingForQuarter = creditRating(s).grade;
+    s.rateForQuarter = interestRate(s);
     saveRng(s, rng);
 
     pushLog(
@@ -87,7 +116,8 @@
    * 대신 연비가 낮아 유가가 오르거나 경쟁사가 신형을 내면 급속히 경쟁력을 잃는다.
    */
   function seedLegacyProgram(s) {
-    const spec = { segment: 'narrow', seats: 150, range: 4800, tech: 38, material: 'aluminum' };
+    // 1990년대 초 설계라 그 시절 엔진을 달고 있다 — 지금 기준으로는 연비가 처진다.
+    const spec = { segment: 'narrow', seats: 150, range: 4800, tech: 38, material: 'aluminum', engine: 'cfm56-3', year: yearOf(0) };
     const ev = evaluate(spec);
     const p = {
       id: 'prog-' + s.nextId++,
@@ -124,6 +154,11 @@
     s.stats.delivered = p.delivered;
 
     // 인계받은 수주 잔고 — 초반 몇 년치 현금흐름.
+    // 이미 인도된 186기 중 상당수가 이 두 항공사에 있다. 선단 공통성 가산이 여기서
+    // 시작되므로, 이 두 계정은 지켜야 할 자산이고 나머지는 새로 뚫어야 할 시장이다.
+    // (남은 물량은 이미 퇴역했거나 더는 기체를 사지 않는 사업자에게 있다고 본다.)
+    s.fleets = { panamer: { [p.id]: 62 }, hanul: { [p.id]: 48 } };
+
     for (const o of [
       { id: 'panamer', name: '판아메르 항공', qty: 24 },
       { id: 'hanul', name: '한울항공', qty: 16 },
@@ -178,6 +213,83 @@
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
+    if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
+    if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
+
+    if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
+    for (const l of s.lines || []) {
+      if (!LINE_GRADES[l.grade]) l.grade = 'standard';
+      if (typeof l.paidCost !== 'number') {
+        const lp = s.programs.find((x) => x.id === l.programId);
+        const g = LINE_GRADES[l.grade];
+        if (lp) l.paidCost = Math.round(SEGMENTS[lp.segment].lineCost * g.costMult);
+      }
+    }
+
+    if (!s.fleets) {
+      // 선단 개념이 없던 세이브를 빈 장부로 두면, 새 판이라면 62·48기를 물려받았을
+      // 계정이 "신규 계정"이 되어 공통성 가산(최대 6점)을 통째로 잃는다.
+      // 승계분을 다시 심고, 남아 있는 주문 기록에서 실제 인도분을 복원한다.
+      s.fleets = {};
+      const legacy = s.programs.find((p) => p.legacy);
+      if (legacy) {
+        s.fleets.panamer = { [legacy.id]: 62 };
+        s.fleets.hanul = { [legacy.id]: 48 };
+      }
+      for (const o of s.backlog || []) {
+        const shipped = o.qty - (o.cancelled || 0) - o.remaining;
+        if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
+      }
+    }
+
+    // 단면 개념이 없던 세이브의 프로그램에 단면을 채운다. 비워 두면 라인 전환
+    // 검사(from.abreast === undefined)가 통과해, 어떤 단면·세그먼트로든 35% 할인가에
+    // 갈아탈 수 있다 — 치구 재활용이라는 전제 자체가 무너진다.
+    for (const p of s.programs) {
+      if (p.abreast === undefined) p.abreast = root.AirlinerAirframe.DEFAULT_ABREAST[p.segment];
+      if (p.wing === undefined) p.wing = 45;
+      // 날개를 채웠으면 이착륙 성능도 같이 유도한다. 비워 두면 scoreBid 의
+      // 폴백(?? 100)이 옛 기체를 만점으로 쳐서, 짧은 활주로·고온고지 노선에
+      // 영구히 무자격 응찰한다 — 그 제약이 있으나 마나가 된다.
+      if (typeof p.fieldPerf !== 'number') {
+        const legacyMat = LEGACY_MATERIAL_MAP[p.material] || LEGACY_MATERIAL_MAP.aluminum;
+        const wmat = WING_MATERIALS[p.wingMat || legacyMat.wingMat] || WING_MATERIALS.aluminum;
+        const ratio = p.range / SEGMENTS[p.segment].range.ref;
+        p.fieldPerf = root.AirlinerAirframe.wingProfile(p.wing, ratio, wmat.aspectRelief).field;
+      }
+    }
+
+    // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
+    // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
+    // 기준은 요구 항속이 아니라 **닿을 수 있는 노선**이다 — 응찰은 요구의
+    // RANGE_TOLERANCE 만 채우면 되므로 8,100km 기체도 9,000km 공고에 들어갈 수
+    // 있었다. 9,000 으로 자르면 그 구간(8,100~8,999)이 통째로 영구 실격된다.
+    for (const p of s.programs) {
+      if (p.etops === undefined) p.etops = p.range >= ETOPS_USEFUL_RANGE;
+    }
+
+    // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
+    // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
+    // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
+    for (const p of s.programs) {
+      if (p.engine && root.AirlinerEngines.get(p.engine)) continue;
+      // launchTurn 은 승계 기종이면 음수다(DN-150 = -40 = 1988년). 0으로 클램프하면
+      // 1998년 기준 엔진이 잡혀 새 게임의 같은 기체와 달라지고, 2000년 이후에는
+      // 단산 여부가 갈려 파생형 비용까지 34% vs 58% 로 어긋난다.
+      const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
+      const eng = root.AirlinerEngines.defaultFor(p.segment, yearOf(born));
+      if (!eng) continue;
+      p.engine = eng.id;
+      p.engineName = eng.name;
+      p.engineMaker = eng.maker;
+    }
+    // 일정표가 없던 세이브는 시드에서 결정적으로 다시 만든다(같은 시드 → 같은 일정).
+    // 이미 지난 분기의 슬롯은 버린다 — 충격은 endTurn 이 턴을 올린 뒤 발화하므로
+    // 현재 턴 이하 슬롯은 영영 뜨지 않는 죽은 항목이 되고, 그 시점 충격은 옛 규칙
+    // 아래서 이미 한 번 지나갔다.
+    if (!Array.isArray(s.shocks)) {
+      s.shocks = buildShockSchedule(s, createRng(s.seed)).filter((x) => x.turn > s.turn);
+    }
 
     // 가상 경쟁사(strength 스칼라)를 쓰던 세이브는 실존 제조사 명단으로 갈아끼운다.
     // 옛 strength 는 새 카탈로그와 척도가 달라 옮겨올 수 없으므로 보정치는 0에서 시작한다.
@@ -190,6 +302,55 @@
       }
     }
     return s;
+  }
+
+  /**
+   * 충격 일정표를 시드마다 한 번 만든다.
+   *
+   * 역사적 사건은 각각 HISTORICAL_ODDS(60%) 확률로만 실현된다. 불발된 자리는
+   * 가상 충격이 **무작위 시점에** 대신 들어간다. 전부 고정이면 두 번째 판부터
+   * 정답 암기가 되고, 전부 무작위면 학습이 무의미해진다. 섞으면 "2001년은
+   * 위험할 수 있다"는 지식은 살아 있되 그것만 믿을 수는 없게 된다.
+   *
+   * 충격 총 개수는 유지해 밸런스 봉투를 흔들지 않는다.
+   */
+  function buildShockSchedule(s, rng) {
+    const schedule = [];
+    const pool = FICTIONAL_SHOCKS.slice();
+
+    // 1단계: 어떤 역사적 사건이 실현되는지 먼저 전부 정한다.
+    // (섞어서 처리하면 앞서 배치한 가상 충격이 뒤에 확정될 역사 시점과 겹친다.)
+    const misses = [];
+    const used = new Set();
+    for (const h of HISTORICAL) {
+      if (rng.chance(HISTORICAL_ODDS)) {
+        schedule.push({ turn: h.turn, kind: 'historical', id: h.id || 'hist-' + h.turn });
+        used.add(h.turn);
+      } else {
+        misses.push(h);
+      }
+    }
+
+    // 2단계: 불발된 수만큼 가상 충격을 빈 분기에 배치한다.
+    for (let i = 0; i < misses.length && pool.length; i++) {
+      const pick = pool.splice(rng.int(0, pool.length - 1), 1)[0];
+      let turn = rng.int(6, CONFIG.totalTurns - 5);
+      for (let tries = 0; tries < 40 && used.has(turn); tries++) {
+        turn = rng.int(6, CONFIG.totalTurns - 5);
+      }
+      if (used.has(turn)) continue; // 자리를 못 찾으면 이번 판에서는 건너뛴다
+      used.add(turn);
+      schedule.push({ turn, kind: 'fictional', id: pick.id });
+    }
+
+    schedule.sort((a, b) => a.turn - b.turn);
+    return schedule;
+  }
+
+  /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
+  function addToFleet(s, airlineId, programId, n) {
+    if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
+    s.fleets[airlineId][programId] = (s.fleets[airlineId][programId] || 0) + n;
   }
 
   function rngFor(s) {
@@ -209,7 +370,7 @@
 
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate(spec);
+    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -237,6 +398,11 @@
       // 갈아엎어 신규 설계 비용을 전액 낸 설계에 파생형 딱지가 붙으면 안 된다.
       derivedFrom: evalSpec.derivative ? spec.derivedFrom : null,
     };
+    // 패밀리 계보 — 조종석·정비 공통성이 이 단위로 쌓인다. 패밀리로 착수하면
+    // 자기 자신이 뿌리가 되고, 그 패밀리의 파생형은 뿌리를 물려받는다.
+    const parent = evalSpec.derivative && spec.derivedFrom ? s.programs.find((x) => x.id === spec.derivedFrom.id) : null;
+    program.familyId = parent && parent.familyId ? parent.familyId : evalSpec.family ? program.id : null;
+
     s.cash -= upfront;
     // 착수금도 연구개발비다 — 리포트에 넣지 않으면 현금은 줄었는데
     // 재무표의 비용·손익으로는 설명되지 않고, 총 R&D도 8% 적게 보고된다.
@@ -260,8 +426,29 @@
       range: base.range,
       tech: base.tech,
       material: base.material,
+      fuselage: base.fuselage,
+      wingMat: base.wingMat,
+      engine: base.engine,
+      abreast: base.abreast,
+      wing: base.wing,
+      etops: base.etops,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
-      derivedFrom: { id: base.id, name: base.name, tech: base.tech, material: base.material, range: base.range },
+      derivedFrom: {
+        id: base.id,
+        name: base.name,
+        tech: base.tech,
+        material: base.material,
+        fuselage: base.fuselage,
+        wingMat: base.wingMat,
+        range: base.range,
+        engine: base.engine,
+        abreast: base.abreast,
+        wing: base.wing,
+        // 착수 옵션(base.family)이 아니라 패밀리 소속으로 판정한다. 파생형은
+        // familyId 를 물려받지만 family 플래그는 물려받지 않아서, 2대째 파생형이
+        // 같은 패밀리인데도 일반 요율을 물게 된다.
+        family: !!base.familyId,
+      },
     };
   }
 
@@ -270,14 +457,16 @@
     const p = s.programs.find((x) => x.id === programId);
     if (!p) return { ok: false, error: '프로그램을 찾을 수 없습니다.' };
     if (p.qualityInvests >= 3) return { ok: false, error: '품질 투자는 3회까지입니다.' };
-    const cost = Math.round(p.devCost * 0.06);
+    // 개발비의 3.5%. 예전 6%는 현금이 가장 마른 개발 구간에 부담이 몰리는 반면
+    // 효과는 양산 이후에나 나타나, 투자할수록 손해인 함정 선택지였다.
+    const cost = Math.round(p.devCost * CONFIG.qualityInvestRate);
     if (s.cash < cost) return { ok: false, error: `${fmtMoney(cost)}이 부족합니다.` };
     ensureShape(s);
     s.cash -= cost;
     s.pending.rdCost += cost;
     p.spent += cost; // 매몰비용 표시가 실제 지출과 어긋나지 않게
     p.qualityInvests++;
-    p.defectRisk = Math.round(p.defectRisk * 0.75 * 1000) / 1000;
+    p.defectRisk = Math.round(p.defectRisk * CONFIG.qualityRiskMult * 1000) / 1000;
     pushLog(s, 'program', `${p.name} 추가 시험·검증에 ${fmtMoney(cost)} 투입. 결함 위험 ${(p.defectRisk * 100).toFixed(1)}%로 하락.`);
     return { ok: true };
   }
@@ -295,24 +484,31 @@
   }
 
   /** 조립 라인 신설 — 인증 완료 기종만 가능. */
-  function buildLine(s, programId) {
+  function buildLine(s, programId, gradeId) {
     const p = s.programs.find((x) => x.id === programId);
     if (!p || p.phase !== 'production') return { ok: false, error: '양산 가능한 기종이 아닙니다.' };
     const seg = SEGMENTS[p.segment];
-    if (s.cash < seg.lineCost) return { ok: false, error: `라인 건설비 ${fmtMoney(seg.lineCost)}이 부족합니다.` };
+    const grade = LINE_GRADES[gradeId] || LINE_GRADES.standard;
+    const cost = Math.round(seg.lineCost * grade.costMult);
+    if (s.cash < cost) return { ok: false, error: `라인 건설비 ${fmtMoney(cost)}이 부족합니다.` };
     ensureShape(s);
-    s.cash -= seg.lineCost;
-    s.pending.capex += seg.lineCost;
+    s.cash -= cost;
+    s.pending.capex += cost;
+    const capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult));
     s.lines.push({
       id: 'line-' + s.nextId++,
       programId: p.id,
-      capacity: seg.lineMaxRate,
+      grade: grade.id,
+      paidCost: cost, // 폐쇄 환급의 근거 — 등급별 건설비가 다르다
+      capacity,
       ramp: 0.15,
       partial: 0,
       idle: false,
       builtTurn: s.turn,
     });
-    pushLog(s, 'good', `${p.name} 전용 조립 라인 신설 (${fmtMoney(seg.lineCost)}). 최대 분기 ${seg.lineMaxRate}기.`);
+    // 로그는 영구 경영 기록이다. 세그먼트 기준값을 적으면 현금 지출·라인 능력과
+    // 어긋나므로(고속 협동체 라인이 $1.54B·25기인데 $880M·16기로 남는다) 실제 값을 쓴다.
+    pushLog(s, 'good', `${p.name} 전용 ${grade.name} 조립 라인 신설 (${fmtMoney(cost)}). 최대 분기 ${capacity}기.`);
     return { ok: true };
   }
 
@@ -322,12 +518,81 @@
     if (idx < 0) return { ok: false, error: '라인을 찾을 수 없습니다.' };
     const line = s.lines[idx];
     const p = s.programs.find((x) => x.id === line.programId);
-    const refund = Math.round(SEGMENTS[p.segment].lineCost * 0.2);
+    // 실제로 낸 값의 20%를 돌려준다. 기준가로 계산하면 고속 라인은 11%,
+    // 재래식은 28% 가 돌아와 "20% 환급"이라는 안내와 어긋난다.
+    const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+    const paid = typeof line.paidCost === 'number' ? line.paidCost : SEGMENTS[p.segment].lineCost * grade.costMult;
+    const refund = Math.round(paid * 0.2);
     ensureShape(s);
     s.cash += refund;
     s.pending.capex -= refund; // 매각 대금은 설비 투자의 환입
     s.lines.splice(idx, 1);
     pushLog(s, 'info', `${p.name} 라인 폐쇄. 설비 매각으로 ${fmtMoney(refund)} 회수.`);
+    return { ok: true };
+  }
+
+  /**
+   * 라인 전환 — 기존 라인을 다른 기종으로 돌린다.
+   * 동체 단면이 같아야 치구를 재활용할 수 있다. 패밀리 전략이 개발비뿐 아니라
+   * 생산 설비까지 재활용하게 만드는 지점이다(실제로도 같은 최종조립라인에서
+   * 같은 계열 변형을 굴린다).
+   */
+  /**
+   * 치구를 재활용할 수 있는 전환인가.
+   * 화면(전환 버튼 노출)과 실행이 반드시 같은 규칙을 쓰도록 여기 한 곳에만 둔다.
+   *
+   * 열 수만 같으면 된다고 보면 안 된다 — 5열 리저널과 5열 협동체는 동체 직경부터
+   * 다른 별개 기체다(7열 협동체 ↔ 7열 광동체도 마찬가지). 급이 다르면 치구가
+   * 아니라 건물부터 다시 봐야 하므로, 급까지 같아야 전환을 허용한다.
+   */
+  function retoolCompatibility(from, to) {
+    if (!from || from.abreast === undefined || !to || to.abreast === undefined) {
+      return { ok: false, error: '동체 단면을 알 수 없어 치구 재활용 여부를 판단할 수 없습니다.' };
+    }
+    if (from.segment !== to.segment) {
+      return { ok: false, error: '급이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
+    }
+    if (from.abreast !== to.abreast) {
+      return { ok: false, error: '동체 단면이 달라 치구를 재활용할 수 없습니다. 새 라인을 세워야 합니다.' };
+    }
+    return { ok: true };
+  }
+
+  function retoolLine(s, lineId, targetProgramId) {
+    const line = s.lines.find((l) => l.id === lineId);
+    if (!line) return { ok: false, error: '라인을 찾을 수 없습니다.' };
+    const from = s.programs.find((x) => x.id === line.programId);
+    const to = s.programs.find((x) => x.id === targetProgramId);
+    if (!to || to.phase !== 'production') return { ok: false, error: '양산 가능한 기종이 아닙니다.' };
+    if (to.id === line.programId) return { ok: false, error: '이미 그 기종의 라인입니다.' };
+    const compat = retoolCompatibility(from, to);
+    if (!compat.ok) return compat;
+
+    const seg = SEGMENTS[to.segment];
+    const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+    const cost = Math.round(seg.lineCost * grade.costMult * RETOOL_COST_RATE);
+    if (s.cash < cost) return { ok: false, error: `전환 비용 ${fmtMoney(cost)}이 부족합니다.` };
+
+    ensureShape(s);
+    s.cash -= cost;
+    s.pending.capex += cost;
+    // paidCost 는 건드리지 않는다. 급·등급이 같은 전환만 허용되므로 전환 후에도
+    // 이 라인은 "그 급 그 등급의 라인" 그대로고, 새로 세우는 값도 같다. 전환비는
+    // 그 분기의 capex 로 끝나는 지출이지 라인 가치를 올리는 돈이 아니다.
+    line.programId = to.id;
+    line.capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult));
+    line.ramp = 0.15; // 전환 후에는 램프업을 다시 올린다
+    line.partial = 0;
+    pushLog(s, 'info', `${from ? from.name : '라인'} → ${to.name} 라인 전환 (${fmtMoney(cost)}). 램프업을 다시 올린다.`);
+    return { ok: true };
+  }
+
+  /** 외주 비중 변경 — 원가 ↔ 공급 차질 위험. */
+  function setOutsourcing(s, levelId) {
+    if (!OUTSOURCING[levelId]) return { ok: false, error: '알 수 없는 외주 수준입니다.' };
+    ensureShape(s);
+    s.outsourcing = levelId;
+    pushLog(s, 'info', `조달 전략을 ${OUTSOURCING[levelId].name}으로 바꿨다.`);
     return { ok: true };
   }
 
@@ -472,6 +737,7 @@
       cost: Math.round(report.productionCost + report.rdCost + report.capex + report.overhead + report.interest),
       net: Math.round(report.revenue - report.productionCost - report.rdCost - report.capex - report.overhead - report.interest),
       delivered: report.delivered,
+      rd: Math.round(report.rdCost),
       backlog: totalBacklog(s),
       reputation: Math.round(s.reputation),
     });
@@ -500,6 +766,12 @@
     s.events = rollEvents(s, rng);
     s.rfps = generateRfps(s, rng);
     s.bids = {};
+
+    // 다음 분기에 적용될 이자율과 등급을 지금 함께 확정한다. 둘을 따로 두면
+    // 분기 중 차입으로 등급만 바뀌어 "등급 B · 이자율 1.60%(=BBB 값)" 같은
+    // 자기모순이 화면에 뜬다.
+    s.ratingForQuarter = creditRating(s).grade;
+    s.rateForQuarter = interestRate(s);
 
     // 이벤트(결함 수리비 등)가 현금을 빼앗아 지급불능이 된 경우도 즉시 종료다.
     // 정산 직후 검사만 두면, 이벤트발 지급불능은 다음 분기 내내 살아남아
@@ -603,7 +875,10 @@
 
       // 인력을 과도하게 밀어넣으면 설계 검증이 얕아진다.
       if (ratio > 1.25 && rng.chance(0.35)) {
-        p.defectRisk = Math.round(Math.min(0.6, p.defectRisk * 1.08) * 1000) / 1000;
+        // 상한이 0.6 이면 엔진 배수까지 붙어 0.6을 넘긴 설계에서는 이 "악재"가
+        // 오히려 위험을 낮춘다. 페널티는 절대 현재 위험보다 낮아질 수 없다.
+        p.defectRisk =
+          Math.round(Math.max(p.defectRisk, Math.min(CONFIG.defectRiskMax, p.defectRisk * 1.08)) * 1000) / 1000;
       }
 
       const before = p.progress;
@@ -624,6 +899,25 @@
     // 개발 루프에서 방금 cert로 전환된 프로그램은 제외한다. 포함하면 개발에 그 분기를
     // 다 쓰고도 인증 1분기가 함께 지나가, 3분기짜리 인증이 실제로는 2분기에 끝난다.
     for (const p of certifyingBefore) {
+      // 인증 지연 — 결함 위험이 높은 설계(고기술·복합재·미성숙 엔진)일수록 심사에서
+      // 제동이 걸린다. 품질 투자는 이 확률을 함께 낮춘다.
+      // 이 판정이 없으면 기술 슬라이더는 "비싸지만 확정된 이득"이라 도박이 아니게 된다.
+      if (rng.chance(clamp(p.defectRisk * 0.26, 0.01, 0.12))) {
+        const delay = rng.int(1, 2);
+        const cost = Math.round(p.devCost * 0.03 * delay);
+        p.certRemaining += delay;
+        p.spent += cost;
+        s.cash -= cost;
+        report.rdCost += cost;
+        pushLog(
+          s,
+          'bad',
+          `${p.name} 형식증명 심사에서 설계 변경 요구가 나왔다. ${delay}분기 지연, 대응 비용 ${fmtMoney(cost)}.`,
+        );
+        // continue 로 아래 감소분까지 건너뛰면 "1분기 지연"이 실제로는 2분기가 된다.
+        // 이번 분기 심사는 정상적으로 소진되고, 순증이 delay 만큼이어야 광고와 맞는다.
+      }
+
       p.certRemaining -= 1;
       if (p.certRemaining <= 0) {
         p.phase = 'production';
@@ -639,6 +933,7 @@
   }
 
   function runProduction(s, report) {
+    const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
     let mult = 1;
     if (s.effects.strikeQuarters > 0) mult *= 0.5;
     if (s.effects.supplyQuarters > 0) mult *= 0.75;
@@ -666,7 +961,9 @@
         continue;
       }
 
-      line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter);
+      // 자동화 라인은 물량이 크지만 안정화가 느리다 — 수요가 확실할 때만 값을 한다.
+      const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+      line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter * grade.rampMult);
       const raw = line.capacity * line.ramp * mult + line.partial;
       let units = Math.floor(raw);
       line.partial = raw - units;
@@ -679,7 +976,7 @@
       let cost = 0;
       for (let i = 0; i < units; i++) {
         p.produced++;
-        cost += unitCostAt(p.unitCostBase, p.produced);
+        cost += unitCostAt(p.unitCostBase, p.produced) * sourcing.costMult;
       }
       s.cash -= cost;
       report.productionCost += cost;
@@ -700,6 +997,7 @@
       o.remaining -= n;
       p.stock -= n;
       p.delivered += n;
+      addToFleet(s, o.airlineId, p.id, n);
       s.cash += revenue;
       s.stats.delivered += n;
       s.stats.revenue += revenue;
@@ -717,11 +1015,15 @@
   }
 
   function settleFinance(s, report) {
-    const rate = CONFIG.interestPerQuarter + (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0);
+    // 화면에 고지한 값을 그대로 청구한다. 정산 시점에 다시 계산하면 그 분기의
+    // 생산·인도로 등급이 바뀌어, 플레이어가 보고 판단한 이자와 실제가 달라진다.
+    const rate = typeof s.rateForQuarter === 'number' ? s.rateForQuarter : interestRate(s);
     const interest = s.debt * rate;
+    s.rating = creditRating(s).grade;
+    report.rate = Math.round(rate * 10000) / 100;
     const overhead =
       CONFIG.fixedOverheadPerQuarter +
-      s.lines.length * CONFIG.lineOverheadPerLine +
+      s.lines.reduce((a, l) => a + CONFIG.lineOverheadPerLine * ((LINE_GRADES[l.grade] || LINE_GRADES.standard).overhead), 0) +
       s.engineers * CONFIG.engineerCostPerQuarter +
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase * CONFIG.inventoryHoldingCost, 0);
 
@@ -773,6 +1075,9 @@
     const e = s.effects;
     if (e.strikeQuarters > 0) e.strikeQuarters--;
     if (e.supplyQuarters > 0) e.supplyQuarters--;
+    if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
+    if (e.demandBoomQuarters > 0) e.demandBoomQuarters--;
+    if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
     if (e.rateBumpQuarters > 0) {
       e.rateBumpQuarters--;
       // 기간이 끝나면 가산폭도 함께 지운다. 남겨두면 나중에 약한 경색이
@@ -792,8 +1097,14 @@
   function driftMarket(s, rng) {
     const m = s.market;
     // 평균 회귀 + 잡음. 시장은 늘 1.0 근처로 되돌아가려 한다.
-    m.fuelIndex = clamp(m.fuelIndex + (1 - m.fuelIndex) * 0.12 + rng.normal(0, 0.05), 0.45, 2.2);
-    m.demandIndex = clamp(m.demandIndex + (1 - m.demandIndex) * 0.15 + rng.normal(0, 0.06), 0.35, 2.0);
+    // 충격이 진행 중이면 회귀를 크게 늦춘다. 그러지 않으면 9·11 이 두세 분기 만에
+    // 없던 일이 되어, 역사적 사건이 한 번의 벌금으로만 남는다.
+    // 호황도 침체와 같은 방식으로 지속된다 — 상승 충격이 한 분기 보너스로 끝나면
+    // 가상 충격의 상방이 사실상 없는 것과 같다.
+    const demandPull = s.effects.demandSlumpQuarters > 0 || s.effects.demandBoomQuarters > 0 ? 0.07 : 0.15;
+    const fuelPull = s.effects.fuelShockQuarters > 0 ? 0.05 : 0.12;
+    m.fuelIndex = clamp(m.fuelIndex + (1 - m.fuelIndex) * fuelPull + rng.normal(0, 0.05), 0.45, 2.2);
+    m.demandIndex = clamp(m.demandIndex + (1 - m.demandIndex) * demandPull + rng.normal(0, 0.06), 0.35, 2.0);
     s.reputation = clamp(s.reputation + (50 - s.reputation) * 0.03, 0, 100);
   }
 
@@ -805,6 +1116,45 @@
 
   function rollEvents(s, rng) {
     const fired = [];
+
+    const helpersFor = (rng) => ({
+      rng,
+      fmt: fmtMoney,
+      reputation: (d) => adjustReputation(s, d),
+      income: (amt) => {
+        s.cash += amt;
+        s.pending.revenue += amt;
+      },
+      expense: (amt) => {
+        s.cash -= amt;
+        s.pending.overhead += amt;
+      },
+      pickWeighted: (arr, weightOf) => {
+        const w = arr.map((x) => Math.max(1e-4, weightOf(x)));
+        const total = w.reduce((a, b) => a + b, 0);
+        let r = rng.next() * total;
+        for (let i = 0; i < arr.length; i++) {
+          r -= w[i];
+          if (r <= 0) return arr[i];
+        }
+        return arr[arr.length - 1];
+      },
+    });
+
+    // 충격은 일정표대로 온다. 무작위 추첨보다 먼저 적용해 그 분기의 시장 상태
+    // (수요·유가)가 곧바로 반영되게 한다.
+    for (const slot of (s.shocks || []).filter((x) => x.turn === s.turn)) {
+      const def =
+        slot.kind === 'historical'
+          ? HISTORICAL.find((h) => (h.id || 'hist-' + h.turn) === slot.id)
+          : FICTIONAL_SHOCKS.find((f) => f.id === slot.id);
+      if (!def) continue;
+      const text = def.apply(s, helpersFor(rng));
+      fired.push({ id: slot.id, name: def.name, text, shock: slot.kind });
+      pushLog(s, 'event', `[${def.name}] ${text}`);
+      if (isInsolvent(s)) return fired;
+    }
+
     // 분기당 0~2건. 초반 몇 분기는 조용하게 둔다.
     if (s.turn < 3) return fired;
     let draws = rng.chance(0.55) ? 1 : 0;
@@ -820,33 +1170,7 @@
       let r = rng.next() * totalW;
       const chosen = pool.find((e) => (r -= weightOf(e)) <= 0) || pool[0];
 
-      const helpers = {
-        rng,
-        fmt: fmtMoney,
-        reputation: (d) => adjustReputation(s, d),
-        // 이벤트의 현금 이동도 다음 분기 리포트가 흡수해야 한다.
-        // 직접 s.cash 를 건드리면 현금은 변했는데 재무표로 설명되지 않는다.
-        income: (amt) => {
-          s.cash += amt;
-          s.pending.revenue += amt;
-        },
-        expense: (amt) => {
-          s.cash -= amt;
-          s.pending.overhead += amt;
-        },
-        /** 가중 추첨 — 결함 대상 선정처럼 "위험이 높을수록 자주 걸린다"를 표현할 때. */
-        pickWeighted: (arr, weightOf) => {
-          const w = arr.map((x) => Math.max(1e-4, weightOf(x)));
-          const total = w.reduce((a, b) => a + b, 0);
-          let r = rng.next() * total;
-          for (let i = 0; i < arr.length; i++) {
-            r -= w[i];
-            if (r <= 0) return arr[i];
-          }
-          return arr[arr.length - 1];
-        },
-      };
-      const text = chosen.apply(s, helpers);
+      const text = chosen.apply(s, helpersFor(rng));
       fired.push({ id: chosen.id, name: chosen.name, text });
       pushLog(s, 'event', `[${chosen.name}] ${text}`);
 
@@ -904,12 +1228,100 @@
     return total > 0 ? s.stats.delivered / total : 0;
   }
 
+  /**
+   * 신용등급 — 부채비율과 최근 수익성에서 산출해 차입 금리에 직접 연동한다.
+   * 초반에 한도까지 당겨쓰면 이자가 비싸져 더 빨리 마르고, 흑자를 내면 조달이 싸진다.
+   * 재무가 "차입 한도까지는 공짜"에서 "쓸수록 비싸지는 자원"으로 바뀐다.
+   */
+  const RATINGS = [
+    { grade: 'AA', mult: 0.78 },
+    { grade: 'A', mult: 0.88 },
+    { grade: 'BBB', mult: 1.0 },
+    { grade: 'BB', mult: 1.14 },
+    { grade: 'B', mult: 1.3 },
+    { grade: 'CCC', mult: 1.5 },
+  ];
+
+  function creditRating(s) {
+    // 신용평가는 청산가치(netWorth)가 아니라 계속기업 가치로 본다. 개발 중인
+    // 프로그램에 넣은 돈은 곧 형식증명을 받을 자산이지 사라진 돈이 아니다.
+    // 이걸 빼면 개발 기간 내내(= 게임의 본편) 자동으로 최하등급이 되어,
+    // 가장 현금이 마른 시점에 이자까지 올리는 사망 나선이 만들어진다.
+    // 인증에 성공한 순간 이 값이 0이 되면, 현금도 자산도 그대로인데 등급만 떨어져
+    // 이자가 오른다. 양산 전이는 자산이 사라지는 사건이 아니므로 인도량에 따라
+    // 상각한다(약 300기에 걸쳐 소멸) — 회계상 개발비 자본화와 같은 취급이다.
+    const programValue = s.programs
+      .filter((p) => p.phase !== 'cancelled')
+      .reduce((a, p) => {
+        const amortized = p.phase === 'production' ? Math.max(0, 1 - p.delivered / 300) : 1;
+        return a + p.spent * 0.6 * amortized;
+      }, 0);
+    const equity = Math.max(1, netWorth(s) + programValue);
+    // 부채/자기자본은 자기자본이 얇아지면 발산해, 어려운 회사를 자동으로 CCC로 밀어
+    // 이자까지 올리는 사망 나선을 만든다. 0~1로 유계인 부채비율을 쓴다.
+    const leverage = s.debt / (s.debt + equity);
+    // 최근 4분기 손익 평균을 자기자본 대비로 본다.
+    // 개발비 차감 전 손익으로 본다 — 신제품에 투자 중인 회사를 적자로 읽지 않도록.
+    // rd 가 없던 옛 이력은 net 안에 개발비가 그대로 들어 있어, 그대로 쓰면
+    // 세이브를 불러온 것만으로 등급이 떨어진다. 복원할 수 없는 값이므로 제외한다.
+    const recent = s.history.slice(-4).filter((h) => typeof h.rd === 'number');
+    const profit = recent.length ? recent.reduce((a, h) => a + h.net + h.rd, 0) / recent.length : 0;
+    const profitability = profit / equity;
+
+    // 0(최악) ~ 1(최고) 점수로 합성.
+    const levScore = clamp(1 - leverage / 0.75, 0, 1);
+    const proScore = clamp(0.5 + profitability * 12, 0, 1);
+    const score = levScore * 0.65 + proScore * 0.35;
+
+    const idx = Math.min(RATINGS.length - 1, Math.floor((1 - score) * RATINGS.length));
+    return RATINGS[idx];
+  }
+
+  /**
+   * 이번 분기에 실제로 적용될 이자율 — 기본금리 × 신용등급 배수 + 신용경색 가산.
+   * 정산과 화면이 반드시 같은 값을 쓰도록 여기 한 곳에만 둔다. 화면이 따로
+   * 계산하면 등급이 BBB 가 아닐 때 표시와 청구가 어긋난다.
+   */
+  function interestRate(s) {
+    return (
+      CONFIG.interestPerQuarter * creditRating(s).mult +
+      (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0)
+    );
+  }
+
+  /** 이번 분기에 실제로 청구될 이자율 — 분기 시작 시 고정된 값. 화면은 이걸 보여준다. */
+  function quarterRate(s) {
+    return typeof s.rateForQuarter === 'number' ? s.rateForQuarter : interestRate(s);
+  }
+
+  /** 그 이자율을 만든 등급. 지금 차입해도 이번 분기 청구는 이 등급 기준이다. */
+  function quarterGrade(s) {
+    return typeof s.ratingForQuarter === 'string' ? s.ratingForQuarter : creditRating(s).grade;
+  }
+
+  /**
+   * 이 기종의 지금 대당 생산원가 — 학습곡선 + 조달 전략까지 반영한 값.
+   * 화면과 정산이 반드시 같은 값을 쓰도록 여기 한 곳에만 둔다. 화면이 따로
+   * 계산하면 외주 수준에 따라 최대 9% 어긋난 마진을 보고 가격을 정하게 된다.
+   */
+  function currentUnitCost(s, p) {
+    const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
+    // 생산 루프는 p.produced 를 먼저 올리고 그 번호로 원가를 매기므로,
+    // "다음에 만들 1기"의 원가는 produced+1 번째다. 가격 결정은 이 값을 봐야 한다.
+    return unitCostAt(p.unitCostBase, p.produced + 1) * sourcing.costMult;
+  }
+
   function netWorth(s) {
     const assetValue =
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase, 0) +
+      // 라인 자산은 **실제로 치른 건설비**의 40%다. 등급 배수를 빼고 세그먼트
+      // 기준가로 매기면, $1.54B 짜리 고속 라인과 $634M 짜리 재래식 라인이 똑같이
+      // $352M 로 잡혀 비싼 등급을 고를수록 신용등급·최종점수가 손해를 본다.
       s.lines.reduce((a, l) => {
         const p = s.programs.find((x) => x.id === l.programId);
-        return a + (p ? SEGMENTS[p.segment].lineCost * 0.4 : 0);
+        if (!p) return a;
+        const paid = typeof l.paidCost === 'number' ? l.paidCost : SEGMENTS[p.segment].lineCost;
+        return a + paid * 0.4;
       }, 0);
     return s.cash + assetValue - s.debt;
   }
@@ -975,6 +1387,9 @@
     investQuality,
     cancelProgram,
     buildLine,
+    retoolLine,
+    retoolCompatibility,
+    setOutsourcing,
     closeLine,
     toggleLine,
     sellStock,
@@ -989,10 +1404,18 @@
     backlogValue,
     marketShare,
     netWorth,
+    currentUnitCost,
+    creditRating,
+    interestRate,
+    quarterRate,
+    quarterGrade,
     finalScore,
     projectedQuarters,
     ensureShape,
+    addToFleet,
     fmtMoney,
     turnLabel,
+    yearOf,
+    buildShockSchedule,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -5,8 +5,10 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, MATERIALS, CONFIG } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE } = root.AirlinerData;
   const E = root.AirlinerEngine;
+  const Engines = root.AirlinerEngines;
+  const Airframe = root.AirlinerAirframe;
   const D = root.AirlinerDesign;
   const B = root.AirlinerBidding;
 
@@ -30,6 +32,47 @@
   }
 
   // ─────────────────────────────── 개요 ───────────────────────────────
+
+  /** 그 항공사가 굴리는 우리 기체 요약 — 선단 공통성 가산의 근거를 보여준다. */
+  function fleetSummary(s, airlineId) {
+    const f = (s.fleets && s.fleets[airlineId]) || {};
+    const parts = Object.entries(f)
+      .filter(([, n]) => n > 0)
+      .map(([pid, n]) => {
+        const p = s.programs.find((x) => x.id === pid);
+        return `${esc(p ? p.name : '기존 기종')} ${n}기`;
+      });
+    return parts.length ? parts.join(' · ') : '<span class="muted">없음 (신규 계정)</span>';
+  }
+
+  /** 항공사별 수요 프로필 — 설계를 어디에 맞출지 정하는 근거다. */
+  function airlineDemandTable(s) {
+    // 표시 대역에도 업게이지를 반영한다. 1998년 값을 그대로 두면 후반에
+    // 이 표를 보고 설계한 기체가 실제 발주와 한 급 어긋난다.
+    const up = 1 + (s.turn / 4) * UPGAUGE_PER_YEAR;
+    const rows = AIRLINES.map((a) => {
+      const seg = SEGMENTS[a.bias];
+      const lo = Math.round(Math.min(seg.seats.max, Math.max(seg.seats.min, a.seatBand[0] * up)));
+      const hi = Math.round(Math.min(seg.seats.max, Math.max(seg.seats.min, a.seatBand[1] * up)));
+      const rel = Math.round(s.relations[a.id] ?? 40);
+      const ours = Object.values((s.fleets && s.fleets[a.id]) || {}).reduce((x, y) => x + y, 0);
+      const constraint =
+        a.field === 'short' ? '짧은 활주로' : a.field === 'hot' ? '고온고지' : a.rangeBand[1] >= ETOPS_RANGE_KM ? 'ETOPS' : '—';
+      return `<tr>
+          <td>${esc(a.name)}</td>
+          <td>${SEGMENTS[a.bias].name}</td>
+          <td>${lo}~${hi}석</td>
+          <td>${num(a.rangeBand[0])}~${num(a.rangeBand[1])}km</td>
+          <td>${constraint}</td>
+          <td>${rel}</td>
+          <td>${ours ? num(ours) + '기' : '<span class="muted">—</span>'}</td>
+        </tr>`;
+    }).join('');
+    return `<table class="hist">
+        <tr><th>항공사</th><th>주력</th><th>좌석대 <span class="muted">(현재)</span></th><th>항속대</th><th>제약</th><th>관계</th><th>보유</th></tr>
+        ${rows}
+      </table>`;
+  }
 
   function renderOverview(s) {
     const warnings = [];
@@ -58,6 +101,12 @@
     const last = s.history[s.history.length - 1];
 
     return `
+      <section class="card">
+        <h3>항공사 수요 프로필</h3>
+        <p class="muted">각 항공사는 자기 노선망 안에서 발주한다. 설계를 어느 대역에 맞출지가 곧 누구를 고객으로 삼을지다.</p>
+        ${airlineDemandTable(s)}
+      </section>
+
       <section class="grid2">
         <div class="card">
           <h3>이번 분기 소식</h3>
@@ -130,13 +179,49 @@
          </button>`,
     ).join('');
 
-    const mats = Object.values(MATERIALS)
-      .map(
-        (m) =>
-          `<button class="mat ${m.id === spec.material ? 'on' : ''}" data-action="design-mat" data-mat="${m.id}">
-             <b>${m.name}</b><span>${m.desc}</span>
+    const legacyMat = LEGACY_MATERIAL_MAP[spec.material] || LEGACY_MATERIAL_MAP.aluminum;
+    const partPicker = (table, key, current) =>
+      Object.values(table)
+        .map(
+          (m) =>
+            `<button class="mat ${m.id === current ? 'on' : ''}" data-action="design-${key}" data-mat="${m.id}">
+             <b>${esc(m.name)}</b><span>${esc(m.desc)}</span>
            </button>`,
-      )
+        )
+        .join('');
+    const fusMats = partPicker(FUSELAGE_MATERIALS, 'fuselage', spec.fuselage || legacyMat.fuselage);
+    const wingMats = partPicker(WING_MATERIALS, 'wingmat', spec.wingMat || legacyMat.wingMat);
+
+    // 그 시점에 실제로 살 수 있는 엔진만 보여준다. 성숙도가 덜 찬 신형은 경고를 단다.
+    const year = E.yearOf(s.turn);
+    // 지정한 엔진이 이미 단산됐으면 evaluate 가 그 시점 엔진으로 대체한다.
+    // 그 결과를 먼저 구해 두지 않으면 어느 버튼도 선택 표시가 안 되고,
+    // 플레이어는 자기가 무슨 엔진으로 착수하는지 모른 채 버튼을 누르게 된다.
+    const sections = Airframe.sectionsFor(spec.segment)
+      .map((c) => {
+        const on = c.abreast === (spec.abreast ?? Airframe.DEFAULT_ABREAST[spec.segment]);
+        const band = `${Math.round(c.rows[0] * c.abreast)}~${Math.round(c.rows[1] * c.abreast)}석`;
+        return `<button class="mat ${on ? 'on' : ''}" data-action="design-abreast" data-abreast="${c.abreast}">
+             <b>${esc(c.name)}</b><span>적정 ${band} · 객실 ${c.comfort >= 0 ? '+' : ''}${c.comfort} · 좌석당 연비 ×${c.effPerSeat.toFixed(2)} · 원가 ×${c.costPerSeat.toFixed(2)}</span>
+           </button>`;
+      })
+      .join('');
+
+    const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year) || {}).id;
+    const substituted = spec.engine && effectiveEngine !== spec.engine;
+    const engines = Engines.available(spec.segment, year)
+      .slice()
+      .sort((a, b) => a.eff - b.eff)
+      .map((e) => {
+        const immature = Engines.maturityRisk(e, year) > 1;
+        const on = e.id === effectiveEngine;
+        return `<button class="mat ${on ? 'on' : ''}" data-action="design-eng" data-eng="${e.id}">
+             <b>${esc(e.name)}</b>
+             <span>${esc(e.maker)} · 연비 ${e.eff >= 0 ? '+' : ''}${e.eff} · 단가 ×${e.costMult.toFixed(2)}${
+               immature ? ' · <b class="warn">신형(초기 결함 위험)</b>' : ''
+             }</span>
+           </button>`;
+      })
       .join('');
 
     const derivatives = s.programs
@@ -161,13 +246,63 @@
           ${slider('range', '항속거리', spec.range, seg.range.min, seg.range.max, 100, 'km')}
           ${slider('tech', '기술 투자', spec.tech, 0, 100, 1, '')}
           <p class="hint">기술 투자를 올리면 연비·정가가 오르지만 개발비·기간·결함 위험이 함께 오른다.</p>
-          <h3 style="margin-top:18px">주 구조재</h3>
-          <div class="mats">${mats}</div>
+          ${slider('wing', '날개 (단거리형 ↔ 장거리형)', spec.wing === undefined ? 45 : spec.wing, 0, 100, 1, '')}
+          <p class="hint">오른쪽으로 갈수록 순항 연비가 좋아지고 <b>이착륙 성능이 나빠진다</b>. 짧은 활주로·고온고지 노선은 왼쪽 설계가 아니면 응찰 자체가 막힌다.</p>
+          <h3 style="margin-top:18px">동체 단면</h3>
+          <div class="mats">${sections}</div>
+          <p class="hint">좁게 많이 태우면 좌석당 연비·원가가 좋아지고 객실 점수가 떨어진다. 단면을 바꾸면 형식증명을 물려받을 수 없다 — 파생형의 뿌리가 되는 결정이다.</p>
+          <h3 style="margin-top:18px">동체 소재</h3>
+          <div class="mats">${fusMats}</div>
+          <p class="hint">동체는 여압 사이클이 걸려 개발이 가장 어렵다. 대신 넓은 단면·높은 여압으로 <b>객실이 크게 좋아진다</b>.</p>
+          <h3 style="margin-top:18px">날개 소재</h3>
+          <div class="mats">${wingMats}</div>
+          <p class="hint">날개는 가벼워야 종횡비를 높일 수 있다. <b>고종횡비 장거리 날개는 사실상 복합재라야 성립한다</b> — 알루미늄으로 밀어붙이면 중량이 연비 이득을 갉아먹는다.</p>
+          <h3 style="margin-top:18px">엔진</h3>
+          <div class="mats">${engines}</div>
+          <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
+          <h3 style="margin-top:18px">착수 옵션</h3>
+          <div class="mats" id="design-options">${renderDesignOptions(s, spec)}</div>
+          ${
+            substituted
+              ? `<p class="warn-box">원형 엔진은 더 이상 판매되지 않아 <b>${esc(
+                  (Engines.get(effectiveEngine) || {}).name || '',
+                )}</b>로 대체된다 — 재장착이라 파생형 할인이 줄어든다.</p>`
+              : ''
+          }
         </div>
         <div class="card" id="design-preview">${renderDesignPreview(s, spec, designName)}</div>
       </section>
 
-      ${derivatives ? `<section class="card"><h3>파생형</h3><p class="muted">기존 형식증명을 물려받아 개발비 66%, 기간 50%를 아낀다.</p><div class="row">${derivatives}</div></section>` : ''}`;
+      ${derivatives ? `<section class="card"><h3>파생형</h3><p class="muted">기존 형식증명을 물려받아 개발비 66%, 기간 50%를 아낀다. 엔진까지 갈아 끼우면(재장착) 절감이 42%·28%로 줄어든다.</p><div class="row">${derivatives}</div></section>` : ''}`;
+  }
+
+  /**
+   * 착수 옵션 — 패밀리·ETOPS.
+   *
+   * 이 블록은 **슬라이더를 움직이면 같이 갈아끼워야 한다**. 두 옵션 다 지금의
+   * 항속·기술·날개 값에 따라 의미가 달라지기 때문이다: 파생형 허용 오차를 넘기면
+   * 패밀리 승계가 끊기고, 항속이 짧으면 ETOPS 는 값을 못 한다. 미리보기만 새로
+   * 그리면 여기가 옛 상태로 남아 실제 착수 결과와 어긋난다.
+   */
+  function renderDesignOptions(s, spec) {
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn) });
+    const family = ev.inFamily
+      ? `<button class="mat on" disabled>
+          <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
+        </button>`
+      : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
+          <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 신규 설계 대비 22%(일반 34%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
+        </button>`;
+    const etops = ev.etopsUsable
+      ? `<button class="mat ${ev.etops ? 'on' : ''}" data-action="design-etops">
+          <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
+        </button>`
+      : `<button class="mat" disabled>
+          <b>ETOPS 인증</b><span>이 항속(${num(ev.range)}km)으로는 ${num(ETOPS_RANGE_KM)}km 노선에 닿지 않는다. <b>${num(
+          Math.ceil(ETOPS_USEFUL_RANGE),
+        )}km 이상</b>부터 값을 한다.</span>
+        </button>`;
+    return family + etops;
   }
 
   function slider(key, label, value, min, max, step, unit) {
@@ -179,7 +314,9 @@
 
   /** 설계 미리보기 — 슬라이더를 움직일 때 이 영역만 갈아끼운다. */
   function renderDesignPreview(s, spec, designName) {
-    const ev = D.evaluate(spec);
+    // 미리보기는 항상 "지금" 기준으로 평가한다. spec.year 를 들고 다니면 분기가
+    // 지나도 갱신되지 않아, 이미 살 수 없는 엔진으로 계산된 값을 보여주게 된다.
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn) });
     const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
     const seg = SEGMENTS[spec.segment];
 
@@ -207,6 +344,9 @@
         <tr><th>인증 기간</th><td>${ev.certQuarters}분기</td></tr>
         <tr><th>필요 인력</th><td>${num(ev.engineersNeeded)}명 <span class="muted">(보유 ${num(s.engineers)}명)</span></td></tr>
         <tr><th>연비 지수</th><td>${ev.efficiency} ${bar(ev.efficiency, 'eff')}</td></tr>
+        <tr><th>이착륙 성능</th><td>${ev.fieldPerf} ${bar(ev.fieldPerf, 'eff')}</td></tr>
+        <tr><th>항속 (만석 / 감톤)</th><td>${num(ev.payloadRange.full)}km / ${num(ev.payloadRange.light)}km</td></tr>
+        <tr><th>단면 적합도</th><td class="${ev.sectionFit < 80 ? 'bad' : ''}">${ev.sectionFit}% <span class="muted">${esc(ev.sectionName)}</span></td></tr>
         <tr><th>객실 쾌적성</th><td>${ev.comfort} ${bar(ev.comfort, 'comfort')}</td></tr>
         <tr><th>표준 생산원가</th><td>${money(ev.unitCostBase)}</td></tr>
         <tr><th>정가</th><td>${money(ev.listPrice)}</td></tr>
@@ -219,7 +359,19 @@
           ? `<p class="warn-box">소재·기술·항속을 원형(${esc(spec.derivedFrom.name)})에서 너무 많이 바꿔 형식증명을 물려받을 수 없다. <b>신규 설계 비용</b>으로 계산된다.</p>`
           : ''
       }
-      ${ev.derivative ? `<p class="hint">${esc(spec.derivedFrom.name)} 파생형으로 인정 — 개발비·기간 할인이 적용됐다.</p>` : ''}
+      ${
+        ev.derivative
+          ? `<p class="hint">${esc(spec.derivedFrom.name)} 파생형으로 인정 — ${
+              ev.reEngined
+                ? ev.inFamily
+                  ? '패밀리 내 <b>재장착</b>이라 개발비 56%·기간 40% 절감'
+                  : '엔진을 갈아 끼운 <b>재장착</b>이라 개발비 42%·기간 28% 절감'
+                : ev.inFamily
+                  ? '<b>패밀리 내 파생형</b>이라 개발비 78%·기간 64% 절감'
+                  : '개발비 66%·기간 50% 절감'
+            }이 적용됐다.</p>`
+          : ''
+      }
       <div class="row">
         <input class="name-input" id="design-name" data-action="design-name" placeholder="기종명 (예: DN-200)" maxlength="18" value="${esc(designName || '')}">
         <button class="primary" data-action="launch" ${affordable ? '' : 'disabled'}>개발 착수 · ${money(upfront)}</button>
@@ -238,12 +390,29 @@
         const eta = E.projectedQuarters(s, p);
         const rows = [];
         rows.push(`<tr><th>세그먼트</th><td>${SEGMENTS[p.segment].name} · ${p.seats}석 · ${num(p.range)}km</td></tr>`);
+        // 엔진은 되돌릴 수 없는 선택이고 이후 파생형 비용(같은 엔진 34% vs 재장착 58%)을
+        // 좌우한다. 화면에 없으면 플레이어가 자기 기체의 엔진을 확인할 방법이 없다.
+        const inst = Engines.get(p.engine);
+        if (inst) {
+          const gone = !Engines.inService(inst, E.yearOf(s.turn));
+          rows.push(
+            `<tr><th>엔진</th><td>${esc(inst.name)} <span class="muted">${esc(inst.maker)}</span>${
+              gone ? ' <span class="warn">단산 — 파생형은 재장착</span>' : ''
+            }</td></tr>`,
+          );
+        }
+        // ETOPS 는 되돌릴 수 없고 9,000km 이상 노선의 응찰 자격을 좌우한다.
+        rows.push(
+          `<tr><th>인증 / 계보</th><td>${p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'}${
+            p.familyId ? ' · 패밀리' : ''
+          }${p.derivative ? ' · 파생형' : ''}</td></tr>`,
+        );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
         rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%</td></tr>`);
         if (p.phase === 'production') {
           rows.push(`<tr><th>생산 / 인도</th><td>${num(p.produced)}기 / ${num(p.delivered)}기</td></tr>`);
-          rows.push(`<tr><th>현재 대당 원가</th><td>${money(D.unitCostAt(p.unitCostBase, p.produced + 1))} <span class="muted">(학습곡선)</span></td></tr>`);
+          rows.push(`<tr><th>현재 대당 원가</th><td>${money(E.currentUnitCost(s, p))} <span class="muted">(학습곡선·조달)</span></td></tr>`);
           rows.push(`<tr><th>미인도 재고</th><td>${p.stock}기</td></tr>`);
         }
 
@@ -263,7 +432,7 @@
               <p class="hint">배분 0%는 동결 — 진행도와 개발비 지출이 모두 멈춘다. 필요 인력 ${num(p.engineersNeeded)}명.</p>
               <div class="row">
                 <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>
-                  품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * 0.06)}
+                  품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * CONFIG.qualityInvestRate)}
                 </button>
                 <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
               </div>
@@ -272,7 +441,7 @@
           // 중단 버튼이 없으면 인증 프로그램 3개가 슬롯을 물고 신규 착수가 영영 막힌다.
           control = `<div class="devctl"><p class="cert">형식증명 심사 중 — 잔여 ${p.certRemaining}분기</p>
             <div class="row">
-              <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * 0.06)}</button>
+              <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * CONFIG.qualityInvestRate)}</button>
               <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
             </div></div>`;
         } else if (p.phase === 'production') {
@@ -298,6 +467,28 @@
 
   // ─────────────────────────────── 생산 ───────────────────────────────
 
+  /**
+   * 같은 급·같은 동체 단면이라야 치구를 재활용할 수 있다 — 패밀리가 생산에서도
+   * 값을 하는 지점. 판정은 엔진의 공유 함수를 그대로 쓴다. 화면이 따로 판정하면
+   * 눌러도 거절당하는 버튼이 뜨거나(느슨하면) 되는 전환이 가려진다(빡빡하면).
+   */
+  function retoolTargets(s, line, from) {
+    const targets = s.programs.filter(
+      (t) => t.phase === 'production' && t.id !== line.programId && E.retoolCompatibility(from, t).ok,
+    );
+    if (!targets.length) return '';
+    const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
+    const btns = targets
+      .map((t) => {
+        const cost = Math.round(SEGMENTS[t.segment].lineCost * grade.costMult * RETOOL_COST_RATE);
+        return `<button data-action="retool-line" data-id="${line.id}" data-target="${t.id}" ${
+          s.cash >= cost ? '' : 'disabled'
+        }>${esc(t.name)}로 전환 · ${money(cost)}</button>`;
+      })
+      .join('');
+    return `<div class="row">${btns}</div>`;
+  }
+
   function renderProduction(s) {
     const ready = s.programs.filter((p) => p.phase === 'production');
     if (!ready.length) return '<div class="card"><p class="muted">양산 가능한 기종이 없다.</p></div>';
@@ -305,11 +496,27 @@
     const buildButtons = ready
       .map((p) => {
         const seg = SEGMENTS[p.segment];
-        const can = s.cash >= seg.lineCost;
-        return `<button data-action="build-line" data-id="${p.id}" ${can ? '' : 'disabled'}>
-          ${esc(p.name)} 라인 신설 · ${money(seg.lineCost)}
-        </button>`;
+        const grades = Object.values(LINE_GRADES)
+          .map((g) => {
+            const cost = Math.round(seg.lineCost * g.costMult);
+            const rate = Math.round(seg.lineMaxRate * g.rateMult);
+            return `<button data-action="build-line" data-id="${p.id}" data-grade="${g.id}" ${s.cash >= cost ? '' : 'disabled'}>
+                ${esc(g.name)} · ${money(cost)} · 분기 ${rate}기 · 램프 ×${g.rampMult}
+              </button>`;
+          })
+          .join('');
+        return `<div class="line"><b>${esc(p.name)}</b><div class="row">${grades}</div></div>`;
       })
+      .join('');
+
+    const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
+    const sourcingButtons = Object.values(OUTSOURCING)
+      .map(
+        (o) =>
+          `<button class="mat ${o.id === sourcing.id ? 'on' : ''}" data-action="set-outsourcing" data-level="${o.id}">
+             <b>${esc(o.name)}</b><span>단가 ×${o.costMult.toFixed(2)} · 공급 차질 ×${o.supplyRisk}</span>
+           </button>`,
+      )
       .join('');
 
     const lines = s.lines.length
@@ -324,7 +531,8 @@
               </div>
               <div class="row between"><span>가동률</span><span>${Math.round(l.ramp * 100)}%</span></div>
               ${bar(l.ramp * 100, 'ramp')}
-              <p class="muted">분기 최대 ${l.capacity}기 · 이 기종 잔고 ${ordered}기</p>
+              <p class="muted">${esc((LINE_GRADES[l.grade] || LINE_GRADES.standard).name)} · 분기 최대 ${l.capacity}기 · 이 기종 잔고 ${ordered}기</p>
+              ${retoolTargets(s, l, p)}
               <div class="row">
                 <button data-action="toggle-line" data-id="${l.id}">${l.idle ? '가동 재개' : '가동 중지'}</button>
                 <button class="danger" data-action="close-line" data-id="${l.id}">폐쇄</button>
@@ -348,9 +556,14 @@
       .join('');
 
     return `
+      <section class="card"><h3>조달 전략</h3>
+        <p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
+        <div class="mats">${sourcingButtons}</div>
+      </section>
       <section class="card"><h3>라인 신설</h3>
-        <p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.</p>
-        <div class="row wrap">${buildButtons}</div>
+        <p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.
+          재래식은 싸고 빨리 안정되지만 물량이 적고, 고속 자동화는 반대다 — 수요가 확실한 기종에만 값을 한다.</p>
+        ${buildButtons}
       </section>
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
@@ -378,10 +591,14 @@
           </div>
           <table class="spec">
             <tr><th>요구 기종</th><td>${rfp.segmentName} · ${rfp.reqSeats}석급 · ${num(rfp.reqRange)}km</td></tr>
+            <tr><th>노선 성격</th><td>${esc(rfp.route || '—')}${
+              rfp.reqField ? ` · <b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'} (이착륙 ${rfp.reqField} 이상)</b>` : ''
+            }${rfp.reqEtops ? ' · <b class="warn">ETOPS 필수</b>' : ''}</td></tr>
             <tr><th>가격 민감도</th><td>${rfp.priceSensitivity >= 1.2 ? '매우 높음' : rfp.priceSensitivity >= 1.0 ? '높음' : rfp.priceSensitivity >= 0.8 ? '보통' : '낮음 (프리미엄 중시)'}</td></tr>
             <tr><th>경쟁 강도</th><td>${rfp.rivalHint.label}</td></tr>
             <tr><th>맞붙을 기종</th><td>${esc(rfp.rivalHint.rival || '—')}</td></tr>
             <tr><th>우리와의 관계</th><td>${Math.round(s.relations[rfp.airlineId] ?? 40)} / 100</td></tr>
+            <tr><th>보유 우리 기체</th><td>${fleetSummary(s, rfp.airlineId)}</td></tr>
           </table>
           ${
             !candidates.length
@@ -427,7 +644,7 @@
     const sc = B.scoreBid(s, rfp, p, bid.discount);
     if (sc.blocked) return `<p class="warn-box">${sc.blocked} — 이 기종으로는 입찰할 수 없다.</p>`;
 
-    const unitCost = D.unitCostAt(p.unitCostBase, p.produced + 1);
+    const unitCost = E.currentUnitCost(s, p);
     const margin = sc.price - unitCost;
     const total = sc.price * rfp.qty;
 
@@ -441,6 +658,7 @@
       <div class="parts">
         ${part('제원 적합', sc.parts.spec)}${part('가격', sc.parts.price)}${part('연비', sc.parts.eff)}
         ${part('객실', sc.parts.comfort)}${part('평판', sc.parts.rep)}${part('관계', sc.parts.rel)}
+        ${part('선단 공통성', sc.parts.common)}
       </div>
       <div class="row"><button class="ghost" data-action="withdraw" data-rfp="${rfp.id}">입찰 포기</button></div>`;
   }
@@ -452,6 +670,7 @@
   // ─────────────────────────────── 재무 ───────────────────────────────
 
   function renderFinance(s) {
+    const rating = E.creditRating(s);
     const rows = s.history
       .slice(-16)
       .reverse()
@@ -473,14 +692,15 @@
       <section class="grid2">
         <div class="card">
           <h3>차입 / 상환</h3>
-          <p class="muted">분기 이자율 ${(CONFIG.interestPerQuarter * 100).toFixed(1)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
+          <p class="muted">이번 분기 적용 등급 <b>${E.quarterGrade(s)}</b> · 이자율 ${(E.quarterRate(s) * 100).toFixed(2)}%${s.effects.rateBumpQuarters > 0 ? ` <b class="bad">(+${(s.effects.rateBump * 100).toFixed(1)}%p 신용경색)</b>` : ''} · 한도 ${money(CONFIG.maxDebt)} · 여유 ${money(room)}</p>
+          <p class="hint">등급은 부채비율과 개발비 차감 전 손익으로 매겨진다. 이자율은 <b>분기 시작 시</b> 고정되므로, 지금 차입해도 이번 분기 청구는 위 등급 기준이다. 현재 잠정 등급은 <b>${rating.grade}</b> — 다음 분기 이자율은 이번 분기의 개발·생산·인도가 모두 끝난 뒤 다시 매겨진다.</p>
           <div class="row wrap">
             <button data-action="borrow" data-amt="1000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(1000, room))} 차입</button>
             <button data-action="borrow" data-amt="3000" ${room <= 0 ? 'disabled' : ''}>${money(Math.min(3000, room))} 차입</button>
             <button data-action="repay" data-amt="1000" ${s.cash < 1 || s.debt < 1 ? 'disabled' : ''}>${money(Math.min(1000, s.cash, s.debt))} 상환</button>
             <button data-action="repay" data-amt="3000" ${s.cash < 1 || s.debt < 1 ? 'disabled' : ''}>${money(Math.min(3000, s.cash, s.debt))} 상환</button>
           </div>
-          <p class="hint">분기 이자 ${money(s.debt * (CONFIG.interestPerQuarter + (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0)))}</p>
+          <p class="hint">분기 이자 ${money(s.debt * E.quarterRate(s))}</p>
         </div>
         <div class="card">
           <h3>인력</h3>
@@ -512,6 +732,7 @@
   root.AirlinerPanels = {
     renderOverview,
     renderDesign,
+    renderDesignOptions,
     renderDesignPreview,
     renderPrograms,
     renderProduction,

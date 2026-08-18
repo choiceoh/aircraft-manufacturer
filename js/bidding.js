@@ -7,9 +7,12 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR } = root.AirlinerData;
+  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, RANGE_TOLERANCE, UPGAUGE_PER_YEAR } =
+    root.AirlinerData;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
+
+  const SEGMENT_IDS = Object.keys(SEGMENTS);
 
   /**
    * 경쟁사 응찰 우위. 카탈로그 점수는 "기종의 실력"일 뿐이고, 실제 수주전에서
@@ -18,8 +21,16 @@
    * 밸런스상 중요: 예전에는 경쟁사마다 난수를 뽑아 최댓값을 쓰는 방식이라 경쟁사 수(3)에서
    * 오는 +5점 정도의 편향이 문턱에 섞여 있었다. 지금은 제조사가 8곳이라 그 방식을 쓰면
    * 문턱이 제조사 수에 따라 멋대로 오르므로, 추첨은 한 번만 하고 편향을 이 상수로 명시한다.
+   *
+   * 항공사에 노선망을 주고 나서 4 → 6 으로 올렸다. 요구사양이 세그먼트 대역에서
+   * 균등하게 뽑히던 시절에는 플레이어의 제원 적합도가 평균적으로 낮아 이기기가
+   * 어려웠는데, 수요가 특정 대역에 몰리자 맞춤 설계의 적합도가 80%대로 뛰면서
+   * 평균 마진이 +3 이 됐다. 기성 기종의 기득권을 그만큼 더 인정한다.
    */
-  const RIVAL_BID_EDGE = 4;
+  const RIVAL_BID_EDGE = 6;
+
+  /** 선단 공통성이 줄 수 있는 최대 가산점 (입찰 점수 0~100 척도). */
+  const COMMONALITY_BONUS = 6;
 
   /** 해당 분기에 새로 뜨는 RFP 목록을 만든다. */
   function generateRfps(state, rng) {
@@ -39,12 +50,37 @@
 
   function makeRfp(state, rng) {
     const airline = rng.pick(AIRLINES);
-    // 항공사는 자기 성향 세그먼트를 자주, 그러나 항상은 아니게 고른다.
-    const segmentId = rng.next() < 0.55 ? airline.bias : rng.pick(['regional', 'narrow', 'wide']);
+    // 대부분은 자기 노선망 안에서 발주하고, 가끔 인접 세그먼트로 넘어간다.
+    // 노선망 밖 발주는 **반드시 다른 세그먼트**여야 한다 — 자기 급을 뽑아 놓고
+    // 대역·활주로 제약만 일반값으로 덮으면, 산악 공항 항공사가 이착륙 요건 0인
+    // 공고를 내는 모순이 생긴다(노선 설명은 그대로 붙은 채로).
+    const onProfile = rng.next() < 0.85;
+    const segmentId = onProfile ? airline.bias : rng.pick(SEGMENT_IDS.filter((id) => id !== airline.bias));
     const seg = SEGMENTS[segmentId];
 
-    const seats = Math.round(rng.range(seg.seats.min * 1.05, seg.seats.max * 0.92));
-    const range = Math.round(rng.range(seg.range.min * 1.1, seg.range.max * 0.88));
+    let seats;
+    let range;
+    if (onProfile && airline.seatBand) {
+      // 노선망 안의 발주 — 선호 대역 안에서 뽑는다. 이게 설계 포지셔닝을 베팅으로 만든다.
+      // 대역은 해마다 조금씩 커진다(업게이지). 승계 기종이 시간이 갈수록 작아진다.
+      const up = 1 + (state.turn / 4) * UPGAUGE_PER_YEAR;
+      seats = Math.round(rng.range(airline.seatBand[0], airline.seatBand[1]) * up);
+      range = Math.round(rng.range(airline.rangeBand[0], airline.rangeBand[1]));
+    } else {
+      // 노선망 밖 발주 — 그 세그먼트의 일반적인 범위.
+      seats = Math.round(rng.range(seg.seats.min * 1.05, seg.seats.max * 0.92));
+      range = Math.round(rng.range(seg.range.min * 1.1, seg.range.max * 0.88));
+    }
+    seats = Math.round(clamp(seats, seg.seats.min, seg.seats.max));
+    range = Math.round(clamp(range, seg.range.min, seg.range.max));
+
+    // 활주로 제약은 항공사 본거지의 성질이므로 노선망 안 발주에만 붙는다.
+    const fieldKind = onProfile ? airline.field || 'normal' : 'normal';
+    const reqField = FIELD_REQUIREMENT[fieldKind] || 0;
+    const reqEtops = range >= ETOPS_RANGE_KM;
+    // 노선 설명도 마찬가지다. 본거지 노선명을 그대로 붙이면 "단거리 지선 · 짧은
+    // 활주로"라고 적힌 광동체 공고가 요구 이착륙 성능 0으로 나가 서로 모순된다.
+    const route = onProfile ? airline.route || '' : `${seg.name} 신규 진출 (노선망 밖)`;
 
     // 발주 규모: 세그먼트가 작을수록 대량. 수요지수가 곱해진다.
     const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
@@ -62,6 +98,10 @@
       segmentName: seg.name,
       reqSeats: seats,
       reqRange: range,
+      reqField,
+      fieldKind,
+      reqEtops,
+      route,
       qty,
       priceSensitivity: airline.priceSensitivity,
       prestige: airline.prestige,
@@ -101,13 +141,21 @@
     if (program.segment !== rfp.segment) {
       return { total: 0, parts: {}, blocked: '세그먼트 불일치', price: 0 };
     }
-    // 요구 항속의 90% 미만이면 노선 자체를 못 뛴다 — 실격.
-    if (program.range < rfp.reqRange * 0.9) {
+    // 요구 항속의 일정 비율에 못 미치면 노선 자체를 못 뛴다 — 실격.
+    if (program.range < rfp.reqRange * RANGE_TOLERANCE) {
       return { total: 0, parts: {}, blocked: '항속거리 부족', price: 0 };
     }
     // 좌석이 요구의 80% 미만이면 수송력 미달 — 실격.
     if (program.seats < rfp.reqSeats * 0.8) {
       return { total: 0, parts: {}, blocked: '좌석수 부족', price: 0 };
+    }
+    // 짧은 활주로·고온고지 노선은 이착륙 성능이 모자라면 애초에 못 뛴다.
+    if (rfp.reqField && (program.fieldPerf ?? 100) < rfp.reqField) {
+      return { total: 0, parts: {}, blocked: '이착륙 성능 미달', price: 0 };
+    }
+    // 장거리 노선은 ETOPS 인증이 없으면 취항 자체가 불가능하다.
+    if (rfp.reqEtops && !program.etops) {
+      return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
     }
 
     // 좌석 적합도: 모자라도, 지나치게 커도 감점(공석은 곧 비용).
@@ -131,6 +179,28 @@
     const repScore = clamp(state.reputation / 100, 0, 1);
     const relScore = clamp((state.relations[rfp.airlineId] ?? 40) / 100, 0, 1);
 
+    // 선단 공통성 — 이미 우리 기체를 굴리는 항공사는 정비·훈련·부품 재고를 공유할 수
+    // 있어 강하게 선호한다. 현실에서 항공사가 한 제조사에 묶이는 가장 큰 이유이고,
+    // 게임에서는 초반 한 건의 수주가 복리로 불어나게 만드는 장치다.
+    // 같은 기종이면 최대, 우리 다른 기종이라도 부분 인정(조종석 공통성).
+    const fleet = (state.fleets && state.fleets[rfp.airlineId]) || {};
+    const sameType = fleet[program.id] || 0;
+    const anyOurs = Object.values(fleet).reduce((a, b) => a + b, 0);
+
+    // 같은 패밀리는 조종석·정비가 공통이라 사실상 같은 기종에 가깝다.
+    // 패밀리 선투자가 개발비뿐 아니라 영업에서도 회수되는 지점이다.
+    let famUnits = 0;
+    if (program.familyId) {
+      for (const [pid, n] of Object.entries(fleet)) {
+        if (pid === program.id) continue;
+        const other = state.programs.find((x) => x.id === pid);
+        if (other && other.familyId === program.familyId) famUnits += n;
+      }
+    }
+    const effectiveSame = sameType + famUnits * 0.7;
+    const commonality =
+      clamp(effectiveSame / 25, 0, 1) * 0.75 + clamp((anyOurs - sameType - famUnits) / 60, 0, 1) * 0.25;
+
     // 가중치를 시장 상황에 맞춰 재배분한 뒤 합이 1이 되도록 정규화한다.
     const w = {
       spec: 0.3,
@@ -150,10 +220,18 @@
           comfortScore * w.comfort +
           repScore * w.rep +
           relScore * w.rel)) /
-      wsum;
+        wsum +
+      // 공통성은 가중치 항목이 아니라 가산점이다. 가중합에 넣으면 분모(wsum)가 커져
+      // "우리 기체가 없는 항공사" 점수가 일괄로 깎이는데, 그건 신규 계정을 뚫는 걸
+      // 더 어렵게 만들 뿐 공통성의 취지(기존 계정이 유리하다)와 반대다.
+      commonality * COMMONALITY_BONUS;
+
+    // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
+    // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
+    const bounded = clamp(total, 0, 100);
 
     return {
-      total: Math.round(total * 10) / 10,
+      total: Math.round(bounded * 10) / 10,
       parts: {
         spec: Math.round(specFit * 100),
         price: Math.round(priceScore * 100),
@@ -161,6 +239,7 @@
         comfort: Math.round(comfortScore * 100),
         rep: Math.round(repScore * 100),
         rel: Math.round(relScore * 100),
+        common: Math.round(commonality * 100),
       },
       blocked: null,
       price: Math.round(effPrice * 10) / 10,
@@ -229,5 +308,5 @@
     return { outcome, qty, rivalName: rival.name, rivalScore: rival.score, margin: Math.round(margin * 10) / 10 };
   }
 
-  root.AirlinerBidding = { generateRfps, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, CONFIG };
+  root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, CONFIG };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
