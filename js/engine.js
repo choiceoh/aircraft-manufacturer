@@ -23,7 +23,7 @@
     WING_MATERIALS,
     LEGACY_MATERIAL_MAP,
   } = root.AirlinerData;
-  const { MANUFACTURERS } = root.AirlinerFleet;
+  const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
   const { createRng } = root.AirlinerRng;
@@ -79,10 +79,21 @@
       bids: {},
       log: [],
       history: [],
-      stats: { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 },
+      stats: {
+        delivered: 0,
+        revenue: 0,
+        rivalDelivered: 240,
+        ordersWon: 0,
+        bidsMade: 0,
+        // 경쟁 서사용 장부 — 총량만으로는 "누구에게 밀리고 있는가"가 보이지 않는다.
+        rivalByMaker: {},
+        duels: {},
+      },
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
       pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 },
       events: [],
+      // 이번 분기 업계 동향 (경쟁사 취항·단산). 개요 화면이 읽는다.
+      news: [],
       // 조달 전략 — 원가 ↔ 공급 차질 위험.
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
@@ -213,6 +224,12 @@
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
+    // 제조사별 장부가 없던 세이브는 빈 장부로 시작한다. 총량(rivalDelivered)은 그대로
+    // 두고 배분만 앞으로 쌓는다 — 과거분을 지금 기준으로 역산해 나누면 그때의
+    // 카탈로그가 아니라 현재 카탈로그로 배분되어 없던 기종이 인도한 것이 된다.
+    if (!s.stats.rivalByMaker || typeof s.stats.rivalByMaker !== 'object') s.stats.rivalByMaker = {};
+    if (!s.stats.duels || typeof s.stats.duels !== 'object') s.stats.duels = {};
+    if (!Array.isArray(s.news)) s.news = [];
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
@@ -740,6 +757,12 @@
       rd: Math.round(report.rdCost),
       backlog: totalBacklog(s),
       reputation: Math.round(s.reputation),
+      // 추이 화면이 읽는 값들. 분기마다 여기서 찍어 두지 않으면 20년치를 되짚을 방법이 없다.
+      worth: Math.round(netWorth(s)),
+      share: Math.round(marketShare(s) * 10000) / 10000,
+      ordersWon: report.ordersWon,
+      fuel: Math.round(s.market.fuelIndex * 1000) / 1000,
+      demand: Math.round(s.market.demandIndex * 1000) / 1000,
     });
     if (s.history.length > 120) s.history.shift();
 
@@ -763,6 +786,7 @@
 
     tickEffects(s);
     driftMarket(s, rng);
+    rollMarketNews(s);
     s.events = rollEvents(s, rng);
     s.rfps = generateRfps(s, rng);
     s.bids = {};
@@ -783,6 +807,24 @@
 
     saveRng(s, rng);
     return { ok: true, report };
+  }
+
+  /**
+   * 수주전 전적을 제조사별로 남긴다. 로그는 흘러가 버리지만 이 장부는 20년 내내 쌓여,
+   * "협동체에서는 늘 에어버스와 붙었고 절반을 내줬다" 같은 판의 요약이 된다.
+   */
+  function recordDuel(s, result, qtyAtStake) {
+    const id = result.rivalMaker;
+    if (!id) return;
+    if (!s.stats.duels) s.stats.duels = {};
+    const d = (s.stats.duels[id] = s.stats.duels[id] || { faced: 0, won: 0, split: 0, lost: 0, lostQty: 0 });
+    d.faced++;
+    if (result.outcome === 'win') d.won++;
+    else if (result.outcome === 'split') d.split++;
+    else {
+      d.lost++;
+      d.lostQty += qtyAtStake || 0;
+    }
   }
 
   function resolveBids(s, rng, report) {
@@ -818,6 +860,7 @@
       s.stats.bidsMade++;
       const result = resolveBid(s, rfp, { score }, rng);
       s.relations[rfp.airlineId] = clamp((s.relations[rfp.airlineId] ?? 40) + 2, 0, 100);
+      recordDuel(s, result, rfp.qty);
 
       if (result.outcome === 'lose') {
         pushLog(
@@ -1066,6 +1109,11 @@
       delivered: p.delivered,
       backlog: totalBacklog(s),
       reputation: Math.round(s.reputation),
+      worth: Math.round(netWorth(s)),
+      share: Math.round(marketShare(s) * 10000) / 10000,
+      ordersWon: 0,
+      fuel: Math.round(s.market.fuelIndex * 1000) / 1000,
+      demand: Math.round(s.market.demandIndex * 1000) / 1000,
     });
     if (s.history.length > 120) s.history.shift();
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 };
@@ -1112,6 +1160,117 @@
   function simulateRivals(s, rng) {
     const industry = Math.max(4, Math.round(22 * s.market.demandIndex + rng.normal(0, 3)));
     s.stats.rivalDelivered += industry;
+    allocateRivalDeliveries(s, industry);
+  }
+
+  /** 세그먼트별 인도 대수 비중. 대당 가격이 아니라 **기수** 기준이라 소형이 무겁다. */
+  const SEGMENT_UNIT_SHARE = { regional: 0.3, narrow: 0.53, wide: 0.17 };
+
+  /**
+   * 업계 인도량을 제조사별로 나눠 담는다.
+   *
+   * 총량은 예전 식 그대로라 점유율 밸런스는 움직이지 않는다. 나누는 근거는 그 시점
+   * 카탈로그의 실제 경쟁력이라, 787이 나오면 보잉 몫이 늘고 단산이 겹치면 줄어든다.
+   *
+   * 난수를 쓰지 않는다 — 여기서 한 번이라도 더 뽑으면 같은 시드의 이후 전개가
+   * 통째로 갈려 세이브 재현성과 결정론 테스트가 깨진다. 대신 최대잉여법으로
+   * 정수 배분해 총합을 정확히 맞춘다.
+   */
+  function allocateRivalDeliveries(s, industry) {
+    if (industry <= 0) return;
+    const year = yearOf(s.turn);
+    const weights = new Map();
+
+    for (const seg of Object.keys(SEGMENT_UNIT_SHARE)) {
+      const pool = availableTypes(seg, year);
+      if (!pool.length) continue;
+      const segWeight = SEGMENT_UNIT_SHARE[seg];
+      for (const type of pool) {
+        // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
+        const power = Math.max(0, typeScore(type, s.market.fuelIndex, null, null) - 30);
+        weights.set(type.maker, (weights.get(type.maker) || 0) + segWeight * power * power);
+      }
+    }
+    if (!weights.size) return;
+
+    const total = [...weights.values()].reduce((a, b) => a + b, 0);
+    if (total <= 0) return;
+
+    const quota = [...weights.entries()].map(([maker, w]) => {
+      const exact = (industry * w) / total;
+      const base = Math.floor(exact);
+      return { maker, base, rem: exact - base };
+    });
+    let left = industry - quota.reduce((a, q) => a + q.base, 0);
+    quota.sort((a, b) => b.rem - a.rem || (a.maker < b.maker ? -1 : 1));
+    for (let i = 0; left > 0; i++, left--) quota[i % quota.length].base++;
+
+    for (const q of quota) {
+      if (q.base > 0) s.stats.rivalByMaker[q.maker] = (s.stats.rivalByMaker[q.maker] || 0) + q.base;
+    }
+  }
+
+  /** 제조사별 누적 인도 — 우리를 포함해 큰 순으로 정렬한 순위표. */
+  function makerStandings(s) {
+    const rows = MANUFACTURERS.map((m) => ({
+      id: m.id,
+      name: m.name,
+      delivered: (s.stats.rivalByMaker && s.stats.rivalByMaker[m.id]) || 0,
+      us: false,
+    }));
+    // 배분 이전 세이브·초기 승계분은 어느 제조사 몫인지 알 수 없다. 총량과의
+    // 차이를 '기타'로 남겨 순위표 합계가 점유율 계산과 어긋나지 않게 한다.
+    const allocated = rows.reduce((a, r) => a + r.delivered, 0);
+    const unattributed = Math.max(0, s.stats.rivalDelivered - allocated);
+    rows.push({ id: 'us', name: s.company, delivered: s.stats.delivered, us: true });
+    if (unattributed > 0) rows.push({ id: 'other', name: '집계 이전 인도분', delivered: unattributed, us: false });
+
+    const total = rows.reduce((a, r) => a + r.delivered, 0) || 1;
+    return rows
+      .filter((r) => r.delivered > 0 || r.us)
+      .map((r) => ({ ...r, share: r.delivered / total }))
+      .sort((a, b) => b.delivered - a.delivered);
+  }
+
+  /** 제조사별 수주전 전적 — 붙은 횟수·완패·분할·완승. */
+  function duelRecords(s) {
+    const duels = s.stats.duels || {};
+    return MANUFACTURERS.filter((m) => duels[m.id])
+      .map((m) => ({ id: m.id, name: m.name, ...duels[m.id] }))
+      .sort((a, b) => b.faced - a.faced);
+  }
+
+  /**
+   * 업계 동향 — 이번 분기에 취항했거나 단산된 경쟁 기종.
+   * 카탈로그가 조용히 바뀌면 "1998년의 문턱과 2016년의 문턱이 다르다"는 설계 의도가
+   * 플레이어에게 한 번도 전달되지 않는다. 바뀌는 순간을 소식으로 띄운다.
+   */
+  function rollMarketNews(s) {
+    const now = yearOf(s.turn);
+    const prev = yearOf(s.turn - 1);
+    const news = [];
+
+    for (const t of AIRCRAFT) {
+      const maker = MANUFACTURERS.find((m) => m.id === t.maker);
+      if (!maker) continue;
+      if (t.eis > prev && t.eis <= now) {
+        news.push({
+          kind: 'eis',
+          text: `${maker.name} ${t.name} 취항 — ${SEGMENTS[t.segment].name} ${t.seats}석 · ${fmtNum(t.range)}km.`,
+        });
+      }
+      if (t.end !== null && t.end > prev && t.end <= now) {
+        news.push({ kind: 'end', text: `${maker.name} ${t.name} 신규 판매 종료.` });
+      }
+    }
+
+    s.news = news;
+    for (const n of news) pushLog(s, 'info', n.text);
+    return news;
+  }
+
+  function fmtNum(n) {
+    return Math.round(n).toLocaleString('en-US');
   }
 
   function rollEvents(s, rng) {
@@ -1344,6 +1503,79 @@
     return { score, grade, share, worth, delivered: s.stats.delivered };
   }
 
+  /** 최종 점수를 만든 네 항목. 등급만 던지면 무엇을 잘하고 못했는지가 남지 않는다. */
+  function scoreBreakdown(s) {
+    const share = marketShare(s);
+    const worth = netWorth(s);
+    return [
+      { label: '누적 인도', detail: `${s.stats.delivered}기 × 1.2`, points: Math.round(s.stats.delivered * 1.2) },
+      { label: '시장 점유율', detail: `${(share * 100).toFixed(1)}% × 4,000`, points: Math.round(share * 4000) },
+      { label: '순자산', detail: `${fmtMoney(Math.max(0, worth))} × 0.08`, points: Math.round(Math.max(0, worth) * 0.08) },
+      { label: '평판', detail: `${Math.round(s.reputation)} × 12`, points: Math.round(s.reputation * 12) },
+    ];
+  }
+
+  /**
+   * 20년 회고 — 종료 화면이 읽는 경영 요약.
+   *
+   * 상태에서 그때그때 계산한다. 종료 시점에 통째로 얼려 저장하면 세이브가 커지고,
+   * 옛 세이브를 불러왔을 때 없는 필드가 되어 화면이 비어 버린다.
+   */
+  function careerReport(s) {
+    const hist = s.history || [];
+    const settled = hist.filter((h) => typeof h.net === 'number');
+    const best = settled.reduce((a, h) => (!a || h.net > a.net ? h : a), null);
+    const worst = settled.reduce((a, h) => (!a || h.net < a.net ? h : a), null);
+    const peakShare = hist.reduce((a, h) => (typeof h.share === 'number' && h.share > a ? h.share : a), 0);
+    const peakDebt = hist.reduce((a, h) => (h.debt > a ? h.debt : a), 0);
+    const totalRevenue = settled.reduce((a, h) => a + h.revenue, 0);
+    const totalRd = settled.reduce((a, h) => a + (h.rd || 0), 0);
+
+    const programs = s.programs
+      .map((p) => ({
+        name: p.name,
+        segment: SEGMENTS[p.segment].name,
+        seats: p.seats,
+        range: p.range,
+        phase: p.phase,
+        legacy: !!p.legacy,
+        engineName: p.engineName || null,
+        launched: turnLabel(Math.max(0, p.launchTurn ?? 0)),
+        launchTurn: p.launchTurn ?? 0,
+        delivered: p.delivered || 0,
+        backlog: s.backlog.filter((o) => o.programId === p.id).reduce((a, o) => a + o.remaining, 0),
+      }))
+      .sort((a, b) => b.delivered - a.delivered || a.launchTurn - b.launchTurn);
+
+    const customers = Object.entries(s.fleets || {})
+      .map(([airlineId, byProgram]) => {
+        const airline = AIRLINES.find((a) => a.id === airlineId);
+        return {
+          id: airlineId,
+          name: airline ? airline.name : airlineId,
+          units: Object.values(byProgram).reduce((a, n) => a + n, 0),
+          relation: Math.round(s.relations[airlineId] ?? 0),
+        };
+      })
+      .filter((c) => c.units > 0)
+      .sort((a, b) => b.units - a.units);
+
+    return {
+      best,
+      worst,
+      peakShare,
+      peakDebt,
+      totalRevenue,
+      totalRd,
+      programs,
+      customers,
+      standings: makerStandings(s),
+      duels: duelRecords(s),
+      breakdown: scoreBreakdown(s),
+      history: hist,
+    };
+  }
+
   /**
    * 현재 인력 배분 기준으로 개발 완료까지 남은 분기 수.
    * 설계 시 표시되는 "예상 N분기"는 인력이 100% 충족됐을 때의 값이라,
@@ -1410,6 +1642,10 @@
     quarterRate,
     quarterGrade,
     finalScore,
+    careerReport,
+    scoreBreakdown,
+    makerStandings,
+    duelRecords,
     projectedQuarters,
     ensureShape,
     addToFleet,

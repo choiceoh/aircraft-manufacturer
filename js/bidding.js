@@ -279,10 +279,17 @@
   function rivalScore(state, rfp, rng) {
     const offer = bestOffering(state, rfp.segment, rfp.reqSeats, rfp.reqRange);
     // 그 시점 그 세그먼트에 아무도 없으면(카탈로그 공백) 시장 평균이 문턱이 된다.
-    if (!offer) return { name: '—', score: RIVAL_STRENGTH_FLOOR };
+    if (!offer) return { name: '—', makerId: null, typeName: null, score: RIVAL_STRENGTH_FLOOR };
 
     const score = clamp(offer.score + rng.normal(RIVAL_BID_EDGE, 6), RIVAL_STRENGTH_FLOOR, RIVAL_STRENGTH_CAP);
-    return { name: offer.name, score: Math.round(score * 10) / 10 };
+    // 누가 이겼는지를 제조사 단위로 남긴다 — 표시용 이름만 넘기면 수주전 전적을
+    // 회사별로 쌓을 수 없어 "보잉에 다섯 번 밀렸다" 같은 서사가 만들어지지 않는다.
+    return {
+      name: offer.name,
+      makerId: offer.maker.id,
+      typeName: offer.type.name,
+      score: Math.round(score * 10) / 10,
+    };
   }
 
   /**
@@ -305,7 +312,15 @@
       outcome = 'lose';
     }
 
-    return { outcome, qty, rivalName: rival.name, rivalScore: rival.score, margin: Math.round(margin * 10) / 10 };
+    return {
+      outcome,
+      qty,
+      rivalName: rival.name,
+      rivalMaker: rival.makerId,
+      rivalType: rival.typeName,
+      rivalScore: rival.score,
+      margin: Math.round(margin * 10) / 10,
+    };
   }
 
   root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, CONFIG };

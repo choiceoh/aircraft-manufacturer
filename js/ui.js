@@ -23,6 +23,9 @@
     discountDraft: {},
     // 설계 미리보기가 통째로 교체돼도 입력한 기종명이 날아가지 않게 보관한다.
     designName: '',
+    // 다음 렌더에서 한 번만 재생할 연출. 슬라이더를 움직일 때마다 화면이 페이드되면
+    // 오히려 조작이 굼떠 보이므로, 탭 전환·분기 종료에서만 켠다.
+    animate: null,
   };
 
   const TABS = [
@@ -32,6 +35,7 @@
     { id: 'production', name: '생산' },
     { id: 'rfps', name: '수주' },
     { id: 'finance', name: '재무' },
+    { id: 'trends', name: '추이' },
     { id: 'log', name: '기록' },
   ];
 
@@ -39,10 +43,18 @@
 
   function render() {
     const s = ui.state;
-    renderHud(s);
+    const anim = ui.animate;
+    ui.animate = null;
+    renderHud(s, anim === 'turn');
     renderTabs(s);
 
     const panel = document.getElementById('panel');
+    // 클래스를 지웠다 다시 붙여야 같은 애니메이션이 다시 재생된다.
+    panel.className = 'panel';
+    if (anim) {
+      void panel.offsetWidth;
+      panel.className = 'panel enter';
+    }
     switch (ui.tab) {
       case 'design':
         panel.innerHTML = P.renderDesign(s, ui.spec, ui.designName);
@@ -59,6 +71,9 @@
       case 'finance':
         panel.innerHTML = P.renderFinance(s);
         break;
+      case 'trends':
+        panel.innerHTML = P.renderTrends(s);
+        break;
       case 'log':
         panel.innerHTML = P.renderLog(s);
         break;
@@ -68,7 +83,7 @@
     save();
   }
 
-  function renderHud(s) {
+  function renderHud(s, flash) {
     // 종료 후 s.turn 은 이미 다음 인덱스라, 그대로 쓰면 존재하지 않는 분기가 뜬다.
     const shownTurn = s.gameOver ? s.gameOver.lastTurn ?? Math.max(0, s.turn - 1) : s.turn;
     const share = (E.marketShare(s) * 100).toFixed(1);
@@ -76,7 +91,20 @@
     const demand = s.market.demandIndex;
     const trend = (v) => (v >= 1.25 ? 'up' : v <= 0.8 ? 'down' : '');
 
-    document.getElementById('hud').innerHTML = `
+    // 직전 정산 대비 증감. 숫자만 바뀌면 무엇이 움직였는지 눈에 안 들어온다.
+    const last = s.history[s.history.length - 1];
+    const prev = s.history[s.history.length - 2];
+    const delta = (key, fmt, invert) => {
+      if (!last || !prev || typeof last[key] !== 'number' || typeof prev[key] !== 'number') return '';
+      const d = last[key] - prev[key];
+      if (!d) return '';
+      const good = invert ? d < 0 : d > 0;
+      return `<i class="hud-delta ${good ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'}${fmt(Math.abs(d))}</i>`;
+    };
+
+    const hud = document.getElementById('hud');
+    hud.className = 'hud' + (flash ? ' flash' : '');
+    hud.innerHTML = `
       <div class="hud-left">
         <div class="hud-company">${P.esc(s.company)}</div>
         <div class="hud-date">${E.turnLabel(shownTurn)} ${
@@ -86,9 +114,9 @@
         }</div>
       </div>
       <div class="hud-stats">
-        ${hudStat('현금', money(s.cash), s.cash < 500 ? 'bad' : '')}
-        ${hudStat('부채', money(s.debt), s.debt >= CONFIG.maxDebt * 0.9 ? 'bad' : '')}
-        ${hudStat('수주 잔고', P.num(E.totalBacklog(s)) + '기')}
+        ${hudStat('현금', money(s.cash), s.cash < 500 ? 'bad' : '', delta('cash', money))}
+        ${hudStat('부채', money(s.debt), s.debt >= CONFIG.maxDebt * 0.9 ? 'bad' : '', delta('debt', money, true))}
+        ${hudStat('수주 잔고', P.num(E.totalBacklog(s)) + '기', '', delta('backlog', (v) => P.num(v) + '기'))}
         ${hudStat('점유율', share + '%')}
         ${hudStat('평판', Math.round(s.reputation))}
         ${hudStat('연료지수', fuel.toFixed(2), trend(fuel))}
@@ -97,8 +125,8 @@
       <button class="next" data-action="next-turn">분기 종료 ▸</button>`;
   }
 
-  function hudStat(label, value, tone) {
-    return `<div class="hud-stat ${tone || ''}"><span>${label}</span><b>${value}</b></div>`;
+  function hudStat(label, value, tone, delta) {
+    return `<div class="hud-stat ${tone || ''}"><span>${label}</span><b>${value}${delta || ''}</b></div>`;
   }
 
   function renderTabs(s) {
@@ -157,6 +185,7 @@
 
     switch (a) {
       case 'tab':
+        if (ui.tab !== btn.dataset.tab) ui.animate = 'tab';
         ui.tab = btn.dataset.tab;
         render();
         break;
@@ -413,12 +442,15 @@
 
     const rep = r.report;
     const net = rep.revenue - rep.productionCost - rep.rdCost - rep.capex - rep.overhead - rep.interest;
+    const bits = [`매출 ${money(rep.revenue)}`, `인도 ${rep.delivered}기`];
+    if (rep.ordersWon) bits.push(`신규 수주 ${P.num(rep.ordersWon)}기`);
     toast(
-      `${rep.label} 정산 — 매출 ${money(rep.revenue)} · 인도 ${rep.delivered}기 · 손익 <b>${net >= 0 ? '+' : ''}${money(net)}</b>`,
+      `${rep.label} 정산 — ${bits.join(' · ')} · 손익 <b>${net >= 0 ? '+' : ''}${money(net)}</b>`,
       net >= 0 ? 'good' : 'bad',
     );
 
     ui.tab = 'overview';
+    ui.animate = 'turn';
     render();
     if (s.gameOver) showGameOver(s);
   }
@@ -441,11 +473,12 @@
         <tr><th>순자산</th><td>${money(g.worth)}</td></tr>
         <tr><th>최종 평판</th><td>${Math.round(s.reputation)} / 100</td></tr>
       </table>
+      <div class="career">${P.renderCareer(s)}</div>
       <div class="row">
         <button class="primary" data-action="new-game">새 게임</button>
         <button class="ghost" data-action="close-modal">기록 살펴보기</button>
       </div>`;
-    openModal(body);
+    openModal(body, true);
   }
 
   /**
@@ -454,8 +487,9 @@
    */
   let lastFocused = null;
 
-  function openModal(bodyHtml) {
+  function openModal(bodyHtml, wide) {
     const modal = document.getElementById('modal');
+    modal.querySelector('.modal-card').className = 'modal-card' + (wide ? ' wide' : '');
     modal.querySelector('.modal-body').innerHTML = bodyHtml;
     modal.classList.add('show');
     modal.setAttribute('aria-hidden', 'false');

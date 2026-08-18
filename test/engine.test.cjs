@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
   require(path.join(JS, f));
 }
 
@@ -22,6 +22,7 @@ const {
   AirlinerFleet: F,
   AirlinerBidding: B,
   AirlinerPanels: P,
+  AirlinerCharts: C,
 } = globalThis;
 
 test('시드가 같으면 난수열이 같다 (재현성)', () => {
@@ -2495,4 +2496,175 @@ test('슬라이더 입력이 착수 옵션 블록도 갈아끼운다', () => {
   const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
   const handler = src.slice(src.indexOf("design-input"), src.indexOf("} else if (el.dataset.action === 'share')"));
   assert.ok(/design-options/.test(handler) && /renderDesignOptions/.test(handler), '슬라이더 입력이 착수 옵션도 다시 그려야 한다');
+});
+
+// ─────────────────────── 경쟁 서사 · 추이 · 회고 ───────────────────────
+
+test('경쟁사 인도는 제조사별로 나뉘고 총합이 업계 총량과 정확히 맞는다', () => {
+  const s = E.newGame(61);
+  const before = s.stats.rivalDelivered;
+  const beforeAlloc = Object.values(s.stats.rivalByMaker).reduce((a, n) => a + n, 0);
+  for (let i = 0; i < 12; i++) E.endTurn(s);
+
+  const industry = s.stats.rivalDelivered - before;
+  const allocated = Object.values(s.stats.rivalByMaker).reduce((a, n) => a + n, 0) - beforeAlloc;
+  assert.strictEqual(allocated, industry, '배분 합계가 업계 총량과 어긋나면 점유율 표와 순위표가 서로 다른 말을 한다');
+  assert.ok(Object.keys(s.stats.rivalByMaker).length >= 3, '한 회사가 업계를 독식하면 안 된다');
+  // 1998년 협동체·광동체의 강자는 보잉·에어버스다. 배분이 실력을 따라야 한다.
+  assert.ok(s.stats.rivalByMaker.boeing > (s.stats.rivalByMaker.sukhoi || 0), '카탈로그 실력이 배분에 반영돼야 한다');
+});
+
+test('제조사별 배분은 상태만 보고 정해진다 (재현성)', () => {
+  // 배분에서 난수를 뽑으면 이후 전개가 통째로 갈려 세이브 재현성이 깨진다.
+  // 같은 시드로 두 판을 굴려 난수 위치(rngState)까지 같은지 확인한다.
+  const run = (seed) => {
+    const s = E.newGame(seed);
+    for (let i = 0; i < 10; i++) E.endTurn(s);
+    return {
+      rngState: s.rngState,
+      cash: Math.round(s.cash),
+      rivals: s.stats.rivalDelivered,
+      byMaker: JSON.stringify(s.stats.rivalByMaker),
+    };
+  };
+  const a = run(77);
+  assert.strictEqual(typeof a.rngState, 'number', 'rngState 를 못 읽으면 이 검사는 의미가 없다');
+  assert.deepStrictEqual(a, run(77), '같은 시드가 다른 전개를 내면 안 된다');
+});
+
+test('수주전 전적이 제조사별로 쌓인다', () => {
+  const s = E.newGame(23);
+  let bid = 0;
+  for (let t = 0; t < 24; t++) {
+    for (const rfp of s.rfps) {
+      const cands = E.eligiblePrograms(s, rfp).filter((c) => !c.score.blocked);
+      if (cands.length) {
+        E.setBid(s, rfp.id, cands[0].program.id, 10);
+        bid++;
+      }
+    }
+    E.endTurn(s);
+    if (s.gameOver) break;
+  }
+  assert.ok(bid > 0, '입찰이 한 번도 성사되지 않아 전적을 검증할 수 없다');
+
+  const records = E.duelRecords(s);
+  assert.ok(records.length > 0, '맞붙은 상대가 장부에 남아야 한다');
+  for (const r of records) {
+    assert.strictEqual(r.faced, r.won + r.split + r.lost, `${r.name} 전적 합계가 맞지 않는다`);
+    assert.ok(r.lostQty >= 0);
+  }
+  const totalFaced = records.reduce((a, r) => a + r.faced, 0);
+  assert.ok(totalFaced <= s.stats.bidsMade, '입찰 수보다 많은 맞대결이 기록됐다');
+});
+
+test('업계 동향이 취항·단산 시점에 뜬다', () => {
+  const s = E.newGame(31);
+  const seen = [];
+  for (let i = 0; i < 40; i++) {
+    E.endTurn(s);
+    if (s.gameOver) break;
+    for (const n of s.news || []) seen.push(n);
+  }
+  assert.ok(seen.some((n) => n.kind === 'eis'), '20년 동안 신형이 한 번도 안 떴다');
+  assert.ok(seen.some((n) => n.kind === 'end'), '단산 소식이 한 번도 안 떴다');
+  // 소식은 그 분기에만 붙어 있어야 한다 — 계속 쌓이면 매 분기 같은 뉴스가 다시 뜬다.
+  assert.ok(s.news.length < 6, '한 분기 소식이 비정상적으로 많다');
+});
+
+test('분기 이력에 추이 화면이 읽는 값이 함께 남는다', () => {
+  const s = E.newGame(43);
+  for (let i = 0; i < 3; i++) E.endTurn(s);
+  const row = s.history[s.history.length - 1];
+  for (const key of ['worth', 'share', 'fuel', 'demand', 'ordersWon']) {
+    assert.strictEqual(typeof row[key], 'number', `${key} 가 기록되지 않으면 추이를 되짚을 방법이 없다`);
+  }
+  assert.ok(row.share >= 0 && row.share <= 1, '점유율은 0~1 비율이어야 한다');
+});
+
+test('추이·회고 화면은 옛 세이브(새 필드 없음)에도 그려진다', () => {
+  const s = E.newGame(47);
+  for (let i = 0; i < 6; i++) E.endTurn(s);
+
+  // v1 세이브 재현: 새 필드가 통째로 없다.
+  for (const h of s.history) {
+    delete h.worth;
+    delete h.share;
+    delete h.fuel;
+    delete h.demand;
+    delete h.ordersWon;
+  }
+  delete s.stats.rivalByMaker;
+  delete s.stats.duels;
+  delete s.news;
+  E.ensureShape(s);
+
+  for (const html of [P.renderTrends(s), P.renderOverview(s), P.renderCareer(s)]) {
+    assert.ok(html.length > 0);
+    assert.ok(!/NaN|undefined/.test(html), '옛 세이브에서 빈 값이 화면으로 새어 나왔다');
+  }
+});
+
+test('제조사 순위표는 우리와 미배분분까지 더해 점유율과 맞는다', () => {
+  const s = E.newGame(53);
+  for (let i = 0; i < 8; i++) E.endTurn(s);
+  const rows = E.makerStandings(s);
+  const us = rows.find((r) => r.us);
+  assert.ok(us, '우리 회사가 순위표에 없다');
+  const total = rows.reduce((a, r) => a + r.delivered, 0);
+  assert.strictEqual(total, s.stats.delivered + s.stats.rivalDelivered, '순위표 합계가 점유율 분모와 달라졌다');
+  assert.ok(Math.abs(us.share - E.marketShare(s)) < 1e-6, '순위표의 우리 점유율이 HUD 와 어긋난다');
+});
+
+test('회고는 최고·최악 분기와 점수 구성을 남긴다', () => {
+  const s = E.newGame(59);
+  s.cash = 6000;
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 55, material: 'hybrid' }, 'TEST-1');
+  for (let i = 0; i < 20; i++) {
+    E.endTurn(s);
+    if (s.gameOver) break;
+  }
+  const r = E.careerReport(s);
+  assert.ok(r.best && r.worst, '최고·최악 분기를 못 찾았다');
+  assert.ok(r.best.net >= r.worst.net, '최고 분기가 최악 분기보다 나빠졌다');
+  assert.ok(r.programs.some((p) => p.name === 'TEST-1'), '착수한 기종이 회고에 없다');
+
+  const sum = r.breakdown.reduce((a, b) => a + b.points, 0);
+  const score = E.finalScore(s, false).score;
+  assert.ok(Math.abs(sum - score) <= 4, `점수 구성 합계(${sum})가 최종 점수(${score})와 어긋난다`);
+});
+
+test('차트는 평평한 값·빈 배열에도 NaN 을 뱉지 않는다', () => {
+  const flat = C.line({ labels: ['a', 'b'], series: [{ name: 'x', values: [5, 5, 5], cls: 'accent', fill: true }] });
+  assert.ok(!/NaN/.test(flat), '값이 전부 같을 때 좌표가 깨졌다');
+  assert.ok(/<svg/.test(flat));
+
+  assert.ok(!/<svg/.test(C.line({ series: [] })), '그릴 게 없으면 빈 차트를 내야 한다');
+  assert.ok(!/<svg/.test(C.bars({ values: [] })));
+  assert.strictEqual(C.spark([1]), '', '점 하나짜리 스파크라인은 그리지 않는다');
+
+  const withNulls = C.bars({ values: [10, null, -10], labels: ['a', 'b', 'c'], format: (v) => v + 'M' });
+  assert.ok(!/NaN/.test(withNulls), '빈 칸이 섞여도 좌표가 깨지면 안 된다');
+  assert.ok(/c-bar up/.test(withNulls) && /c-bar down/.test(withNulls), '흑자·적자 막대가 구분돼야 한다');
+});
+
+test('차트 높이는 픽셀로 고정되고 가로만 늘어난다', () => {
+  // 비율을 유지하면 좁은 화면에서 높이가 같이 짜부라져 곡선도 축도 못 읽는다.
+  const html = C.line({ height: 120, labels: ['a', 'b'], series: [{ name: 'x', values: [1, 2, 3] }] });
+  assert.ok(/style="height:120px"/.test(html), '높이가 viewBox 와 같은 픽셀로 고정돼야 한다');
+  assert.ok(/preserveAspectRatio="none"/.test(html), '가로는 컨테이너를 채워야 한다');
+  // 가로로 늘어난 좌표계에서는 선 굵기도 같이 늘어난다 — 이걸 막지 않으면 굵기가 폭에 따라 변한다.
+  const svg = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'));
+  const strokes = svg.match(/<(polyline|line)[^>]*>/g) || [];
+  assert.ok(strokes.length > 0);
+  for (const el of strokes) assert.ok(/non-scaling-stroke/.test(el), `선 굵기가 폭에 따라 변한다: ${el}`);
+  assert.ok(!/<circle/.test(svg), '원은 늘어난 좌표계에서 타원이 된다');
+});
+
+test('차트 축 라벨은 SVG 밖 HTML 로 나간다', () => {
+  // viewBox 안에 두면 좁은 카드에서 글자까지 같이 줄어들어 읽을 수 없게 된다.
+  const html = C.line({ labels: ['1998년 1분기', '2017년 4분기'], series: [{ name: 'x', values: [1, 2, 3] }] });
+  const svg = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'));
+  assert.ok(!/<text/.test(svg), '축 글자가 다시 SVG 안으로 들어갔다');
+  assert.ok(/c-y/.test(html) && /c-x/.test(html), '축 라벨이 아예 사라졌다');
 });
