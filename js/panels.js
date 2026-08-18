@@ -109,6 +109,7 @@
     const rows = s.history.slice(-24);
 
     return `
+      ${decisionCard(s)}
       ${settlementCard(last, prev)}
 
       <section class="card">
@@ -171,6 +172,31 @@
       rows.map((h) => h[key]).filter((v) => typeof v === 'number'),
       cls,
     );
+  }
+
+  /**
+   * 결정 사건 카드 — 답을 기다리는 사건을 개요 맨 위에 세운다.
+   * 고르지 않고 분기를 넘길 수 있지만 그때는 무대응이 적용되므로, 그 사실을 밝혀 둔다.
+   */
+  function decisionCard(s) {
+    const d = s.decision;
+    if (!d) return '';
+    return `
+      <section class="card decision">
+        <h3>${esc(d.name)}</h3>
+        <p class="decision-text">${d.text}</p>
+        <div class="decision-options">
+          ${d.options
+            .map(
+              (o) => `<button class="decision-opt" data-action="decide" data-opt="${esc(o.id)}">
+                <b>${esc(o.label)}</b>
+                <span class="muted">${esc(o.detail)}</span>
+              </button>`,
+            )
+            .join('')}
+        </div>
+        <p class="hint">고르지 않고 분기를 넘기면 <b>무대응</b>으로 처리된다 — 그것도 하나의 선택이다.</p>
+      </section>`;
   }
 
   /**

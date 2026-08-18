@@ -27,6 +27,7 @@
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
   const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
   const { createRng } = root.AirlinerRng;
+  const Decisions = root.AirlinerDecisions;
 
   /** 금액 표기: 1000M$ 이상은 B$로 접는다. */
   function fmtMoney(m) {
@@ -98,6 +99,10 @@
       events: [],
       // 이번 분기 업계 동향 (경쟁사 취항·단산). 개요 화면이 읽는다.
       news: [],
+      // 지금 답을 기다리는 결정 사건. 고르지 않고 분기를 넘기면 fallback 이 적용된다.
+      decision: null,
+      // 결정의 지연 결과 — { turn, id, optionId, memo }. 그 분기가 오면 정산한다.
+      pendingOutcomes: [],
       // 조달 전략 — 원가 ↔ 공급 차질 위험.
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
@@ -240,6 +245,8 @@
       s.stats.peakDebt = (s.history || []).reduce((a, h) => (h.debt > a ? h.debt : a), Math.round(s.debt));
     }
     if (!Array.isArray(s.news)) s.news = [];
+    if (s.decision === undefined) s.decision = null;
+    if (!Array.isArray(s.pendingOutcomes)) s.pendingOutcomes = [];
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
@@ -756,6 +763,9 @@
     };
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 };
 
+    // 답하지 않은 사건을 먼저 닫는다. 이 분기의 생산·인도가 그 결과를 받아야 한다.
+    resolveOpenDecision(s, rng);
+
     resolveBids(s, rng, report);
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
@@ -807,7 +817,9 @@
     tickEffects(s);
     driftMarket(s, rng);
     rollMarketNews(s);
+    resolvePendingOutcomes(s, rng);
     s.events = rollEvents(s, rng);
+    s.decision = rollDecision(s, rng);
     s.rfps = generateRfps(s, rng);
     s.bids = {};
 
@@ -1306,6 +1318,156 @@
     return Math.round(n).toLocaleString('en-US');
   }
 
+  // ─────────────────────────────── 결정 사건 ───────────────────────────────
+
+  /**
+   * 결정 사건이 쓰는 헬퍼. 이벤트 헬퍼와 겹치는 부분이 많지만 항공사 관계·수주
+   * 생성처럼 결정에서만 필요한 손잡이가 더 있다.
+   *
+   * memo 는 상태에 저장된다 — 사건 문구를 만들 때 뽑은 대상(어느 기종, 어느 항공사)을
+   * 선택지 apply 와 몇 분기 뒤 지연 결과가 같이 봐야 하기 때문이다. 다시 뽑으면
+   * "판아메르가 제안했는데 코스모와 계약됐다" 같은 어긋남이 생긴다.
+   */
+  function decisionHelpers(s, rng, memo) {
+    return {
+      rng,
+      fmt: fmtMoney,
+      remember: (k, v) => {
+        memo[k] = v;
+        return v;
+      },
+      recall: (k, fallback) => (memo[k] === undefined ? fallback : memo[k]),
+      reputation: (d) => adjustReputation(s, d),
+      relation: (airlineId, d) => {
+        if (!airlineId) return;
+        s.relations[airlineId] = clamp((s.relations[airlineId] ?? 40) + d, 0, 100);
+      },
+      income: (amt) => {
+        s.cash += amt;
+        s.pending.revenue += amt;
+      },
+      expense: (amt) => {
+        s.cash -= amt;
+        s.pending.overhead += amt;
+      },
+      /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
+      order: ({ airlineId, airlineName, program, qty, unitPrice }) => {
+        const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
+        s.cash += deposit;
+        s.pending.revenue += deposit;
+        s.stats.ordersWon += qty;
+        s.backlog.push({
+          id: 'ord-' + s.nextId++,
+          airlineId,
+          airlineName,
+          programId: program.id,
+          programName: program.name,
+          qty,
+          remaining: qty,
+          unitPrice,
+          wonTurn: s.turn,
+        });
+      },
+    };
+  }
+
+  /**
+   * 이번 분기의 결정 사건을 뽑는다.
+   *
+   * 빈 분기를 메우는 게 목적이라 확률이 높지만, 매 분기 결정을 강요하면 피로해진다.
+   * 직전 분기에 사건이 있었으면 이번에는 건너뛴다(연속 방지).
+   */
+  function rollDecision(s, rng) {
+    if (!Decisions) return null;
+    if (s.turn < 2) return null;
+    if (s.lastDecisionTurn === s.turn - 1) return null;
+    if (!rng.chance(0.62)) return null;
+
+    const weightOf = (d) => (typeof d.weight === 'function' ? d.weight(s) : d.weight || 0);
+    // 최근에 본 사건은 잠시 빼 둔다. 같은 협상이 매번 돌아오면 사건이 아니라 세금이다.
+    const recent = new Set((s.recentDecisions || []).slice(-4));
+    let pool = Decisions.DECISIONS.filter((d) => weightOf(d) > 0 && !recent.has(d.id));
+    if (!pool.length) pool = Decisions.DECISIONS.filter((d) => weightOf(d) > 0);
+    if (!pool.length) return null;
+
+    const total = pool.reduce((a, d) => a + weightOf(d), 0);
+    let r = rng.next() * total;
+    const chosen = pool.find((d) => (r -= weightOf(d)) <= 0) || pool[0];
+
+    const memo = {};
+    const text = chosen.text(s, decisionHelpers(s, rng, memo));
+
+    s.lastDecisionTurn = s.turn;
+    s.recentDecisions = [...(s.recentDecisions || []), chosen.id].slice(-6);
+    return {
+      id: chosen.id,
+      name: chosen.name,
+      text,
+      memo,
+      turn: s.turn,
+      options: chosen.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+    };
+  }
+
+  /** 플레이어가 선택지를 고른다. 고른 즉시 정산되고 지연 결과는 예약된다. */
+  function decide(s, optionId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    if (!s.decision) return { ok: false, error: '지금 결정할 사건이 없습니다.' };
+    const def = Decisions.get(s.decision.id);
+    const opt = Decisions.optionOf(s.decision.id, optionId);
+    if (!def || !opt) return { ok: false, error: '없는 선택지입니다.' };
+
+    const rng = rngFor(s);
+    const text = applyDecisionOption(s, s.decision, opt, rng);
+    saveRng(s, rng);
+    s.decision = null;
+    return { ok: true, text };
+  }
+
+  function applyDecisionOption(s, decision, opt, rng) {
+    const memo = decision.memo || {};
+    const text = opt.apply(s, decisionHelpers(s, rng, memo));
+    pushLog(s, 'event', `[${decision.name}] ${opt.label} — ${text}`);
+    if (opt.after) {
+      s.pendingOutcomes.push({
+        turn: s.turn + opt.after.quarters,
+        id: decision.id,
+        optionId: opt.id,
+        memo,
+      });
+    }
+    return text;
+  }
+
+  /**
+   * 답하지 않고 분기를 넘긴 사건을 정산한다. 무대응도 선택이라, 조용히 사라지게
+   * 두면 "고르지 않는 것"이 언제나 최선의 수가 된다.
+   */
+  function resolveOpenDecision(s, rng) {
+    if (!s.decision) return;
+    const opt = Decisions.fallbackOf(s.decision.id);
+    if (!opt) {
+      s.decision = null;
+      return;
+    }
+    applyDecisionOption(s, s.decision, opt, rng);
+    s.decision = null;
+  }
+
+  /** 예약된 지연 결과 중 이번 분기 몫을 정산한다. */
+  function resolvePendingOutcomes(s, rng) {
+    const due = (s.pendingOutcomes || []).filter((x) => x.turn <= s.turn);
+    if (!due.length) return;
+    s.pendingOutcomes = s.pendingOutcomes.filter((x) => x.turn > s.turn);
+    for (const item of due) {
+      const opt = Decisions.optionOf(item.id, item.optionId);
+      const def = Decisions.get(item.id);
+      if (!opt || !opt.after || !def) continue;
+      const text = opt.after.apply(s, decisionHelpers(s, rng, item.memo || {}));
+      if (text) pushLog(s, 'event', `[${def.name}] ${text}`);
+    }
+  }
+
   function rollEvents(s, rng) {
     const fired = [];
 
@@ -1664,6 +1826,7 @@
     borrow,
     repay,
     setBid,
+    decide,
     endTurn,
     eligiblePrograms,
     canBid,

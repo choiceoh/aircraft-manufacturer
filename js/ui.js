@@ -194,6 +194,17 @@
         nextTurn();
         break;
 
+      case 'decide': {
+        const r = E.decide(s, btn.dataset.opt);
+        if (!r.ok) toast(r.error, 'bad');
+        else {
+          toast(r.text, 'good');
+          ui.animate = 'turn';
+          render();
+        }
+        break;
+      }
+
       case 'design-seg':
         ui.spec = D.defaultSpec(btn.dataset.seg, E.yearOf(s.turn));
         render();
@@ -429,6 +440,16 @@
     if (unbid && s.rfps.length && ui.tab !== 'rfps') {
       if (!confirm(`입찰하지 않은 공고가 ${unbid}건 있습니다. 그대로 분기를 종료할까요?`)) {
         ui.tab = 'rfps';
+        render();
+        return;
+      }
+    }
+
+    // 답하지 않은 사건은 무대응으로 처리된다. 그 사실을 모르고 넘기지 않도록 한 번 묻는다.
+    if (s.decision) {
+      if (!confirm(`"${s.decision.name}"에 답하지 않았습니다. 무대응으로 처리하고 분기를 종료할까요?`)) {
+        ui.tab = 'overview';
+        ui.animate = 'tab';
         render();
         return;
       }

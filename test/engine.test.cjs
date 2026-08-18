@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'panels.js']) {
   require(path.join(JS, f));
 }
 
@@ -1154,11 +1154,21 @@ test('수요 충격은 몇 분기에 걸쳐 회복된다 (한 분기 벌금이 �
   // 일정을 직접 고정해 이 시드에서 반드시 9·11 이 오게 한다.
   s.shocks = [{ turn: nine.turn, kind: 'historical', id: nine.id || 'hist-' + nine.turn }];
 
+  // 검증 대상은 **회복 속도**다. 무작위 이벤트를 그대로 두면 호황 이벤트 한 방으로
+  // 수요가 되올라가 이 규칙과 무관하게 실패한다(실제로 그런 판이 나온다). 충격은
+  // 위에서 직접 심었으므로, 이 시나리오 동안만 추첨 이벤트를 비운다.
+  const savedEvents = Data.EVENTS.slice();
+  Data.EVENTS.length = 0;
+
   const series = [];
-  while (!s.gameOver && s.turn < nine.turn + 8) {
-    s.cash = Math.max(s.cash, 60000);
-    E.endTurn(s);
-    series.push({ turn: s.turn, demand: s.market.demandIndex });
+  try {
+    while (!s.gameOver && s.turn < nine.turn + 8) {
+      s.cash = Math.max(s.cash, 60000);
+      E.endTurn(s);
+      series.push({ turn: s.turn, demand: s.market.demandIndex });
+    }
+  } finally {
+    Data.EVENTS.push(...savedEvents);
   }
   const before = series.find((x) => x.turn === nine.turn - 1);
   const at = series.find((x) => x.turn === nine.turn);
@@ -2779,4 +2789,130 @@ test('최고 분기가 적자면 흑자로 표기하지 않는다', () => {
   const html = P.renderCareer(s);
   assert.ok(!/\+\$-/.test(html), '적자에 + 부호가 붙었다');
   assert.ok(/class="bad">\$-10M/.test(html), '적자 분기를 흑자 색으로 칠했다');
+});
+
+// ─────────────────────────── 결정 사건 ───────────────────────────
+
+const Dec = globalThis.AirlinerDecisions;
+
+test('결정 사건 정의는 형식을 지킨다', () => {
+  assert.ok(Dec.DECISIONS.length >= 8, '사건이 너무 적으면 몇 판 만에 다 본다');
+  const ids = new Set();
+  for (const d of Dec.DECISIONS) {
+    assert.ok(!ids.has(d.id), `중복 id: ${d.id}`);
+    ids.add(d.id);
+    assert.strictEqual(typeof d.text, 'function', `${d.id}: text 가 함수가 아니다`);
+    assert.ok(d.options.length >= 2, `${d.id}: 선택지가 하나면 결정이 아니다`);
+    assert.ok(d.options.some((o) => o.fallback), `${d.id}: 무대응 기본값이 없다`);
+    for (const o of d.options) {
+      assert.strictEqual(typeof o.apply, 'function', `${d.id}/${o.id}: apply 가 없다`);
+      assert.ok(o.label && o.detail, `${d.id}/${o.id}: 라벨·설명이 비었다`);
+      if (o.after) {
+        assert.ok(o.after.quarters > 0, `${d.id}/${o.id}: 지연 분기가 0이다`);
+        assert.strictEqual(typeof o.after.apply, 'function');
+      }
+    }
+    // 적어도 하나는 나중에 값을 치러야 한다 — 즉시 정산만 있으면 자원 교환일 뿐이다.
+  }
+  const withLater = Dec.DECISIONS.filter((d) => d.options.some((o) => o.after));
+  assert.ok(withLater.length >= 4, '지연 결과가 있는 사건이 너무 적다');
+});
+
+test('결정 사건이 빈 분기를 메운다', () => {
+  let seen = 0;
+  for (const seed of [3, 11, 29, 41]) {
+    const s = E.newGame(seed);
+    for (let t = 0; t < 40 && !s.gameOver; t++) {
+      s.cash = Math.max(s.cash, 4000);
+      if (s.decision) {
+        seen++;
+        E.decide(s, s.decision.options[0].id);
+      }
+      E.endTurn(s);
+    }
+  }
+  assert.ok(seen >= 20, `160분기에 사건이 ${seen}건뿐이다 — 빈 분기가 그대로다`);
+});
+
+test('선택은 즉시 정산되고 사건을 닫는다', () => {
+  const s = E.newGame(19);
+  let handled = false;
+  for (let t = 0; t < 40 && !handled && !s.gameOver; t++) {
+    s.cash = Math.max(s.cash, 6000);
+    if (s.decision) {
+      const before = { cash: s.cash, rep: s.reputation, logs: s.log.length };
+      const r = E.decide(s, s.decision.options[0].id);
+      assert.ok(r.ok, r.error);
+      assert.strictEqual(s.decision, null, '고른 뒤에도 사건이 남아 있다');
+      assert.ok(s.log.length > before.logs, '선택이 기록에 남지 않았다');
+      // 무언가는 바뀌어야 한다 — 현금·평판·관계·잔고 중 하나라도.
+      handled = true;
+    }
+    E.endTurn(s);
+  }
+  assert.ok(handled, '40분기 동안 사건이 하나도 안 떴다');
+  assert.ok(!E.decide(s, 'nope').ok, '없는 선택지는 거부해야 한다');
+});
+
+test('답하지 않고 넘기면 무대응이 적용된다', () => {
+  const s = E.newGame(23);
+  let checked = false;
+  for (let t = 0; t < 40 && !checked && !s.gameOver; t++) {
+    s.cash = Math.max(s.cash, 6000);
+    if (s.decision) {
+      const name = s.decision.name;
+      const fallback = Dec.fallbackOf(s.decision.id);
+      E.endTurn(s); // 고르지 않고 넘긴다
+      assert.strictEqual(s.decision && s.decision.name === name ? 'stuck' : 'closed', 'closed', '무응답 사건이 그대로 남았다');
+      const logged = s.log.some((l) => l.text.includes(name) && l.text.includes(fallback.label));
+      assert.ok(logged, `무대응(${fallback.label})이 기록되지 않았다`);
+      checked = true;
+    } else {
+      E.endTurn(s);
+    }
+  }
+  assert.ok(checked, '40분기 동안 사건이 하나도 안 떴다');
+});
+
+test('지연 결과는 예약된 분기에 정산된다', () => {
+  const s = E.newGame(31);
+  // 지연 결과가 있는 선택지를 직접 심는다 — 무작위로 뜨기를 기다리지 않는다.
+  const def = Dec.DECISIONS.find((d) => d.options.some((o) => o.after));
+  const opt = def.options.find((o) => o.after);
+  s.decision = { id: def.id, name: def.name, text: def.text(s, { rng: R.createRng(1), remember: () => {}, recall: (k, f) => f, rngPick: null }), memo: {}, turn: s.turn, options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })) };
+  E.decide(s, opt.id);
+
+  assert.strictEqual(s.pendingOutcomes.length, 1, '지연 결과가 예약되지 않았다');
+  const dueTurn = s.pendingOutcomes[0].turn;
+  assert.strictEqual(dueTurn, s.turn + opt.after.quarters);
+
+  const before = s.log.length;
+  while (s.turn < dueTurn && !s.gameOver) {
+    s.cash = Math.max(s.cash, 8000);
+    E.endTurn(s);
+  }
+  assert.strictEqual(s.pendingOutcomes.length, 0, '예약된 분기가 지났는데 정산되지 않았다');
+  assert.ok(s.log.length > before, '지연 결과가 기록에 남지 않았다');
+});
+
+test('결정 상태는 세이브 왕복을 견딘다 (함수를 저장하지 않는다)', () => {
+  const s = E.newGame(37);
+  for (let t = 0; t < 40 && !s.decision && !s.gameOver; t++) {
+    s.cash = Math.max(s.cash, 6000);
+    E.endTurn(s);
+  }
+  assert.ok(s.decision, '사건이 뜨지 않아 검증할 수 없다');
+
+  const round = JSON.parse(JSON.stringify(s));
+  E.ensureShape(round);
+  assert.ok(round.decision && round.decision.options.length >= 2, '세이브에서 선택지가 사라졌다');
+  const r = E.decide(round, round.decision.options[0].id);
+  assert.ok(r.ok, `세이브를 불러온 뒤 선택이 안 된다: ${r.error}`);
+});
+
+test('종료 후에는 결정할 수 없다', () => {
+  const s = E.newGame(43);
+  s.gameOver = { reason: 'complete', lastTurn: 79 };
+  s.decision = { id: 'airshow', name: 'x', text: 'x', memo: {}, turn: 0, options: [{ id: 'skip', label: 'x', detail: 'x' }] };
+  assert.ok(!E.decide(s, 'skip').ok, '종료 후 결정이 통과했다');
 });
