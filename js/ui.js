@@ -314,6 +314,13 @@
         break;
       }
 
+      case 'bid-term': {
+        const r = E.setBidTerms(s, btn.dataset.rfp, { [btn.dataset.kind]: btn.dataset.value });
+        if (!r.ok) toast(r.error, 'bad');
+        else render();
+        break;
+      }
+
       case 'withdraw':
         E.setBid(s, btn.dataset.rfp, null);
         render();

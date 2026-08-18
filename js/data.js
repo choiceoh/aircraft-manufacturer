@@ -256,6 +256,87 @@
    * 아래 이벤트는 거기에 얹히는 보정치(drift)만 움직인다.
    */
 
+  /**
+   * 입찰 조건 — 할인율 말고 무엇을 걸 수 있나.
+   *
+   * 할인 슬라이더 하나뿐일 때는 응찰만 하면 88% 이겼다(측정치). 결정이 하나면
+   * 최적값이 하나이기 때문이다. 아래 두 축은 각각 **이미 있는 자원**에 값을 매긴다 —
+   * 인도 약속은 라인 여력에, 금융 조건은 현금흐름에.
+   *
+   * bonus 는 입찰 점수(0~100 척도)에 그대로 더해진다. 분할 판정 폭이 ±4점이라
+   * 6.5점이면 판을 뒤집을 수 있다 — 대신 못 지키면 위약금과 관계 하락이 따른다.
+   */
+  const BID_PLEDGES = {
+    standard: {
+      id: 'standard',
+      name: '표준 인도',
+      hint: '통상 일정. 약속도 위약금도 없다',
+      bonus: 0,
+      dueQuarters: 14,
+      penaltyRate: 0,
+      priority: 0,
+    },
+    early: {
+      id: 'early',
+      name: '조기 인도 약속',
+      hint: '7분기 안에 다 넘긴다. 넘길 때까지 분기마다 위약금 1.5%',
+      bonus: 2,
+      dueQuarters: 7,
+      penaltyRate: 0.015,
+      priority: 1,
+    },
+    priority: {
+      id: 'priority',
+      name: '최우선 인도 약속',
+      hint: '4분기 안에 다 넘긴다. 넘길 때까지 분기마다 위약금 3.5%',
+      bonus: 4,
+      dueQuarters: 4,
+      penaltyRate: 0.035,
+      priority: 2,
+    },
+  };
+
+  /**
+   * 금융 조건. 같은 가격이라도 **언제 받느냐**가 다르다.
+   *   cash   — 선수금을 두 배로 당겨 받는다. 항공사는 싫어한다.
+   *   normal — 기준.
+   *   vendor — 우리가 대금을 빌려준다. 항공사는 좋아하고, 현금은 8분기에 걸쳐 들어온다.
+   * 실제로 제조사 금융(vendor financing)은 수주전의 핵심 무기이자 제조사를 무너뜨린
+   * 원인이기도 하다.
+   */
+  const BID_FINANCING = {
+    cash: {
+      id: 'cash',
+      name: '선수금 확대',
+      hint: '계약 즉시 두 배로 받는다. 점수는 깎인다',
+      bonus: -2,
+      depositMult: 2,
+      onDelivery: 1,
+      quarters: 0,
+      interest: 0,
+    },
+    normal: {
+      id: 'normal',
+      name: '표준 조건',
+      hint: '선수금 15%, 인도 시 잔금',
+      bonus: 0,
+      depositMult: 1,
+      onDelivery: 1,
+      quarters: 0,
+      interest: 0,
+    },
+    vendor: {
+      id: 'vendor',
+      name: '자체 금융 제공',
+      hint: '인도 대금의 42%만 즉시. 8분기 분할 + 이자 — 불황에는 떼일 수 있다',
+      bonus: 3,
+      depositMult: 1,
+      onDelivery: 0.42,
+      quarters: 8,
+      interest: 0.02,
+    },
+  };
+
   /** 경쟁사 경쟁력 상한 — 이벤트 누적으로 무한정 강해지는 것을 막는다. */
   const RIVAL_STRENGTH_CAP = 78;
   /** 경쟁사 경쟁력 하한 — 악재가 겹쳐도 시장이 무주공산이 되지는 않는다. */
@@ -712,6 +793,8 @@
     ETOPS_RANGE_KM,
     RANGE_TOLERANCE,
     ETOPS_USEFUL_RANGE,
+    BID_PLEDGES,
+    BID_FINANCING,
     RIVAL_STRENGTH_CAP,
     RIVAL_STRENGTH_FLOOR,
     RIVAL_DRIFT_LIMIT,

@@ -7,7 +7,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, RANGE_TOLERANCE, UPGAUGE_PER_YEAR } =
+  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, RANGE_TOLERANCE, UPGAUGE_PER_YEAR, BID_PLEDGES, BID_FINANCING } =
     root.AirlinerData;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
@@ -134,7 +134,16 @@
    * 우리 기체 한 종의 입찰 점수를 계산한다.
    * @returns {{total:number, parts:object, blocked:string|null, price:number}}
    */
-  function scoreBid(state, rfp, program, discount) {
+  /** 입찰 조건을 정규화한다. 옛 세이브·기본 호출은 표준 조건으로 본다. */
+  function normalizeTerms(terms) {
+    const t = terms || {};
+    return {
+      pledge: BID_PLEDGES[t.pledge] ? t.pledge : 'standard',
+      financing: BID_FINANCING[t.financing] ? t.financing : 'normal',
+    };
+  }
+
+  function scoreBid(state, rfp, program, discount, terms) {
     const seg = SEGMENTS[rfp.segment];
 
     // 세그먼트가 다르면 애초에 후보가 아니다.
@@ -226,9 +235,16 @@
       // 더 어렵게 만들 뿐 공통성의 취지(기존 계정이 유리하다)와 반대다.
       commonality * COMMONALITY_BONUS;
 
+    // 입찰 조건도 가산점이다. 항공사가 원하는 건 기체만이 아니라 **언제 받고 어떻게
+    // 치르느냐**이기도 하다. 조건은 공짜가 아니라 라인 여력과 현금흐름을 담보로 잡는다.
+    const t = normalizeTerms(terms);
+    const pledge = BID_PLEDGES[t.pledge];
+    const financing = BID_FINANCING[t.financing];
+    const termBonus = pledge.bonus + financing.bonus;
+
     // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
     // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
-    const bounded = clamp(total, 0, 100);
+    const bounded = clamp(total + termBonus, 0, 100);
 
     return {
       total: Math.round(bounded * 10) / 10,
@@ -241,6 +257,8 @@
         rel: Math.round(relScore * 100),
         common: Math.round(commonality * 100),
       },
+      terms: t,
+      termBonus: Math.round(termBonus * 10) / 10,
       blocked: null,
       price: Math.round(effPrice * 10) / 10,
     };
@@ -323,5 +341,5 @@
     };
   }
 
-  root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, CONFIG };
+  root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, normalizeTerms, CONFIG };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

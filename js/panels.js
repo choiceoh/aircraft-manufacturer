@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE, BID_PLEDGES, BID_FINANCING } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
@@ -648,7 +648,7 @@
         const bid = s.bids[rfp.id];
         const candidates = s.programs.filter((p) => p.phase === 'production' && p.segment === rfp.segment);
         const discount = bid ? bid.discount : (discountDraft && discountDraft[rfp.id]) ?? 0.1;
-        const scored = candidates.map((p) => ({ p, sc: B.scoreBid(s, rfp, p, discount) }));
+        const scored = candidates.map((p) => ({ p, sc: B.scoreBid(s, rfp, p, discount, bid && bid.terms) }));
         const anyBiddable = scored.some((x) => !x.sc.blocked);
 
         const options = renderBidCandidates(s, rfp, discount);
@@ -680,6 +680,7 @@
                      <span>할인율<b id="disc-label-${rfp.id}">${Math.round(discount * 100)}%</b></span>
                      <input type="range" data-action="discount" data-rfp="${rfp.id}" min="0" max="${CONFIG.maxDiscount * 100}" step="1" value="${Math.round(discount * 100)}">
                    </label>
+                   ${bidTerms(s, rfp)}
                    <div id="bidinfo-${rfp.id}">${renderBidInfo(s, rfp)}</div>`
           }
         </div>`;
@@ -693,7 +694,7 @@
     return s.programs
       .filter((p) => p.phase === 'production' && p.segment === rfp.segment)
       .map((p) => {
-        const sc = B.scoreBid(s, rfp, p, discount);
+        const sc = B.scoreBid(s, rfp, p, discount, bid && bid.terms);
         const sel = bid && bid.programId === p.id;
         return `<button class="cand ${sel ? 'on' : ''} ${sc.blocked ? 'blocked' : ''}"
                   data-action="pick-bid" data-rfp="${rfp.id}" data-id="${p.id}" ${sc.blocked ? 'disabled' : ''}>
@@ -705,24 +706,76 @@
   }
 
   /** 선택한 기종 + 할인율에 대한 입찰 요약 — 슬라이더 조작 시 이 영역만 갱신한다. */
+  /**
+   * 입찰 조건 — 인도 약속과 금융. 기종을 고르기 전에는 잠가 둔다(응찰이 없으면
+   * 조건도 없다). 각 조건의 대가를 버튼에 그대로 적는다 — 가산점만 보이면
+   * 언제나 최우선 인도가 정답이 된다.
+   */
+  function bidTerms(s, rfp) {
+    const bid = s.bids[rfp.id];
+    const t = B.normalizeTerms(bid && bid.terms);
+    const group = (kind, table, current) =>
+      Object.values(table)
+        .map(
+          (o) => `<button class="term ${current === o.id ? 'on' : ''}" data-action="bid-term"
+                    data-rfp="${rfp.id}" data-kind="${kind}" data-value="${o.id}" ${bid ? '' : 'disabled'}>
+                    <b>${esc(o.name)}${o.bonus ? ` <i class="${o.bonus > 0 ? 'good' : 'bad'}">${o.bonus > 0 ? '+' : ''}${o.bonus}점</i>` : ''}</b>
+                    <span class="muted">${esc(o.hint)}</span>
+                  </button>`,
+        )
+        .join('');
+
+    return `<div class="terms">
+        <div class="term-group">
+          <span class="term-label">인도 약속</span>
+          <div class="term-row">${group('pledge', BID_PLEDGES, t.pledge)}</div>
+        </div>
+        <div class="term-group">
+          <span class="term-label">금융 조건</span>
+          <div class="term-row">${group('financing', BID_FINANCING, t.financing)}</div>
+        </div>
+        ${bid ? '' : '<p class="hint">기종을 먼저 고르면 조건을 걸 수 있다.</p>'}
+      </div>`;
+  }
+
   function renderBidInfo(s, rfp) {
     const bid = s.bids[rfp.id];
     if (!bid) return '<p class="muted">입찰할 기종을 선택하라. 선택하지 않으면 이번 공고는 포기한다.</p>';
     const p = s.programs.find((x) => x.id === bid.programId);
     if (!p) return '';
-    const sc = B.scoreBid(s, rfp, p, bid.discount);
+    const sc = B.scoreBid(s, rfp, p, bid.discount, bid.terms);
     if (sc.blocked) return `<p class="warn-box">${sc.blocked} — 이 기종으로는 입찰할 수 없다.</p>`;
 
     const unitCost = E.currentUnitCost(s, p);
     const margin = sc.price - unitCost;
     const total = sc.price * rfp.qty;
+    const pledge = BID_PLEDGES[sc.terms.pledge];
+    const financing = BID_FINANCING[sc.terms.financing];
+    const deposit = total * CONFIG.depositRate * financing.depositMult;
+    // 약속을 지키려면 분기당 몇 기를 넘겨야 하나 — 라인 여력과 바로 비교된다.
+    const perQuarter = Math.ceil(rfp.qty / pledge.dueQuarters);
+    const capacity = s.lines
+      .filter((l) => l.programId === p.id && !l.idle)
+      .reduce((a, l) => a + l.capacity, 0);
 
     return `<table class="spec">
-        <tr><th>입찰 점수</th><td><b>${sc.total}</b> ${bar(sc.total, 'score')}</td></tr>
+        <tr><th>입찰 점수</th><td><b>${sc.total}</b> ${bar(sc.total, 'score')}${
+          sc.termBonus ? ` <span class="${sc.termBonus > 0 ? 'good' : 'bad'}">(조건 ${sc.termBonus > 0 ? '+' : ''}${sc.termBonus})</span>` : ''
+        }</td></tr>
         <tr><th>대당 가격</th><td>${money(sc.price)} <span class="muted">(정가 ${money(p.listPrice)})</span></td></tr>
         <tr><th>현재 대당 원가</th><td>${money(unitCost)}</td></tr>
         <tr><th>대당 마진</th><td class="${margin >= 0 ? 'good' : 'bad'}">${margin >= 0 ? '+' : ''}${money(margin)}</td></tr>
-        <tr><th>전량 수주 시</th><td>${money(total)} <span class="muted">(선수금 ${money(total * CONFIG.depositRate)})</span></td></tr>
+        <tr><th>전량 수주 시</th><td>${money(total)} <span class="muted">(선수금 ${money(deposit)})</span></td></tr>
+        <tr><th>인도 약속</th><td>${esc(pledge.name)}${
+          pledge.penaltyRate
+            ? ` · <b>${pledge.dueQuarters}분기 안에 ${rfp.qty}기</b> = 분기당 ${perQuarter}기 <span class="${capacity >= perQuarter ? 'good' : 'bad'}">(현재 라인 여력 ${capacity}기)</span>`
+            : ' <span class="muted">· 기한 약속 없음</span>'
+        }</td></tr>
+        <tr><th>대금 회수</th><td>${
+          financing.quarters
+            ? `인도 시 ${Math.round(financing.onDelivery * 100)}%, 나머지는 ${financing.quarters}분기 분할 <span class="muted">(이자 ${(financing.interest * 100).toFixed(0)}%)</span>`
+            : '인도 시 잔금 전액'
+        }</td></tr>
       </table>
       <div class="parts">
         ${part('제원 적합', sc.parts.spec)}${part('가격', sc.parts.price)}${part('연비', sc.parts.eff)}
@@ -1140,6 +1193,7 @@
     renderRfps,
     renderBidInfo,
     renderBidCandidates,
+    bidTerms,
     renderFinance,
     renderLog,
     esc,

@@ -22,10 +22,13 @@
     OUTSOURCING,
     WING_MATERIALS,
     LEGACY_MATERIAL_MAP,
+    BID_PLEDGES,
+    BID_FINANCING,
+    RIVAL_DRIFT_LIMIT,
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
-  const { generateRfps, scoreBid, resolveBid } = root.AirlinerBidding;
+  const { generateRfps, scoreBid, resolveBid, normalizeTerms } = root.AirlinerBidding;
   const { createRng } = root.AirlinerRng;
   const Decisions = root.AirlinerDecisions;
 
@@ -103,6 +106,8 @@
       decision: null,
       // 결정의 지연 결과 — { turn, id, optionId, memo }. 그 분기가 오면 정산한다.
       pendingOutcomes: [],
+      // 자체 금융으로 넘긴 대금 — { turn, amount, airlineName }. 분기마다 회수한다.
+      receivables: [],
       // 조달 전략 — 원가 ↔ 공급 차질 위험.
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
@@ -247,6 +252,7 @@
     if (!Array.isArray(s.news)) s.news = [];
     if (s.decision === undefined) s.decision = null;
     if (!Array.isArray(s.pendingOutcomes)) s.pendingOutcomes = [];
+    if (!Array.isArray(s.receivables)) s.receivables = [];
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
@@ -731,12 +737,27 @@
   }
 
   /** RFP 입찰 등록/해제. programId가 null이면 포기. */
-  function setBid(s, rfpId, programId, discount) {
+  function setBid(s, rfpId, programId, discount, terms) {
     if (!programId) {
       delete s.bids[rfpId];
       return { ok: true };
     }
-    s.bids[rfpId] = { programId, discount: clamp(discount, 0, CONFIG.maxDiscount) };
+    // 이미 걸어 둔 조건은 유지한다 — 기종만 바꿔도 조건이 표준으로 되돌아가면
+    // 화면에서 고른 값과 실제 응찰이 어긋난다.
+    const prev = s.bids[rfpId];
+    s.bids[rfpId] = {
+      programId,
+      discount: clamp(discount, 0, CONFIG.maxDiscount),
+      terms: normalizeTerms(terms || (prev && prev.terms)),
+    };
+    return { ok: true };
+  }
+
+  /** 이미 올려둔 응찰의 조건만 바꾼다. */
+  function setBidTerms(s, rfpId, terms) {
+    const bid = s.bids[rfpId];
+    if (!bid) return { ok: false, error: '먼저 기종을 골라야 합니다.' };
+    bid.terms = normalizeTerms({ ...bid.terms, ...terms });
     return { ok: true };
   }
 
@@ -770,6 +791,8 @@
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
     runDeliveries(s, report);
+    chargeLatePenalties(s, report);
+    collectReceivables(s, report, rng);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
@@ -816,6 +839,7 @@
 
     tickEffects(s);
     driftMarket(s, rng);
+    reactToRivals(s);
     rollMarketNews(s);
     resolvePendingOutcomes(s, rng);
     s.events = rollEvents(s, rng);
@@ -883,16 +907,16 @@
       const program = s.programs.find((p) => p.id === bid.programId);
       if (!program || program.phase !== 'production') continue;
 
-      const score = scoreBid(s, rfp, program, bid.discount);
+      const score = scoreBid(s, rfp, program, bid.discount, bid.terms);
       if (score.blocked) continue;
-      queued.push({ rfp, program, score });
+      queued.push({ rfp, program, score, terms: normalizeTerms(bid.terms) });
     }
 
     // 2단계: 고정된 점수로 판정하고 보상·감점을 적용한다.
     for (const airlineId of noBidAirlines) {
       s.relations[airlineId] = clamp((s.relations[airlineId] ?? 40) - 1.5, 0, 100);
     }
-    for (const { rfp, program, score } of queued) {
+    for (const { rfp, program, score, terms } of queued) {
       s.stats.bidsMade++;
       const result = resolveBid(s, rfp, { score }, rng);
       s.relations[rfp.airlineId] = clamp((s.relations[rfp.airlineId] ?? 40) + 2, 0, 100);
@@ -908,7 +932,9 @@
       }
 
       const unitPrice = score.price;
-      const deposit = Math.round(result.qty * unitPrice * CONFIG.depositRate);
+      const financing = BID_FINANCING[terms.financing] || BID_FINANCING.normal;
+      const pledge = BID_PLEDGES[terms.pledge] || BID_PLEDGES.standard;
+      const deposit = Math.round(result.qty * unitPrice * CONFIG.depositRate * financing.depositMult);
       s.cash += deposit;
       report.revenue += deposit;
       report.ordersWon += result.qty;
@@ -926,6 +952,12 @@
         remaining: result.qty,
         unitPrice,
         wonTurn: s.turn,
+        // 약속과 조건은 주문에 붙어 다닌다 — 인도 순서, 위약금, 대금 회수가 여기서 갈린다.
+        pledge: pledge.id,
+        financing: financing.id,
+        dueTurn: s.turn + pledge.dueQuarters,
+        // 선수금을 두 배로 받았으면 인도 시 잔금도 그만큼 줄어야 총액이 계약가다.
+        depositRate: CONFIG.depositRate * financing.depositMult,
       });
 
       const verb = result.outcome === 'win' ? '단독 수주' : '분할 수주';
@@ -1064,15 +1096,23 @@
   }
 
   function runDeliveries(s, report) {
-    // 오래된 수주부터 인도한다.
-    const orders = s.backlog.filter((o) => o.remaining > 0).sort((a, b) => a.wonTurn - b.wonTurn);
+    // 약속한 주문을 먼저 인도한다. 같은 우선순위면 오래된 수주부터.
+    // 우선 인도는 공짜가 아니다 — 다른 주문을 뒤로 밀어 그쪽 약속을 깨뜨린다.
+    const orders = s.backlog
+      .filter((o) => o.remaining > 0)
+      .sort((a, b) => pledgeOf(b).priority - pledgeOf(a).priority || a.wonTurn - b.wonTurn);
     for (const o of orders) {
       const p = s.programs.find((x) => x.id === o.programId);
       if (!p || p.stock <= 0) continue;
       if ((s.effects.grounded[p.id] || 0) > 0) continue;
 
       const n = Math.min(o.remaining, p.stock);
-      const revenue = n * o.unitPrice * (1 - CONFIG.depositRate);
+      // 선수금을 이미 받은 만큼을 뺀 잔금이 인도 대금이다.
+      const balance = n * o.unitPrice * (1 - (typeof o.depositRate === 'number' ? o.depositRate : CONFIG.depositRate));
+      const financing = BID_FINANCING[o.financing] || BID_FINANCING.normal;
+      const now = balance * financing.onDelivery;
+      const later = balance - now;
+      const revenue = now;
       o.remaining -= n;
       p.stock -= n;
       p.delivered += n;
@@ -1083,6 +1123,18 @@
       report.revenue += revenue;
       report.delivered += n;
 
+      // 자체 금융분은 지금 못 받는다. 이자를 얹어 분기마다 나눠 받는다.
+      if (later > 0 && financing.quarters > 0) {
+        const perQuarter = (later * (1 + financing.interest)) / financing.quarters;
+        for (let q = 1; q <= financing.quarters; q++) {
+          s.receivables.push({
+            turn: s.turn + q,
+            amount: Math.round(perQuarter),
+            airlineName: o.airlineName,
+          });
+        }
+      }
+
       if (o.remaining === 0) {
         adjustReputation(s, 1);
         // 취소분을 빼야 실제 인도량이다. o.qty 를 쓰면 10기 중 5기가 취소되고 5기만
@@ -1090,6 +1142,78 @@
         const shipped = o.qty - (o.cancelled || 0);
         pushLog(s, 'good', `${o.airlineName} ${o.programName} ${shipped}기 인도 완료. 잔금 정산.`);
       }
+    }
+  }
+
+  function pledgeOf(order) {
+    return BID_PLEDGES[order && order.pledge] || BID_PLEDGES.standard;
+  }
+
+  /**
+   * 약속한 기한을 넘긴 주문의 위약금 — **밀린 분기마다** 문다.
+   *
+   * 한 번만 물리면 지키지 못할 약속이 여전히 남는 장사가 된다(측정: 위약금 181건을
+   * 물고도 20판 중 16판이 S). 실제 지연 배상금도 기간에 비례한다. 계속 못 넘기면
+   * 계속 나가므로, 라인 여력 없이 최우선 인도를 약속하는 것이 진짜 손해가 된다.
+   */
+  function chargeLatePenalties(s, report) {
+    for (const o of s.backlog) {
+      if (o.remaining <= 0) continue;
+      const pledge = pledgeOf(o);
+      if (!pledge.penaltyRate || typeof o.dueTurn !== 'number' || s.turn < o.dueTurn) continue;
+      if (o.lastPenaltyTurn === s.turn) continue;
+
+      const penalty = Math.round(o.remaining * o.unitPrice * pledge.penaltyRate);
+      const first = o.lastPenaltyTurn === undefined;
+      o.lastPenaltyTurn = s.turn;
+      s.cash -= penalty;
+      s.pending.overhead += penalty;
+      report.overhead += penalty;
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 3, 0, 100);
+      adjustReputation(s, -1);
+      pushLog(
+        s,
+        'bad',
+        first
+          ? `${o.airlineName}과의 ${pledge.name}을 지키지 못했다. 미인도 ${o.remaining}기에 위약금 ${fmtMoney(penalty)}. 넘길 때까지 분기마다 물어야 한다.`
+          : `${o.airlineName} 인도 지연이 이어진다. 이번 분기 위약금 ${fmtMoney(penalty)} (미인도 ${o.remaining}기).`,
+      );
+    }
+  }
+
+  /**
+   * 이번 분기에 들어올 자체 금융 회수분.
+   *
+   * 불황에는 못 받는다 — 자체 금융의 진짜 위험은 이자가 아니라 **고객의 지불 능력**이다.
+   * 호황에 공짜로 얻는 점수가 침체에서 값을 치르게 하는 지점이고, 실제로 제조사
+   * 금융이 제조사를 무너뜨린 방식이기도 하다.
+   */
+  function collectReceivables(s, report, rng) {
+    const due = (s.receivables || []).filter((r) => r.turn <= s.turn);
+    if (!due.length) return;
+    s.receivables = s.receivables.filter((r) => r.turn > s.turn);
+
+    const slump = s.effects.demandSlumpQuarters > 0;
+    let total = 0;
+    let written = 0;
+    for (const r of due) {
+      if (slump && rng.chance(0.16)) {
+        written += r.amount;
+        continue;
+      }
+      total += r.amount;
+    }
+    if (total > 0) {
+      s.cash += total;
+      s.stats.revenue += total;
+      report.revenue += total;
+      pushLog(s, 'info', `자체 금융 대금 ${fmtMoney(total)}을 회수했다.`);
+    }
+    if (written > 0) {
+      // 상각분은 애초에 현금으로도 매출로도 잡지 않는다 — 못 받은 돈이 비용으로
+      // 한 번 더 빠지면 같은 손실을 두 번 세게 된다.
+      adjustReputation(s, -1);
+      pushLog(s, 'bad', `불황으로 항공사들이 대금을 치르지 못했다. 자체 금융 ${fmtMoney(written)}을 상각한다.`);
     }
   }
 
@@ -1200,6 +1324,11 @@
     allocateRivalDeliveries(s, industry);
   }
 
+  /** 경쟁사 반격이 도달할 수 있는 최대 보정치. 이벤트 상한(14)과 별개로 훨씬 낮다. */
+  const REACTION_LIMIT = 4.5;
+  /** 반격이 붙고 빠지는 분기당 속도. 느려야 플레이어가 대응할 시간이 있다. */
+  const REACTION_STEP = 0.3;
+
   /** 세그먼트별 인도 대수 비중. 대당 가격이 아니라 **기수** 기준이라 소형이 무겁다. */
   const SEGMENT_UNIT_SHARE = { regional: 0.3, narrow: 0.53, wide: 0.17 };
 
@@ -1290,6 +1419,63 @@
    * 카탈로그가 조용히 바뀌면 "1998년의 문턱과 2016년의 문턱이 다르다"는 설계 의도가
    * 플레이어에게 한 번도 전달되지 않는다. 바뀌는 순간을 소식으로 띄운다.
    */
+  /**
+   * 경쟁사 반격.
+   *
+   * 예전에는 우리가 한 시장을 계속 먹어도 경쟁사가 아무 반응을 하지 않아, 응찰만
+   * 하면 88% 이겼다(측정치). 실제 제조사는 시장을 내주는 순간 가격 공세로 답한다.
+   *
+   * 최근 성적을 세그먼트별로 보고 그 시장 최강 제조사의 보정치를 밀어 올린다.
+   * 상한은 RIVAL_DRIFT_LIMIT — 카탈로그가 만든 시대 흐름을 뒤집지는 못한다.
+   * 우리가 손을 떼면 보정치는 서서히 0으로 돌아간다(공세를 영원히 유지할 이유가 없다).
+   *
+   * 난수를 쓰지 않는다. 여기서 뽑으면 같은 시드의 전개가 갈린다.
+   */
+  function reactToRivals(s) {
+    const year = yearOf(s.turn);
+    for (const seg of Object.keys(SEGMENT_UNIT_SHARE)) {
+      // 이 세그먼트에서 최근 8분기에 우리가 따낸 물량
+      const recent = s.backlog.filter((o) => {
+        if (s.turn - o.wonTurn > 8 || o.wonTurn > s.turn) return false;
+        const p = s.programs.find((x) => x.id === o.programId);
+        return p && p.segment === seg;
+      });
+      const wonUnits = recent.reduce((a, o) => a + o.qty, 0);
+
+      // 그 시장에서 지금 가장 강한 제조사가 공세의 주체다.
+      const pool = availableTypes(seg, year);
+      let leader = null;
+      for (const t of pool) {
+        const power = typeScore(t, s.market.fuelIndex, null, null);
+        if (!leader || power > leader.power) leader = { maker: t.maker, power };
+      }
+
+      // 공세의 목표치. RIVAL_DRIFT_LIMIT(14)까지 밀면 시장이 통째로 닫힌다 —
+      // 실제로 그렇게 두면 표준 조건 승률이 88%에서 12%로 떨어졌다. 반격은
+      // "이기던 시장이 접전이 된다" 정도여야 하므로 상한을 따로 낮게 잡는다.
+      const target = Math.min(REACTION_LIMIT, (wonUnits / 30) * REACTION_LIMIT);
+
+      for (const c of s.competitors) {
+        const cur = c.drift[seg] || 0;
+        if (leader && c.id === leader.maker && target > cur) {
+          const next = Math.min(RIVAL_DRIFT_LIMIT, cur + REACTION_STEP);
+          if (Math.floor(next) > Math.floor(cur)) {
+            const maker = MANUFACTURERS.find((m) => m.id === c.id);
+            pushLog(
+              s,
+              'event',
+              `${maker ? maker.name : c.id}이 ${SEGMENTS[seg].name} 시장에서 가격 공세를 시작했다. 이 시장 수주전이 더 어려워진다.`,
+            );
+          }
+          c.drift[seg] = next;
+        } else if (cur > 0) {
+          // 공세는 비용이다. 우리가 물러나거나 목표치 아래로 내려오면 제값을 받으러 돌아간다.
+          c.drift[seg] = Math.max(leader && c.id === leader.maker ? Math.max(0, target) : 0, cur - REACTION_STEP);
+        }
+      }
+    }
+  }
+
   function rollMarketNews(s) {
     const now = yearOf(s.turn);
     const prev = yearOf(s.turn - 1);
@@ -1677,7 +1863,10 @@
         const paid = typeof l.paidCost === 'number' ? l.paidCost : SEGMENTS[p.segment].lineCost;
         return a + paid * 0.4;
       }, 0);
-    return s.cash + assetValue - s.debt;
+    // 자체 금융으로 넘긴 대금은 아직 못 받았을 뿐 우리 자산이다. 빼면 vendor 금융을
+    // 쓰는 순간 순자산·신용등급이 실제보다 나빠져, 조건을 고를 이유가 사라진다.
+    const receivable = (s.receivables || []).reduce((a, r) => a + r.amount, 0);
+    return s.cash + assetValue + receivable - s.debt;
   }
 
   function finalScore(s, bankrupt) {
@@ -1826,6 +2015,7 @@
     borrow,
     repay,
     setBid,
+    setBidTerms,
     decide,
     endTurn,
     eligiblePrograms,

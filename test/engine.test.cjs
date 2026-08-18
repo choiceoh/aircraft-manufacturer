@@ -2916,3 +2916,184 @@ test('종료 후에는 결정할 수 없다', () => {
   s.decision = { id: 'airshow', name: 'x', text: 'x', memo: {}, turn: 0, options: [{ id: 'skip', label: 'x', detail: 'x' }] };
   assert.ok(!E.decide(s, 'skip').ok, '종료 후 결정이 통과했다');
 });
+
+// ─────────────────────── 입찰 조건 · 경쟁사 반격 ───────────────────────
+
+function firstBiddable(s, maxTurns = 20) {
+  for (let t = 0; t < maxTurns && !s.gameOver; t++) {
+    for (const rfp of s.rfps) {
+      const c = E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked)[0];
+      if (c) return { rfp, program: c.program };
+    }
+    s.cash = Math.max(s.cash, 5000);
+    E.endTurn(s);
+  }
+  return null;
+}
+
+test('입찰 조건이 점수를 움직이고, 대가도 함께 붙는다', () => {
+  const s = E.newGame(101);
+  const found = firstBiddable(s);
+  assert.ok(found, '응찰 가능한 공고를 못 찾았다');
+
+  const base = B.scoreBid(s, found.rfp, found.program, 0.1, { pledge: 'standard', financing: 'normal' });
+  const fast = B.scoreBid(s, found.rfp, found.program, 0.1, { pledge: 'priority', financing: 'normal' });
+  const vendor = B.scoreBid(s, found.rfp, found.program, 0.1, { pledge: 'standard', financing: 'vendor' });
+  const cash = B.scoreBid(s, found.rfp, found.program, 0.1, { pledge: 'standard', financing: 'cash' });
+
+  assert.ok(fast.total > base.total, '최우선 인도 약속이 점수를 올리지 않는다');
+  assert.ok(vendor.total > base.total, '자체 금융이 점수를 올리지 않는다');
+  assert.ok(cash.total < base.total, '선수금 확대는 점수를 깎아야 한다');
+  // 조건 하나가 판을 통째로 뒤집으면 조건이 선택이 아니라 필수가 된다.
+  assert.ok(fast.total - base.total <= 6, `인도 약속 가산이 과하다 (+${(fast.total - base.total).toFixed(1)})`);
+});
+
+test('조건은 기종을 바꿔도 유지되고, 기종 없이는 걸 수 없다', () => {
+  const s = E.newGame(103);
+  const found = firstBiddable(s);
+  assert.ok(found);
+  assert.ok(!E.setBidTerms(s, found.rfp.id, { pledge: 'early' }).ok, '기종 없이 조건이 걸렸다');
+
+  E.setBid(s, found.rfp.id, found.program.id, 0.1);
+  E.setBidTerms(s, found.rfp.id, { pledge: 'early', financing: 'vendor' });
+  E.setBid(s, found.rfp.id, found.program.id, 0.2);
+  assert.strictEqual(s.bids[found.rfp.id].terms.pledge, 'early', '기종을 다시 고르니 조건이 초기화됐다');
+  assert.strictEqual(s.bids[found.rfp.id].terms.financing, 'vendor');
+});
+
+test('지키지 못한 인도 약속은 분기마다 위약금을 문다', () => {
+  const s = E.newGame(107);
+  const p = s.programs.find((x) => x.legacy);
+  // 라인 없이 최우선 인도를 약속한 주문 — 절대 못 지킨다.
+  s.backlog.push({
+    id: 'ord-test',
+    airlineId: 'hanul',
+    airlineName: '한울항공',
+    programId: p.id,
+    programName: p.name,
+    qty: 20,
+    remaining: 20,
+    unitPrice: 60,
+    wonTurn: s.turn,
+    pledge: 'priority',
+    financing: 'normal',
+    dueTurn: s.turn + 1,
+    depositRate: 0.15,
+  });
+  for (const l of s.lines) l.idle = true; // 인도할 재고가 안 생기게
+  const relBefore = s.relations.hanul;
+
+  const charges = [];
+  for (let i = 0; i < 4 && !s.gameOver; i++) {
+    s.cash = Math.max(s.cash, 20000);
+    const before = s.cash;
+    E.endTurn(s);
+    const logged = s.log.filter((l) => l.text.includes('위약금')).length;
+    charges.push(logged);
+  }
+  assert.ok(charges[charges.length - 1] >= 2, `위약금이 한 번만 부과됐다 (${charges.join(',')})`);
+  assert.ok(s.relations.hanul < relBefore - 5, `지연이 반복되는데 관계가 그대로다 (${relBefore} → ${s.relations.hanul})`);
+});
+
+test('자체 금융은 인도 대금을 나눠 받고 총액은 이자만큼 늘어난다', () => {
+  const s = E.newGame(109);
+  const p = s.programs.find((x) => x.legacy);
+  p.stock = 10;
+  const unitPrice = 60;
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'ord-v',
+    airlineId: 'hanul',
+    airlineName: '한울항공',
+    programId: p.id,
+    programName: p.name,
+    qty: 10,
+    remaining: 10,
+    unitPrice,
+    wonTurn: s.turn,
+    pledge: 'standard',
+    financing: 'vendor',
+    dueTurn: s.turn + 14,
+    depositRate: 0.15,
+  });
+
+  const balance = 10 * unitPrice * 0.85;
+  E.endTurn(s);
+  const scheduled = s.receivables.reduce((a, r) => a + r.amount, 0);
+  assert.ok(s.receivables.length === 8, `분할 회수가 8분기로 잡히지 않았다 (${s.receivables.length})`);
+  // 즉시 42% + 분할분(이자 2% 포함) = 원금 + 이자
+  assert.ok(scheduled > balance * 0.55, `분할 예정액이 너무 적다 (${scheduled.toFixed(0)} vs ${balance.toFixed(0)})`);
+  assert.ok(scheduled < balance * 0.62, `분할 예정액이 너무 많다 (${scheduled.toFixed(0)})`);
+
+  // 미수금은 자산이다 — 순자산에서 빠지면 자체 금융이 신용등급을 부당하게 깎는다.
+  const worthWith = E.netWorth(s);
+  const saved = s.receivables;
+  s.receivables = [];
+  assert.ok(worthWith > E.netWorth(s), '미수금이 순자산에 잡히지 않는다');
+  s.receivables = saved;
+});
+
+test('경쟁사는 뺏긴 시장에 반격하고, 손을 떼면 물러난다', () => {
+  const s = E.newGame(113);
+  const seg = 'narrow';
+  const before = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
+
+  // 협동체를 계속 따내는 상황을 만든다.
+  const p = s.programs.find((x) => x.segment === seg);
+  for (let i = 0; i < 10 && !s.gameOver; i++) {
+    s.cash = Math.max(s.cash, 20000);
+    s.backlog.push({
+      id: 'ord-r' + i,
+      airlineId: 'hanul',
+      airlineName: '한울항공',
+      programId: p.id,
+      programName: p.name,
+      qty: 30,
+      remaining: 0,
+      unitPrice: 60,
+      wonTurn: s.turn,
+      pledge: 'standard',
+      financing: 'normal',
+      dueTurn: s.turn + 14,
+      depositRate: 0.15,
+    });
+    E.endTurn(s);
+  }
+  const peak = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
+  assert.ok(peak > before, '시장을 계속 내주는데 경쟁사가 반응하지 않는다');
+  // 반격이 시장을 통째로 닫으면 안 된다 — 이벤트 상한(14)과 다른, 훨씬 낮은 상한.
+  assert.ok(peak <= 5, `반격이 과하다 (drift ${peak})`);
+
+  // 손을 떼면 물러난다.
+  s.backlog.length = 0;
+  for (let i = 0; i < 12 && !s.gameOver; i++) {
+    s.cash = Math.max(s.cash, 20000);
+    E.endTurn(s);
+  }
+  const after = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
+  assert.ok(after < peak, `공세가 영원히 유지된다 (${peak} → ${after})`);
+});
+
+test('조건이 없는 옛 주문도 그대로 인도된다', () => {
+  const s = E.newGame(127);
+  const p = s.programs.find((x) => x.legacy);
+  p.stock = 5;
+  s.backlog.length = 0;
+  // v1 세이브: pledge·financing·dueTurn·depositRate 가 아예 없다.
+  s.backlog.push({
+    id: 'ord-old',
+    airlineId: 'hanul',
+    airlineName: '한울항공',
+    programId: p.id,
+    programName: p.name,
+    qty: 5,
+    remaining: 5,
+    unitPrice: 60,
+    wonTurn: s.turn - 2,
+  });
+  const before = s.cash;
+  E.endTurn(s);
+  assert.strictEqual(s.backlog[0].remaining, 0, '옛 주문이 인도되지 않았다');
+  assert.ok(s.cash > before, '옛 주문의 잔금이 들어오지 않았다');
+  assert.strictEqual(s.receivables.length, 0, '조건 없는 주문에 분할 회수가 잡혔다');
+});
