@@ -2634,6 +2634,24 @@ test('회고는 최고·최악 분기와 점수 구성을 남긴다', () => {
   assert.ok(Math.abs(sum - score) <= 4, `점수 구성 합계(${sum})가 최종 점수(${score})와 어긋난다`);
 });
 
+test('회고의 기종 상태 표기가 실제 단계와 맞는다', () => {
+  // 회고 전용 표기를 따로 두면 phase 가 늘거나 바뀔 때 한쪽만 갱신돼 어긋난다.
+  const s = E.newGame(67);
+  s.cash = 8000;
+  E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5000, tech: 50, material: 'hybrid' }, '개발중기');
+  E.launchProgram(s, { segment: 'regional', seats: 90, range: 2600, tech: 40, material: 'aluminum' }, '중단기');
+  E.endTurn(s);
+  E.cancelProgram(s, s.programs.find((p) => p.name === '중단기').id);
+
+  const r = E.careerReport(s);
+  assert.strictEqual(r.programs.find((p) => p.name === '중단기').phase, 'cancelled');
+
+  const html = P.renderCareer(s);
+  assert.ok(/개발 중</.test(html), '개발 중인 기종을 중단으로 표기하면 안 된다');
+  assert.ok(/>중단</.test(html), '취소된 기종은 중단으로 표기해야 한다');
+  assert.ok(!/cancelled/.test(html), '내부 phase 값이 그대로 화면에 나왔다');
+});
+
 test('차트는 평평한 값·빈 배열에도 NaN 을 뱉지 않는다', () => {
   const flat = C.line({ labels: ['a', 'b'], series: [{ name: 'x', values: [5, 5, 5], cls: 'accent', fill: true }] });
   assert.ok(!/NaN/.test(flat), '값이 전부 같을 때 좌표가 깨졌다');
@@ -2667,4 +2685,98 @@ test('차트 축 라벨은 SVG 밖 HTML 로 나간다', () => {
   const svg = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'));
   assert.ok(!/<text/.test(svg), '축 글자가 다시 SVG 안으로 들어갔다');
   assert.ok(/c-y/.test(html) && /c-x/.test(html), '축 라벨이 아예 사라졌다');
+});
+
+test('turnLabel 은 승계 기종의 음수 턴도 옳게 옮긴다', () => {
+  // JS 의 % 는 음수에서 음수를 낸다. 보정하지 않으면 "1988년 -2분기"가 나온다.
+  assert.strictEqual(E.turnLabel(-40), '1988년 1분기');
+  assert.strictEqual(E.turnLabel(-39), '1988년 2분기');
+  assert.strictEqual(E.turnLabel(-1), '1997년 4분기');
+  assert.strictEqual(E.turnLabel(0), '1998년 1분기');
+  assert.strictEqual(E.turnLabel(3), '1998년 4분기');
+});
+
+test('회고는 승계 기종의 착수 연도를 1998년으로 만들지 않는다', () => {
+  const s = E.newGame(71);
+  const legacy = s.programs.find((p) => p.legacy);
+  const row = E.careerReport(s).programs.find((p) => p.name === legacy.name);
+  assert.strictEqual(row.launched, E.turnLabel(legacy.launchTurn), '착수 턴을 눌러 연표가 틀어졌다');
+  assert.ok(!/1998/.test(row.launched), '1988년에 뜬 기체가 1998년 착수로 기록됐다');
+});
+
+test('제조사 배분은 이벤트 보정치까지 반영한다', () => {
+  // "인도가 대거 지연됐다"는 소식이 뜬 회사의 인도량이 그대로면 순위표가 소식과 어긋난다.
+  const base = E.newGame(73);
+  const hit = E.newGame(73);
+  for (const c of hit.competitors) {
+    if (c.id === 'boeing') for (const seg of ['regional', 'narrow', 'wide']) c.drift[seg] = -8;
+  }
+  for (let i = 0; i < 8; i++) {
+    E.endTurn(base);
+    E.endTurn(hit);
+  }
+  assert.ok(
+    hit.stats.rivalByMaker.boeing < base.stats.rivalByMaker.boeing,
+    `보정치가 배분에 반영되지 않았다 (${hit.stats.rivalByMaker.boeing} vs ${base.stats.rivalByMaker.boeing})`,
+  );
+  // 총량은 그대로여야 한다 — 보정은 나누는 비율만 바꾼다.
+  assert.strictEqual(hit.stats.rivalDelivered, base.stats.rivalDelivered);
+});
+
+test('분할 수주도 상대에게 내준 물량으로 센다', () => {
+  const s = E.newGame(79);
+  s.stats.duels = {};
+  const before = { faced: 0, won: 0, split: 0, lost: 0, lostQty: 0 };
+  s.stats.duels.boeing = { ...before };
+
+  // 엔진 내부의 recordDuel 은 비공개라, 실제 경로(분할 판정)로 검증한다.
+  let split = 0;
+  for (let t = 0; t < 40 && !s.gameOver; t++) {
+    for (const rfp of s.rfps) {
+      const c = E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked)[0];
+      if (c) E.setBid(s, rfp.id, c.program.id, 0);
+    }
+    E.endTurn(s);
+    split = E.duelRecords(s).reduce((a, r) => a + r.split, 0);
+    if (split > 0) break;
+  }
+  if (!split) return; // 이 시드에서 분할이 안 났으면 검증할 게 없다
+
+  const withSplit = E.duelRecords(s).filter((r) => r.split > 0);
+  for (const r of withSplit) {
+    assert.ok(r.lostQty > 0, `${r.name}: 절반씩 나눠 갖고도 놓친 물량이 0이다`);
+  }
+});
+
+test('최대 부채는 분기 중에 갚아 버린 봉우리도 기억한다', () => {
+  const s = E.newGame(83);
+  assert.strictEqual(s.stats.peakDebt, Math.round(s.debt), '승계 부채가 봉우리의 출발점이다');
+  E.repay(s, s.debt);
+  E.endTurn(s);
+  assert.ok(E.careerReport(s).peakDebt >= 1500, '분기 중에 갚은 부채가 회고에서 사라졌다');
+
+  // 분기 중에 빌렸다 같은 분기에 갚아도 남아야 한다.
+  E.borrow(s, 4000);
+  E.repay(s, 4000);
+  E.endTurn(s);
+  assert.ok(E.careerReport(s).peakDebt >= 4000, '분기 중 차입 봉우리가 기록되지 않았다');
+});
+
+test('업계 최종 순위는 제조사를 잘라내지 않는다', () => {
+  const s = E.newGame(89);
+  for (let i = 0; i < 30 && !s.gameOver; i++) E.endTurn(s);
+  const rows = E.makerStandings(s);
+  const html = P.renderCareer(s) + P.renderTrends(s);
+  for (const r of rows) {
+    assert.ok(html.includes(r.name), `${r.name} 가 순위표에서 빠졌다`);
+  }
+});
+
+test('최고 분기가 적자면 흑자로 표기하지 않는다', () => {
+  const s = E.newGame(97);
+  for (let i = 0; i < 3; i++) E.endTurn(s);
+  for (const h of s.history) h.net = -10;
+  const html = P.renderCareer(s);
+  assert.ok(!/\+\$-/.test(html), '적자에 + 부호가 붙었다');
+  assert.ok(/class="bad">\$-10M/.test(html), '적자 분기를 흑자 색으로 칠했다');
 });

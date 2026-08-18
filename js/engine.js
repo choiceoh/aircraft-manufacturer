@@ -42,7 +42,9 @@
 
   function turnLabel(turn) {
     const year = CONFIG.startYear + Math.floor(turn / 4);
-    const q = (turn % 4) + 1;
+    // 승계 기종의 착수 턴은 음수다(-40 = 1988년). JS 의 % 는 음수에서 음수를 내므로
+    // 그대로 쓰면 "1988년 -2분기" 같은 분기가 나온다.
+    const q = (((turn % 4) + 4) % 4) + 1;
     return `${year}년 ${q}분기`;
   }
 
@@ -88,6 +90,8 @@
         // 경쟁 서사용 장부 — 총량만으로는 "누구에게 밀리고 있는가"가 보이지 않는다.
         rivalByMaker: {},
         duels: {},
+        // 분기말 이력만 보면 분기 중에 빌렸다 갚은 봉우리가 통째로 빠진다.
+        peakDebt: 0,
       },
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
       pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 },
@@ -101,6 +105,8 @@
       gameOver: null,
     };
     for (const a of AIRLINES) s.relations[a.id] = 34 + (a.prestige < 0.8 ? 10 : 0);
+    // 승계 부채가 봉우리의 출발점이다. 첫 정산 전에 갚아 버리면 이력에 한 번도 안 남는다.
+    markDebtPeak(s);
 
     seedLegacyProgram(s);
 
@@ -229,6 +235,10 @@
     // 카탈로그가 아니라 현재 카탈로그로 배분되어 없던 기종이 인도한 것이 된다.
     if (!s.stats.rivalByMaker || typeof s.stats.rivalByMaker !== 'object') s.stats.rivalByMaker = {};
     if (!s.stats.duels || typeof s.stats.duels !== 'object') s.stats.duels = {};
+    // 봉우리를 모르는 세이브는 지금 부채와 분기말 이력의 최댓값에서 시작한다.
+    if (typeof s.stats.peakDebt !== 'number') {
+      s.stats.peakDebt = (s.history || []).reduce((a, h) => (h.debt > a ? h.debt : a), Math.round(s.debt));
+    }
     if (!Array.isArray(s.news)) s.news = [];
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
@@ -690,8 +700,18 @@
     if (take <= 0) return { ok: false, error: '차입 한도가 남아있지 않습니다.' };
     s.debt += take;
     s.cash += take;
+    markDebtPeak(s);
     pushLog(s, 'info', `${fmtMoney(take)} 차입. 총 부채 ${fmtMoney(s.debt)}.`);
     return { ok: true };
+  }
+
+  /**
+   * 부채 봉우리 기록. 회고의 "최대 부채"를 분기말 이력에서만 뽑으면, 분기 중에
+   * 빌렸다 같은 분기에 갚은 금액과 첫 정산 전에 갚아 버린 승계 부채가 통째로 빠진다.
+   */
+  function markDebtPeak(s) {
+    if (!s.stats) return;
+    if (!(s.stats.peakDebt >= s.debt)) s.stats.peakDebt = Math.round(s.debt);
   }
 
   function repay(s, amount) {
@@ -820,8 +840,12 @@
     const d = (s.stats.duels[id] = s.stats.duels[id] || { faced: 0, won: 0, split: 0, lost: 0, lostQty: 0 });
     d.faced++;
     if (result.outcome === 'win') d.won++;
-    else if (result.outcome === 'split') d.split++;
-    else {
+    else if (result.outcome === 'split') {
+      d.split++;
+      // 절반을 나눠 가진 만큼은 상대에게 내준 물량이다. 완패만 세면 매번 반씩
+      // 뺏기고도 "놓친 물량 0기"가 뜬다.
+      d.lostQty += Math.max(0, (qtyAtStake || 0) - result.qty);
+    } else {
       d.lost++;
       d.lostQty += qtyAtStake || 0;
     }
@@ -1082,6 +1106,7 @@
       if (take > 0) {
         s.debt += take;
         s.cash += take;
+        markDebtPeak(s);
         pushLog(s, 'bad', `운전자금 부족으로 ${fmtMoney(take)} 긴급 차입. 총 부채 ${fmtMoney(s.debt)}.`);
       }
     }
@@ -1187,7 +1212,9 @@
       const segWeight = SEGMENT_UNIT_SHARE[seg];
       for (const type of pool) {
         // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
-        const power = Math.max(0, typeScore(type, s.market.fuelIndex, null, null) - 30);
+        // 이벤트 보정치(drift)까지 얹어야 입찰과 같은 실력으로 나뉜다 — 빼면 "인도가
+        // 대거 지연됐다"는 소식이 뜬 회사의 인도량이 그대로인 모순이 생긴다.
+        const power = Math.max(0, typeScore(type, s.market.fuelIndex, null, null) + driftOf(s, type.maker, seg) - 30);
         weights.set(type.maker, (weights.get(type.maker) || 0) + segWeight * power * power);
       }
     }
@@ -1208,6 +1235,12 @@
     for (const q of quota) {
       if (q.base > 0) s.stats.rivalByMaker[q.maker] = (s.stats.rivalByMaker[q.maker] || 0) + q.base;
     }
+  }
+
+  /** 이벤트가 그 제조사·세그먼트에 얹어 둔 보정치. 입찰(bestOffering)이 쓰는 값과 같다. */
+  function driftOf(s, makerId, segment) {
+    const c = (s.competitors || []).find((x) => x.id === makerId);
+    return (c && c.drift && typeof c.drift[segment] === 'number' && c.drift[segment]) || 0;
   }
 
   /** 제조사별 누적 인도 — 우리를 포함해 큰 순으로 정렬한 순위표. */
@@ -1527,7 +1560,7 @@
     const best = settled.reduce((a, h) => (!a || h.net > a.net ? h : a), null);
     const worst = settled.reduce((a, h) => (!a || h.net < a.net ? h : a), null);
     const peakShare = hist.reduce((a, h) => (typeof h.share === 'number' && h.share > a ? h.share : a), 0);
-    const peakDebt = hist.reduce((a, h) => (h.debt > a ? h.debt : a), 0);
+    const peakDebt = hist.reduce((a, h) => (h.debt > a ? h.debt : a), Math.max(s.stats.peakDebt || 0, s.debt));
     const totalRevenue = settled.reduce((a, h) => a + h.revenue, 0);
     const totalRd = settled.reduce((a, h) => a + (h.rd || 0), 0);
 
@@ -1540,7 +1573,9 @@
         phase: p.phase,
         legacy: !!p.legacy,
         engineName: p.engineName || null,
-        launched: turnLabel(Math.max(0, p.launchTurn ?? 0)),
+        // 승계 기종의 launchTurn 은 음수다(-40 = 1988년). 0으로 누르면 새 판마다
+        // "DN-150 1998년 1분기 착수"라는 틀린 연표가 된다.
+        launched: turnLabel(p.launchTurn ?? 0),
         launchTurn: p.launchTurn ?? 0,
         delivered: p.delivered || 0,
         backlog: s.backlog.filter((o) => o.programId === p.id).reduce((a, o) => a + o.remaining, 0),

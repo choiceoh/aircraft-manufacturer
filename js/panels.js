@@ -795,7 +795,9 @@
       </tr>`;
     }).join('');
 
-    const standings = E.makerStandings(s).slice(0, 6);
+    const TOP = 6;
+    const all = E.makerStandings(s);
+    const standings = all.slice(0, TOP);
     const bars = C.shareBars(
       standings.map((r) => ({
         name: r.name,
@@ -820,8 +822,9 @@
         <h3>경쟁 구도</h3>
         <p class="muted">지금 각 시장에서 우리가 이겨야 하는 상대다. 경쟁사는 실제 역사대로 신형을 내놓고 단산한다.</p>
         <table class="spec">${segRows}</table>
-        <h3 class="sub">누적 인도 순위</h3>
+        <h3 class="sub">누적 인도 순위${all.length > TOP ? ` <span class="muted">· 상위 ${TOP}개</span>` : ''}</h3>
         ${bars}
+        ${all.length > TOP ? '<p class="hint">전체 순위는 <b>추이</b> 탭에 있다.</p>' : ''}
         <h3 class="sub">수주전 전적</h3>
         ${duelLine}
       </section>`;
@@ -851,7 +854,7 @@
     const labels = labelsOf(rows);
     const pct = (v) => (v * 100).toFixed(0) + '%';
     const standings = E.makerStandings(s);
-    const shareRows = standings.slice(0, 8).map((r) => ({
+    const shareRows = standings.map((r) => ({
       name: r.name,
       value: r.delivered,
       text: `${num(r.delivered)}기 · ${(r.share * 100).toFixed(1)}%`,
@@ -978,13 +981,6 @@
 
   // ─────────────────────────────── 종료 회고 ───────────────────────────────
 
-  function phaseWord(p) {
-    if (p.phase === 'production') return '양산';
-    if (p.phase === 'cert') return '인증';
-    if (p.phase === 'dev') return '개발 중단';
-    return p.phase;
-  }
-
   /**
    * 20년 회고 — 종료 화면 본문.
    * 등급 한 글자로 끝내면 무엇이 그 등급을 만들었는지가 남지 않는다. 점수 구성,
@@ -1010,7 +1006,7 @@
                 <td class="muted">${esc(p.launched)}</td>
                 <td>${num(p.delivered)}기</td>
                 <td class="muted">${num(p.backlog)}기</td>
-                <td class="muted">${esc(phaseWord(p))}</td>
+                <td class="muted">${esc(phaseLabel(p))}</td>
               </tr>`,
             )
             .join('')}</tbody>
@@ -1028,7 +1024,7 @@
       : '<p class="muted">우리 기체를 굴린 항공사가 없다.</p>';
 
     const standings = C.shareBars(
-      r.standings.slice(0, 8).map((x) => ({
+      r.standings.map((x) => ({
         name: x.name,
         value: x.delivered,
         text: `${num(x.delivered)}기 · ${(x.share * 100).toFixed(1)}%`,
@@ -1056,7 +1052,11 @@
         <table class="spec">
           <tr><th>누적 매출</th><td>${money(r.totalRevenue)}</td></tr>
           <tr><th>누적 개발비</th><td>${money(r.totalRd)}</td></tr>
-          <tr><th>최고 분기</th><td>${r.best ? `${esc(r.best.label)} · <span class="good">+${money(r.best.net)}</span>` : '—'}</td></tr>
+          <tr><th>최고 분기</th><td>${
+            r.best
+              ? `${esc(r.best.label)} · <span class="${r.best.net >= 0 ? 'good' : 'bad'}">${r.best.net >= 0 ? '+' : ''}${money(r.best.net)}</span>`
+              : '—'
+          }</td></tr>
           <tr><th>최악 분기</th><td>${r.worst ? `${esc(r.worst.label)} · <span class="bad">${money(r.worst.net)}</span>` : '—'}</td></tr>
           <tr><th>최고 점유율</th><td>${(r.peakShare * 100).toFixed(1)}%</td></tr>
           <tr><th>최대 부채</th><td>${money(r.peakDebt)}</td></tr>
