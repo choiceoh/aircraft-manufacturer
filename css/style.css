@@ -1078,3 +1078,17 @@ h3.sub {
 .term .muted {
   font-size: 11px;
 }
+
+/* ── 이사회 목표 ── */
+.card.mandate {
+  border-left: 3px solid var(--accent2);
+}
+.card.mandate.good {
+  border-left-color: var(--good);
+}
+.card.mandate.bad {
+  border-left-color: var(--bad);
+}
+.mandate-bar {
+  margin: 8px 0 4px;
+}

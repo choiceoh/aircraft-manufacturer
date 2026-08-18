@@ -108,6 +108,11 @@
       pendingOutcomes: [],
       // 자체 금융으로 넘긴 대금 — { turn, amount, airlineName }. 분기마다 회수한다.
       receivables: [],
+      // 5년 단위 이사회 목표. newGame 에서 첫 목표를 발령한다.
+      mandate: null,
+      // 증자 횟수와 누적 지분 희석 — 최종 점수에서 그만큼 우리 몫이 아니다.
+      equityRounds: 0,
+      equityDilution: 0,
       // 조달 전략 — 원가 ↔ 공급 차질 위험.
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
@@ -122,6 +127,7 @@
 
     const rng = rngFor(s);
     s.shocks = buildShockSchedule(s, rng);
+    issueMandate(s, rng);
     s.rfps = generateRfps(s, rng);
     s.ratingForQuarter = creditRating(s).grade;
     s.rateForQuarter = interestRate(s);
@@ -253,6 +259,9 @@
     if (s.decision === undefined) s.decision = null;
     if (!Array.isArray(s.pendingOutcomes)) s.pendingOutcomes = [];
     if (!Array.isArray(s.receivables)) s.receivables = [];
+    if (s.mandate === undefined) s.mandate = null;
+    if (typeof s.equityRounds !== 'number') s.equityRounds = 0;
+    if (typeof s.equityDilution !== 'number') s.equityDilution = 0;
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
 
@@ -838,6 +847,7 @@
     }
 
     tickEffects(s);
+    settleMandate(s, rng);
     driftMarket(s, rng);
     reactToRivals(s);
     rollMarketNews(s);
@@ -1504,6 +1514,221 @@
     return Math.round(n).toLocaleString('en-US');
   }
 
+  // ─────────────────────────────── 이사회 목표 ───────────────────────────────
+
+  /**
+   * 5년(20분기) 단위 이사회 목표.
+   *
+   * 20년을 한 번의 최종 점수로만 재면 중간이 없다 — 측정해 보니 파산(F) 아니면
+   * A·S 였고 B·C·D 는 한 판도 나오지 않았다. 살아남는 것 자체가 서사가 되려면
+   * 중간에 재는 눈금이 있어야 한다. 목표는 그 눈금이고, 달성·실패가 곧바로
+   * 자금과 조달 비용으로 돌아온다.
+   *
+   * 목표치는 **발령 시점의 실적에서** 만든다. 고정값으로 두면 잘 나가는 판에는
+   * 무의미하고 어려운 판에는 불가능한 숙제가 된다.
+   */
+  const MANDATES = [
+    {
+      id: 'delivery',
+      name: '인도 확대',
+      target: (s) => Math.round(s.stats.delivered + 55 + s.turn * 0.8),
+      progress: (s) => s.stats.delivered,
+      describe: (t) => `20년 누적 인도 ${t}기 달성`,
+      unit: '기',
+    },
+    {
+      id: 'worth',
+      name: '자산 성장',
+      target: (s) => Math.round(Math.max(1800, netWorth(s) * 1.35 + 900)),
+      progress: (s) => Math.round(netWorth(s)),
+      describe: (t) => `순자산 ${fmtMoney(t)} 달성`,
+      unit: '',
+      money: true,
+    },
+    {
+      id: 'share',
+      name: '점유율 확보',
+      target: (s) => Math.round(Math.min(0.42, marketShare(s) + 0.05) * 1000) / 1000,
+      progress: (s) => Math.round(marketShare(s) * 1000) / 1000,
+      describe: (t) => `시장 점유율 ${(t * 100).toFixed(1)}% 달성`,
+      unit: '',
+      percent: true,
+    },
+    {
+      id: 'newtype',
+      name: '신형 투입',
+      target: (s) => s.programs.filter((p) => !p.legacy && p.phase === 'production').length + 1,
+      progress: (s) => s.programs.filter((p) => !p.legacy && p.phase === 'production').length,
+      describe: (t) => `양산 중인 자체 개발 기종 ${t}종 확보`,
+      unit: '종',
+    },
+  ];
+
+  const MANDATE_QUARTERS = 20;
+
+  function mandateDef(id) {
+    return MANDATES.find((m) => m.id === id) || null;
+  }
+
+  /** 다음 목표를 발령한다. 같은 목표가 연달아 나오지 않게 직전 것은 뺀다. */
+  function issueMandate(s, rng) {
+    const pool = MANDATES.filter((m) => !s.mandate || m.id !== s.mandate.id);
+    const def = pool[Math.floor(rng.next() * pool.length)] || MANDATES[0];
+    const target = def.target(s);
+    s.mandate = {
+      id: def.id,
+      name: def.name,
+      target,
+      text: def.describe(target),
+      issuedTurn: s.turn,
+      dueTurn: s.turn + MANDATE_QUARTERS,
+    };
+    pushLog(s, 'info', `이사회가 새 목표를 내렸다 — ${s.mandate.text} (${turnLabel(s.mandate.dueTurn)}까지).`);
+    return s.mandate;
+  }
+
+  /** 목표 진행 상황. 화면이 읽는다. */
+  function mandateStatus(s) {
+    if (!s.mandate) return null;
+    const def = mandateDef(s.mandate.id);
+    if (!def) return null;
+    const now = def.progress(s);
+    return {
+      ...s.mandate,
+      now,
+      ratio: s.mandate.target > 0 ? clamp(now / s.mandate.target, 0, 1) : 1,
+      met: now >= s.mandate.target,
+      quartersLeft: Math.max(0, s.mandate.dueTurn - s.turn),
+      format: (v) => (def.money ? fmtMoney(v) : def.percent ? (v * 100).toFixed(1) + '%' : `${Math.round(v)}${def.unit}`),
+    };
+  }
+
+  /**
+   * 기한이 된 목표를 정산한다.
+   * 달성하면 이사회가 증자로 답하고, 실패하면 조달 비용이 오른다 — 실패가 곧바로
+   * 파산으로 이어지지는 않되 다음 5년이 확실히 무거워진다.
+   */
+  function settleMandate(s, rng) {
+    if (!s.mandate || s.turn < s.mandate.dueTurn) return;
+    const st = mandateStatus(s);
+    if (!st) {
+      s.mandate = null;
+      return;
+    }
+
+    if (st.met) {
+      const grant = Math.round(600 + s.turn * 12);
+      s.cash += grant;
+      s.pending.revenue += grant;
+      adjustReputation(s, 6);
+      s.stats.mandatesMet = (s.stats.mandatesMet || 0) + 1;
+      pushLog(s, 'good', `이사회 목표 달성 — ${s.mandate.text}. 증자 ${fmtMoney(grant)}과 신임을 얻었다.`);
+    } else {
+      adjustReputation(s, -6);
+      s.effects.rateBump = Math.max(s.effects.rateBump || 0, 0.005);
+      s.effects.rateBumpQuarters = Math.max(s.effects.rateBumpQuarters || 0, 8);
+      s.stats.mandatesMissed = (s.stats.mandatesMissed || 0) + 1;
+      pushLog(
+        s,
+        'bad',
+        `이사회 목표 미달 — ${s.mandate.text} (${st.format(st.now)} / ${st.format(st.target)}). 신임이 흔들리고 조달 금리가 올랐다.`,
+      );
+    }
+    issueMandate(s, rng);
+  }
+
+  // ─────────────────────────────── 회생 수단 ───────────────────────────────
+
+  /**
+   * 증자 — 현금을 지분으로 바꾼다.
+   *
+   * 파산 외의 출구가 없으면 자금난은 곧 게임 종료다(측정: 파산 64%). 증자는
+   * 살아남는 길을 주되 공짜가 아니다 — 희석된 지분만큼 최종 점수가 깎인다.
+   * 조달 조건은 평판과 실적에서 나온다. 잘 나갈 때 미리 당겨 두는 편이 싸다.
+   */
+  function raiseEquity(s, amount) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const rounds = s.equityRounds || 0;
+    if (rounds >= 3) return { ok: false, error: '더 이상 증자할 수 없습니다 (최대 3회).' };
+    const take = Math.round(Math.max(0, amount));
+    if (take <= 0) return { ok: false, error: '증자 금액이 올바르지 않습니다.' };
+
+    const cap = equityCapacity(s);
+    if (take > cap.max) return { ok: false, error: `지금 시장이 받아줄 수 있는 한도는 ${fmtMoney(cap.max)}입니다.` };
+
+    const dilution = (take / cap.max) * cap.dilutionAtMax;
+    s.cash += take;
+    s.equityRounds = rounds + 1;
+    s.equityDilution = Math.min(0.65, (s.equityDilution || 0) + dilution);
+    pushLog(
+      s,
+      'info',
+      `증자로 ${fmtMoney(take)}을 조달했다. 지분이 ${(dilution * 100).toFixed(1)}%p 희석돼 누적 ${(s.equityDilution * 100).toFixed(1)}%가 됐다.`,
+    );
+    return { ok: true };
+  }
+
+  /** 지금 증자로 받을 수 있는 최대 금액과 그때의 희석률. 평판·실적이 좋을수록 유리하다. */
+  function equityCapacity(s) {
+    const worth = netWorth(s);
+    const rep = clamp(s.reputation / 100, 0, 1);
+    const base = Math.max(700, worth * 0.35 + 900);
+    const max = Math.round(base * (0.6 + rep * 0.9) * (1 - (s.equityRounds || 0) * 0.18));
+    // 회사가 좋을수록 같은 금액에 지분을 덜 내준다.
+    const dilutionAtMax = clamp(0.34 - rep * 0.16 + (worth < 0 ? 0.12 : 0), 0.08, 0.5);
+    return { max: Math.max(300, max), dilutionAtMax };
+  }
+
+  /**
+   * 개발 중인 프로그램을 경쟁사에 매각한다.
+   *
+   * 현금이 마르면 개발 동결 말고는 손이 없었다. 매각은 즉시 현금을 만들지만
+   * 우리 설계가 경쟁사 손에 들어간다 — 그 세그먼트 경쟁이 실제로 세진다.
+   */
+  function sellProgram(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'dev' && p.phase !== 'cert') {
+      return { ok: false, error: '개발·인증 단계의 프로그램만 매각할 수 있습니다.' };
+    }
+
+    // 진척이 있을수록 값이 나간다. 그래도 들인 돈보다는 늘 적다 — 헐값 매각이다.
+    const value = Math.round(p.spent * (0.35 + (p.progress / 100) * 0.3));
+    s.cash += value;
+    s.pending.revenue += value;
+    p.phase = 'sold';
+    adjustReputation(s, -5);
+
+    // 사는 쪽은 그 시장에 이미 들어와 있는 제조사다 — 남의 도면을 살 이유가 있는 곳.
+    // 그 시장에서 가장 약한 축이 따라잡으려 산다고 보는 편이 자연스럽다.
+    const seg = p.segment;
+    const year = yearOf(s.turn);
+    const active = new Set(availableTypes(seg, year).map((t) => t.maker));
+    const candidates = s.competitors.filter((c) => active.has(c.id));
+    const buyer =
+      (candidates.length
+        ? candidates.reduce((a, b) => ((b.drift[seg] || 0) < (a.drift[seg] || 0) ? b : a))
+        : s.competitors[0]) || null;
+    if (buyer) buyer.drift[seg] = Math.min(RIVAL_DRIFT_LIMIT, (buyer.drift[seg] || 0) + 2);
+    const buyerName = buyer ? (MANUFACTURERS.find((m) => m.id === buyer.id) || {}).name || buyer.id : '경쟁사';
+
+    pushLog(s, 'bad', `${p.name} 프로그램을 ${fmtMoney(value)}에 매각했다. 도면은 ${buyerName}로 넘어갔다.`);
+    return { ok: true, value, buyer: buyerName };
+  }
+
+  /**
+   * 이 속도면 몇 분기 뒤에 현금이 마르나. 경고 화면이 읽는다.
+   * 최근 4분기 평균 순현금흐름으로 재고, 흑자면 null(마르지 않는다).
+   */
+  function cashRunway(s) {
+    const recent = (s.history || []).slice(-4);
+    if (recent.length < 2) return null;
+    const avg = recent.reduce((a, h) => a + h.net, 0) / recent.length;
+    if (avg >= 0) return null;
+    return Math.max(0, Math.floor(s.cash / -avg));
+  }
+
   // ─────────────────────────────── 결정 사건 ───────────────────────────────
 
   /**
@@ -1872,31 +2097,47 @@
   function finalScore(s, bankrupt) {
     const share = marketShare(s);
     const worth = netWorth(s);
+    // 증자로 살아남았다면 그만큼은 우리 성과가 아니다. 회생 수단이 공짜가 되면
+    // "위험해지면 찍어낸다"가 언제나 정답이 된다.
+    const ownership = 1 - (s.equityDilution || 0);
     const score = Math.round(
-      s.stats.delivered * 1.2 + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12,
+      (s.stats.delivered * 1.2 + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership,
     );
     // 파산은 아무리 많이 팔았어도 실패다 — 등급으로 성적을 덮지 않는다.
+    // 문턱은 시뮬레이션으로 잡는다. 회생 수단이 생기기 전에는 파산 아니면 A·S 뿐이라
+    // B·C·D 가 한 판도 안 나왔고, 지분 희석이 들어온 뒤 중간 등급이 생겼다.
+    // 지금 값은 "웬만큼 하는 플레이" 40판의 점수 분포(중앙값 약 5,000)에서 잡은 것이다.
     let grade = 'F';
     if (!bankrupt) {
       grade = 'D';
-      if (score >= 5200) grade = 'S';
-      else if (score >= 3600) grade = 'A';
-      else if (score >= 2400) grade = 'B';
-      else if (score >= 1400) grade = 'C';
+      if (score >= 7000) grade = 'S';
+      else if (score >= 4600) grade = 'A';
+      else if (score >= 3000) grade = 'B';
+      else if (score >= 1700) grade = 'C';
     }
     return { score, grade, share, worth, delivered: s.stats.delivered };
   }
 
-  /** 최종 점수를 만든 네 항목. 등급만 던지면 무엇을 잘하고 못했는지가 남지 않는다. */
+  /** 최종 점수를 만든 항목들. 등급만 던지면 무엇을 잘하고 못했는지가 남지 않는다. */
   function scoreBreakdown(s) {
     const share = marketShare(s);
     const worth = netWorth(s);
-    return [
+    const own = 1 - (s.equityDilution || 0);
+    const rows = [
       { label: '누적 인도', detail: `${s.stats.delivered}기 × 1.2`, points: Math.round(s.stats.delivered * 1.2) },
       { label: '시장 점유율', detail: `${(share * 100).toFixed(1)}% × 4,000`, points: Math.round(share * 4000) },
       { label: '순자산', detail: `${fmtMoney(Math.max(0, worth))} × 0.08`, points: Math.round(Math.max(0, worth) * 0.08) },
       { label: '평판', detail: `${Math.round(s.reputation)} × 12`, points: Math.round(s.reputation * 12) },
     ];
+    if (own < 1) {
+      const gross = rows.reduce((a, r) => a + r.points, 0);
+      rows.push({
+        label: '지분 희석',
+        detail: `증자 ${s.equityRounds}회 · 우리 몫 ${(own * 100).toFixed(0)}%`,
+        points: Math.round(gross * own) - gross,
+      });
+    }
+    return rows;
   }
 
   /**
@@ -2014,6 +2255,11 @@
     hireEngineers,
     borrow,
     repay,
+    raiseEquity,
+    equityCapacity,
+    sellProgram,
+    mandateStatus,
+    cashRunway,
     setBid,
     setBidTerms,
     decide,

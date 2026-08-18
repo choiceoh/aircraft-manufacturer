@@ -25,7 +25,7 @@
   }
 
   function phaseLabel(p) {
-    return { dev: '개발 중', cert: '형식증명 심사', production: '양산', cancelled: '중단' }[p.phase] || p.phase;
+    return { dev: '개발 중', cert: '형식증명 심사', production: '양산', cancelled: '중단', sold: '매각' }[p.phase] || p.phase;
   }
 
   /** 기종별 미인도 주문 잔량 */
@@ -92,6 +92,14 @@
       warnings.push(`<b>${esc(p.name)}</b> 개발이 <b>동결</b> 상태다. 인력을 배분해야 진행된다.`);
     }
     if (s.cash < 400) warnings.push(`현금이 ${money(s.cash)}까지 떨어졌다. 차입·재고 처분·개발 동결을 검토하라.`);
+    const runway = E.cashRunway(s);
+    if (runway !== null && runway <= 8) {
+      warnings.push(
+        runway <= 0
+          ? '이번 분기 지출을 감당할 현금이 없다. <b>증자·프로그램 매각</b>을 지금 검토하라.'
+          : `최근 지출 속도라면 <b>${runway}분기 뒤 현금이 마른다</b>. 증자·프로그램 매각·개발 동결 중 하나는 지금 정해야 한다.`,
+      );
+    }
     if (s.debt >= CONFIG.maxDebt * 0.9) warnings.push(`차입이 한도(${money(CONFIG.maxDebt)})에 근접했다. 한 번 더 적자가 나면 파산이다.`);
     const idleLines = s.lines.filter((l) => l.idle).length;
     if (idleLines) warnings.push(`가동 중지된 라인이 ${idleLines}개 있다. 유지비는 계속 나간다.`);
@@ -109,6 +117,7 @@
     const rows = s.history.slice(-24);
 
     return `
+      ${mandateCard(s)}
       ${decisionCard(s)}
       ${settlementCard(last, prev)}
 
@@ -172,6 +181,29 @@
       rows.map((h) => h[key]).filter((v) => typeof v === 'number'),
       cls,
     );
+  }
+
+  /**
+   * 이사회 목표 카드 — 5년짜리 눈금.
+   * 최종 점수 하나로만 재면 중간이 없다. 남은 분기와 진행률을 늘 보이게 둔다.
+   */
+  function mandateCard(s) {
+    const m = E.mandateStatus(s);
+    if (!m) return '';
+    const pct = Math.round(m.ratio * 100);
+    const tone = m.met ? 'good' : m.quartersLeft <= 4 ? 'bad' : '';
+    return `
+      <section class="card mandate ${tone}">
+        <div class="row between">
+          <h3>이사회 목표 · ${esc(m.name)}</h3>
+          <span class="${m.met ? 'good' : m.quartersLeft <= 4 ? 'bad' : 'muted'}">
+            ${m.met ? '달성' : `${m.quartersLeft}분기 남음`}
+          </span>
+        </div>
+        <p class="muted">${esc(m.text)} — ${esc(E.turnLabel(m.dueTurn))}까지</p>
+        <div class="mandate-bar">${bar(pct, m.met ? 'good' : '')}</div>
+        <p class="hint">현재 ${esc(m.format(m.now))} / 목표 ${esc(m.format(m.target))} · 달성하면 증자와 신임, 미달하면 조달 금리가 오른다.</p>
+      </section>`;
   }
 
   /**
@@ -451,7 +483,8 @@
   // ─────────────────────────────── 프로그램 ───────────────────────────────
 
   function renderPrograms(s) {
-    const active = s.programs.filter((p) => p.phase !== 'cancelled');
+    // 취소·매각된 기종은 목록에서 뺀다. 회고(종료 화면)에는 계보로 남는다.
+    const active = s.programs.filter((p) => p.phase !== 'cancelled' && p.phase !== 'sold');
     if (!active.length) return '<div class="card"><p class="muted">아직 기종이 없다. 설계 탭에서 개발을 착수하라.</p></div>';
 
     return active
@@ -825,6 +858,10 @@
           <p class="hint">분기 이자 ${money(s.debt * E.quarterRate(s))}</p>
         </div>
         <div class="card">
+          <h3>증자 · 회생</h3>
+          ${equityBlock(s)}
+        </div>
+        <div class="card">
           <h3>인력</h3>
           <p class="muted">엔지니어 ${num(s.engineers)}명 · 분기 인건비 ${money(s.engineers * CONFIG.engineerCostPerQuarter)}</p>
           <div class="row wrap">
@@ -1175,6 +1212,47 @@
       </section>`;
   }
 
+  /**
+   * 증자와 프로그램 매각 — 파산 말고 다른 출구.
+   * 둘 다 공짜가 아니라는 걸 버튼 옆에 그대로 적는다.
+   */
+  function equityBlock(s) {
+    const cap = E.equityCapacity(s);
+    const rounds = s.equityRounds || 0;
+    const dil = s.equityDilution || 0;
+    const sellable = s.programs.filter((p) => p.phase === 'dev' || p.phase === 'cert');
+    const runway = E.cashRunway(s);
+
+    const amounts = [Math.round(cap.max * 0.4), Math.round(cap.max * 0.7), cap.max].filter((v, i, arr) => v >= 300 && arr.indexOf(v) === i);
+
+    return `
+      <p class="muted">현재 지분 희석 ${(dil * 100).toFixed(1)}% · 증자 ${rounds}/3회 사용${
+        runway !== null ? ` · <b class="${runway <= 4 ? 'bad' : 'warn'}">현금 잔여 ${runway}분기</b>` : ''
+      }</p>
+      <p class="hint">증자는 최대 ${money(cap.max)}까지 받을 수 있고, 전액을 받으면 지분이 ${(cap.dilutionAtMax * 100).toFixed(1)}%p 희석된다. <b>희석된 만큼 최종 점수가 깎인다</b> — 잘 나갈 때 당겨 두는 편이 싸다.</p>
+      <div class="row wrap">
+        ${
+          rounds >= 3
+            ? '<span class="muted">증자 한도를 모두 썼다.</span>'
+            : amounts
+                .map((v) => `<button data-action="raise" data-amt="${v}">${money(v)} 증자</button>`)
+                .join('')
+        }
+      </div>
+      <h3 class="sub">프로그램 매각</h3>
+      ${
+        sellable.length
+          ? `<p class="hint">개발·인증 중인 기종을 경쟁사에 넘긴다. 즉시 현금이 되지만 도면이 넘어가 그 시장 경쟁이 세진다.</p>
+             <div class="row wrap">${sellable
+               .map(
+                 (p) =>
+                   `<button class="danger" data-action="sell-program" data-id="${p.id}">${esc(p.name)} 매각 <span class="muted">(진척 ${Math.round(p.progress)}%)</span></button>`,
+               )
+               .join('')}</div>`
+          : '<p class="muted">매각할 수 있는 개발 중 기종이 없다.</p>'
+      }`;
+  }
+
   // ─────────────────────────────── 기록 ───────────────────────────────
 
   function renderLog(s) {
@@ -1184,6 +1262,7 @@
   root.AirlinerPanels = {
     renderOverview,
     renderTrends,
+    mandateCard,
     renderCareer,
     renderDesign,
     renderDesignOptions,

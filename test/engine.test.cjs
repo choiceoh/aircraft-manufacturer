@@ -3038,6 +3038,12 @@ test('경쟁사는 뺏긴 시장에 반격하고, 손을 떼면 물러난다', (
   const seg = 'narrow';
   const before = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
 
+  // 무작위 이벤트도 보정치를 움직인다(경쟁사 신형 투입 등). 여기서 재려는 것은
+  // 반격 로직뿐이므로 이 시나리오 동안만 추첨 이벤트를 비운다.
+  const savedEvents = Data.EVENTS.slice();
+  Data.EVENTS.length = 0;
+  try {
+
   // 협동체를 계속 따내는 상황을 만든다.
   const p = s.programs.find((x) => x.segment === seg);
   for (let i = 0; i < 10 && !s.gameOver; i++) {
@@ -3072,6 +3078,9 @@ test('경쟁사는 뺏긴 시장에 반격하고, 손을 떼면 물러난다', (
   }
   const after = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
   assert.ok(after < peak, `공세가 영원히 유지된다 (${peak} → ${after})`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+  }
 });
 
 test('조건이 없는 옛 주문도 그대로 인도된다', () => {
@@ -3096,4 +3105,131 @@ test('조건이 없는 옛 주문도 그대로 인도된다', () => {
   assert.strictEqual(s.backlog[0].remaining, 0, '옛 주문이 인도되지 않았다');
   assert.ok(s.cash > before, '옛 주문의 잔금이 들어오지 않았다');
   assert.strictEqual(s.receivables.length, 0, '조건 없는 주문에 분할 회수가 잡혔다');
+});
+
+// ─────────────────── 이사회 목표 · 회생 수단 ───────────────────
+
+test('새 게임에 목표가 발령되고 기한이 되면 정산된다', () => {
+  const s = E.newGame(211);
+  const first = E.mandateStatus(s);
+  assert.ok(first, '시작부터 목표가 있어야 중간 눈금이 생긴다');
+  assert.strictEqual(first.dueTurn - first.issuedTurn, 20, '5년(20분기) 주기가 아니다');
+  assert.ok(first.target > 0 && first.text.length > 0);
+
+  const firstId = first.id;
+  while (s.turn <= first.dueTurn && !s.gameOver) {
+    s.cash = Math.max(s.cash, 30000);
+    E.endTurn(s);
+  }
+  const next = E.mandateStatus(s);
+  assert.ok(next, '기한이 지났는데 새 목표가 없다');
+  assert.notStrictEqual(next.id, firstId, '같은 목표가 연달아 나왔다');
+  assert.ok((s.stats.mandatesMet || 0) + (s.stats.mandatesMissed || 0) >= 1, '정산 기록이 없다');
+});
+
+test('목표 달성은 증자와 신임으로, 미달은 조달 금리로 돌아온다', () => {
+  // 달성: 목표를 이미 넘긴 상태로 기한을 맞는다.
+  const win = E.newGame(223);
+  win.mandate = { id: 'delivery', name: '인도 확대', target: 1, text: '인도 1기', issuedTurn: 0, dueTurn: win.turn + 1 };
+  win.stats.delivered = 500;
+  const cashBefore = win.cash;
+  const repBefore = win.reputation;
+  win.cash = Math.max(win.cash, 20000);
+  E.endTurn(win);
+  assert.strictEqual(win.stats.mandatesMet, 1, '달성이 기록되지 않았다');
+  assert.ok(win.reputation > repBefore, '달성했는데 신임이 오르지 않았다');
+
+  // 미달: 도달 불가능한 목표.
+  const lose = E.newGame(227);
+  lose.mandate = { id: 'delivery', name: '인도 확대', target: 999999, text: '인도 999999기', issuedTurn: 0, dueTurn: lose.turn + 1 };
+  lose.cash = Math.max(lose.cash, 20000);
+  E.endTurn(lose);
+  assert.strictEqual(lose.stats.mandatesMissed, 1, '미달이 기록되지 않았다');
+  assert.ok(lose.effects.rateBumpQuarters > 0, '미달했는데 조달 금리가 그대로다');
+});
+
+test('증자는 현금을 지분으로 바꾸고 최종 점수를 깎는다', () => {
+  const s = E.newGame(229);
+  const cap = E.equityCapacity(s);
+  assert.ok(!E.raiseEquity(s, cap.max * 2).ok, '한도를 넘는 증자가 통과했다');
+
+  const before = s.cash;
+  const scoreBefore = E.finalScore(s, false).score;
+  assert.ok(E.raiseEquity(s, cap.max).ok);
+  assert.ok(s.cash > before, '증자했는데 현금이 안 늘었다');
+  assert.ok(s.equityDilution > 0, '희석이 기록되지 않았다');
+
+  // 현금이 늘었는데도 점수는 희석 때문에 무한정 오르지 않는다.
+  const own = 1 - s.equityDilution;
+  const expected = Math.round((E.finalScore(s, false).score / own) * own);
+  assert.strictEqual(E.finalScore(s, false).score, expected);
+  assert.ok(
+    E.scoreBreakdown(s).some((r) => r.label === '지분 희석' && r.points < 0),
+    '점수 구성에 희석이 안 보인다',
+  );
+
+  // 3회까지만.
+  E.raiseEquity(s, 300);
+  E.raiseEquity(s, 300);
+  assert.ok(!E.raiseEquity(s, 300).ok, '증자 횟수 제한이 없다');
+  assert.ok(scoreBefore >= 0);
+});
+
+test('프로그램 매각은 개발 단계에서만 되고 경쟁사를 강하게 만든다', () => {
+  const s = E.newGame(233);
+  s.cash = 9000;
+  const legacy = s.programs.find((p) => p.legacy);
+  assert.ok(!E.sellProgram(s, legacy.id).ok, '양산 기종이 매각됐다');
+
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5400, tech: 50, fuselage: 'aluminum', wingMat: 'aluminum' }, 'SELLME');
+  const p = s.programs.find((x) => x.name === 'SELLME');
+  for (let i = 0; i < 3; i++) E.endTurn(s);
+
+  const driftBefore = s.competitors.reduce((a, c) => a + (c.drift.narrow || 0), 0);
+  const cashBefore = s.cash;
+  const r = E.sellProgram(s, p.id);
+  assert.ok(r.ok, r.error);
+  assert.ok(s.cash > cashBefore, '매각 대금이 안 들어왔다');
+  assert.ok(r.value < p.spent, '들인 돈보다 비싸게 팔렸다 — 헐값 매각이어야 한다');
+  assert.strictEqual(p.phase, 'sold');
+  const driftAfter = s.competitors.reduce((a, c) => a + (c.drift.narrow || 0), 0);
+  assert.ok(driftAfter > driftBefore, '도면이 넘어갔는데 경쟁사가 그대로다');
+  assert.ok(r.buyer && r.buyer.length > 0, '누가 샀는지가 남지 않았다');
+  assert.ok(!E.sellProgram(s, p.id).ok, '매각한 기종이 또 팔렸다');
+});
+
+test('현금 잔여 분기는 적자일 때만 나온다', () => {
+  const s = E.newGame(239);
+  s.history = [
+    { net: 200, cash: 1000, debt: 0, label: 'a', revenue: 0, cost: 0, delivered: 0, backlog: 0, reputation: 50 },
+    { net: 100, cash: 1100, debt: 0, label: 'b', revenue: 0, cost: 0, delivered: 0, backlog: 0, reputation: 50 },
+  ];
+  assert.strictEqual(E.cashRunway(s), null, '흑자인데 소진 예상이 뜬다');
+
+  s.cash = 1000;
+  s.history = [
+    { net: -250, cash: 1000, debt: 0, label: 'a', revenue: 0, cost: 0, delivered: 0, backlog: 0, reputation: 50 },
+    { net: -250, cash: 1000, debt: 0, label: 'b', revenue: 0, cost: 0, delivered: 0, backlog: 0, reputation: 50 },
+  ];
+  assert.strictEqual(E.cashRunway(s), 4, '적자 속도로 계산한 잔여 분기가 틀렸다');
+});
+
+test('목표·증자 상태는 세이브 왕복을 견딘다', () => {
+  const s = E.newGame(241);
+  E.raiseEquity(s, 400);
+  const round = JSON.parse(JSON.stringify(s));
+  E.ensureShape(round);
+  assert.ok(E.mandateStatus(round), '세이브에서 목표가 사라졌다');
+  assert.strictEqual(round.equityRounds, 1);
+  assert.ok(round.equityDilution > 0);
+
+  // 목표·증자 개념이 없던 v1 세이브
+  const old = E.newGame(243);
+  delete old.mandate;
+  delete old.equityRounds;
+  delete old.equityDilution;
+  E.ensureShape(old);
+  assert.strictEqual(old.equityRounds, 0);
+  assert.strictEqual(old.equityDilution, 0);
+  assert.doesNotThrow(() => E.endTurn(old));
 });

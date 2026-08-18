@@ -326,6 +326,20 @@
         render();
         break;
 
+      case 'raise': {
+        const r = E.raiseEquity(s, Number(btn.dataset.amt));
+        act(r, r.ok ? '증자를 마쳤다. 지분이 희석됐다.' : null);
+        break;
+      }
+
+      case 'sell-program': {
+        const p = s.programs.find((x) => x.id === btn.dataset.id);
+        if (p && !confirm(`${p.name} 프로그램을 매각합니다. 되돌릴 수 없고 도면이 경쟁사로 넘어갑니다. 진행할까요?`)) break;
+        const r = E.sellProgram(s, btn.dataset.id);
+        act(r, r.ok ? `${p ? p.name : '프로그램'}을 매각했다.` : null);
+        break;
+      }
+
       case 'borrow':
         act(E.borrow(s, Number(btn.dataset.amt)));
         break;
