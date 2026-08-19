@@ -4739,3 +4739,63 @@ test('파생형은 경험 할인을 받지 않는다 — 파생 배율과 겹치
   const freshXp = D2.evaluate({ segment: 'narrow', seats: 200, range: 5800, tech: 40, experience: 4 });
   assert.ok(freshXp.devCost < freshNo.devCost, '신규 설계의 경험 할인까지 사라지면 안 된다');
 });
+
+test('인증 전 기체는 사건으로도 만들지도 인도하지도 못한다', () => {
+  // delivery_slip 사건이 백로그의 선주문을 집어 특별 근무로 기체를 뽑으면
+  // 형식증명을 우회한 실물이 생긴다. 사건 후보에서 거르고, 인도에서도 막는다.
+  const s = E.newGame(499);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'PAPER').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 45;
+  s.backlog.length = 0; // 승계 물량을 치우고 선주문만 남긴다
+  s.backlog.push({
+    id: 'ord-paper', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+  });
+
+  const slip = Dec.DECISIONS.find((d) => d.id === 'delivery_slip');
+  assert.ok(slip, 'delivery_slip 결정이 있어야 한다');
+  assert.strictEqual(slip.weight(s), 0, '선주문만 있는 백로그에서 인도 지연 사건이 나오면 안 된다');
+
+  // 어떤 경로로든 미인증 기종에 재고가 생겨도 인도되면 안 된다 — 불변식.
+  p.stock = 5;
+  E.endTurn(s);
+  const o = s.backlog.find((x) => x.id === 'ord-paper');
+  assert.ok(o && o.remaining === 10, '형식증명 없는 기체가 인도됐다');
+});
+
+test('게임 종료 시 미인증 기종의 선주문은 위약으로 정산된다', () => {
+  // 마지막 6분기 안에 딴 선주문은 정체 만료 전에 판이 끝난다. 종료 정산이
+  // 없으면 막판 종이 비행기 응찰이 선수금·평판만 챙기고 점수를 부풀린다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(503);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'LASTQ').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    s.turn = 79; // 마지막 분기 — 이번 정산으로 판이 끝난다
+    s.backlog.push({
+      id: 'ord-lastq', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+    });
+
+    const refund = Math.round(10 * 250 * 0.15 * 1.5);
+    const cashBefore = s.cash;
+    E.endTurn(s);
+    assert.ok(s.gameOver, '마지막 분기 정산 후에는 게임이 끝나야 한다');
+    assert.ok(!s.backlog.some((x) => x.id === 'ord-lastq' && x.remaining > 0), '못 지킨 선주문이 정산 없이 남았다');
+    assert.ok(
+      s.log.some((l) => /기한 내 미취항/.test(l.text)),
+      '종료 정산이 기록으로 남아야 한다',
+    );
+    assert.ok(cashBefore - s.cash >= refund, `위약 반환이 현금에서 나가야 한다 (변화 ${cashBefore - s.cash}, 기대 ≥ ${refund})`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
