@@ -53,10 +53,16 @@
     return prod.reduce((a, b) => (b.delivered > a.delivered ? b : a));
   }
 
-  /** 주문의 기종이 양산 중인가 — 인도·증산을 말하는 사건은 양산 주문만 다뤄야 한다. */
-  function isInProduction(s, order) {
+  /**
+   * "앞당겨 인도"를 팔 수 있는 주문인가 — 양산 중이고 인도 게이트에 안 막혀
+   * 있어야 한다. ETOPS 게이트에 막힌 주문은 특별 근무로 기체를 더 뽑아도
+   * 인도가 안 되므로, 사건이 집으면 돈만 쓰는 거짓 선택지가 된다.
+   */
+  function rushableOrder(s, order) {
     const p = s.programs.find((x) => x.id === order.programId);
-    return !!p && p.phase === 'production';
+    if (!p || p.phase !== 'production') return false;
+    if (order.reqEtops && !p.etopsCertified) return false;
+    return true;
   }
 
   const DECISIONS = [
@@ -521,11 +527,11 @@
     {
       id: 'delivery_slip',
       name: '인도 지연 통보',
-      // 양산 중인 기종의 주문만 — 선주문(개발·인증 중)은 "특별 근무로 앞당겨
-      // 뽑는" 선택지가 성립하지 않는다. 인증 전 기체는 만들어도 인도할 수 없다.
-      weight: (s) => (s.backlog.some((o) => o.remaining > 0 && isInProduction(s, o)) ? 8 : 0),
+      // 양산 중이고 인도 게이트에 안 막힌 주문만 — 선주문(개발·인증 중)이나
+      // ETOPS 대기 주문은 "특별 근무로 앞당겨 뽑는" 선택지가 성립하지 않는다.
+      weight: (s) => (s.backlog.some((o) => o.remaining > 0 && rushableOrder(s, o)) ? 8 : 0),
       text: (s, h) => {
-        const o = h.rng.pick(s.backlog.filter((x) => x.remaining > 0 && isInProduction(s, x)));
+        const o = h.rng.pick(s.backlog.filter((x) => x.remaining > 0 && rushableOrder(s, x)));
         h.remember('airline', o.airlineId);
         h.remember('airlineName', o.airlineName);
         h.remember('orderId', o.id);

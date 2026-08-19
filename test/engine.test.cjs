@@ -4799,3 +4799,61 @@ test('게임 종료 시 미인증 기종의 선주문은 위약으로 정산된�
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+test('종료 시 ETOPS 못 딴 기종의 대양 주문만 위약 정산되고 일반 주문은 산다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(509);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'ENDGATE').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.etopsCertified = false;
+    p.stock = 0;
+    s.turn = 79; // 마지막 분기
+    s.backlog.push(
+      {
+        id: 'ord-endgate-e', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+        qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+      },
+      {
+        id: 'ord-endgate-n', airlineId: 'hanul', airlineName: '한울', programId: p.id, programName: p.name,
+        qty: 4, remaining: 4, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+      },
+    );
+
+    E.endTurn(s);
+    assert.ok(s.gameOver, '마지막 분기 정산 후에는 게임이 끝나야 한다');
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-endgate-e'), 'ETOPS 게이트에 막힌 채 끝난 주문이 정산 없이 남았다');
+    assert.ok(s.backlog.some((o) => o.id === 'ord-endgate-n'), '같은 기종의 일반 주문까지 파기되면 안 된다');
+    assert.ok(s.log.some((l) => /ETOPS 미인증/.test(l.text)), '정산 사유가 기록으로 남아야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('ETOPS 게이트에 막힌 주문은 인도 지연 사건의 후보가 아니다', () => {
+  // 특별 근무로 기체를 뽑아도 인도가 안 되는 주문에 사건이 붙으면
+  // 돈만 쓰는 거짓 선택지가 된다.
+  const s = E.newGame(521);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'SLIPGATE').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.etopsCertified = false;
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'ord-slipgate', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+  });
+
+  const slip = Dec.DECISIONS.find((d) => d.id === 'delivery_slip');
+  assert.strictEqual(slip.weight(s), 0, 'ETOPS 대기 주문만 있는데 인도 지연 사건이 나왔다');
+
+  p.etopsCertified = true;
+  assert.ok(slip.weight(s) > 0, '게이트가 풀리면 사건 후보로 돌아와야 한다');
+});

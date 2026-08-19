@@ -641,15 +641,26 @@
   }
 
   function voidOrdersFor(s, p, why) {
-    const dead = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0);
+    voidOrderList(s, p, s.backlog.filter((o) => o.programId === p.id && o.remaining > 0), why);
+  }
+
+  /**
+   * 주어진 주문들만 골라 파기한다. 프로그램 전체가 아니라 일부 주문만 죽는
+   * 경우(종료 시점의 ETOPS 미인증 주문 — 같은 기종의 일반 주문은 멀쩡하다)가
+   * 있어 프로그램 단위 파기와 분리했다.
+   */
+  function voidOrderList(s, p, dead, why) {
     if (!dead.length) return;
-    const refund = voidRefundFor(s, p);
+    let refund = 0;
     for (const o of dead) {
+      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
       s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 10, 0, 100);
     }
+    refund = Math.round(refund);
     s.cash -= refund;
     s.pending.overhead += refund;
-    s.backlog = s.backlog.filter((o) => !(o.programId === p.id && o.remaining > 0));
+    const ids = new Set(dead.map((o) => o.id));
+    s.backlog = s.backlog.filter((o) => !ids.has(o.id));
     adjustReputation(s, -Math.min(6, dead.length * 2));
     pushLog(s, 'bad', `${why}으로 ${p.name} 주문 ${dead.length}건이 파기됐다. 선수금 반환과 위약금으로 ${fmtMoney(refund)}이 나갔다.`);
   }
@@ -1037,7 +1048,17 @@
       // 응찰이 선수금과 평판만 챙기고 최종 점수를 부풀린다. 인증까지 못 간
       // 기종의 계약은 실제로도 제조사 귀책이다 — 위약 배수 그대로 문다.
       for (const p of s.programs) {
-        if (p.phase === 'dev' || p.phase === 'cert') voidOrdersFor(s, p, '기한 내 미취항');
+        if (p.phase === 'dev' || p.phase === 'cert') {
+          voidOrdersFor(s, p, '기한 내 미취항');
+          continue;
+        }
+        // 양산에는 갔지만 ETOPS 를 못 딴 기종의 대양 노선 주문도 같은 귀책이다 —
+        // 약속한 능력(인증)이 끝내 없어서 인도 게이트에 막힌 채 판이 끝났다.
+        // 같은 기종의 일반 주문은 인도 가능한 물량이므로 건드리지 않는다.
+        if (p.phase === 'production' && !p.etopsCertified) {
+          const blocked = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0 && o.reqEtops);
+          voidOrderList(s, p, blocked, 'ETOPS 미인증');
+        }
       }
       // 위 둘이 만든 현금 이동은 이미 마감된 리포트에 없다. 마지막 분기 행에 얹어야
       // 종료 화면의 현금·매출·순자산 곡선이 실제 잔고와 맞는다. 새 행을 만들면
