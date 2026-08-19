@@ -331,6 +331,29 @@
       }
     }
 
+    // 시험비행 개념이 없던 세이브의 인증 중 기종을 옮긴다. 남은 분기를 기본 편대
+    // 기준 시간으로 되돌려, 불러온 판의 취항 시점이 달라지지 않게 한다.
+    for (const p of s.programs) {
+      if (p.phase !== 'cert') continue;
+      if (typeof p.testHoursNeeded === 'number' && typeof p.testHours === 'number') continue;
+      const left = Math.max(1, p.certRemaining || 1);
+      p.testFleet = p.testFleet || DEFAULT_TEST_FLEET;
+      p.testHours = 0;
+      p.testHoursNeeded = Math.round(left * DEFAULT_TEST_FLEET * TEST_HOURS_PER_QUARTER);
+      // 옛 세이브는 시험기 값을 낸 적이 없다. 회수액도 없어야 회계가 맞는다.
+      p.testSpent = p.testSpent || 0;
+    }
+
+    // 탑재-항속 개념이 없던 세이브의 기종에 곡선을 채운다. 비워 두면 입찰이
+    // 만석 항속만 보고 감톤 능력을 통째로 잃어, 이미 완성된 기체가 갑자기
+    // 장거리 공고에서 밀린다.
+    for (const p of s.programs) {
+      if (p.fuelMargin === undefined) p.fuelMargin = root.AirlinerAirframe.DEFAULT_FUEL_MARGIN;
+      if (!p.payloadRange || !(p.payloadRange.full > 0)) {
+        p.payloadRange = root.AirlinerAirframe.payloadRange(p.range, p.wing === undefined ? 45 : p.wing, p.fuelMargin);
+      }
+    }
+
     // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
     // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
     // 기준은 요구 항속이 아니라 **닿을 수 있는 노선**이다 — 응찰은 요구의
@@ -338,6 +361,10 @@
     // 있었다. 9,000 으로 자르면 그 구간(8,100~8,999)이 통째로 영구 실격된다.
     for (const p of s.programs) {
       if (p.etops === undefined) p.etops = p.range >= ETOPS_USEFUL_RANGE;
+      // ETOPS 를 "따내는 인증"으로 바꾸기 전 세이브. 이미 양산 중인 기종은 그동안
+      // 날아 왔으므로 인증을 가진 것으로 본다 — 그러지 않으면 불러온 판에서
+      // 멀쩡히 대양 노선을 뛰던 기체가 갑자기 실격된다.
+      if (p.etopsCertified === undefined) p.etopsCertified = !!p.etops && p.phase === 'production';
     }
 
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
@@ -511,6 +538,7 @@
       engine: base.engine,
       abreast: base.abreast,
       wing: base.wing,
+      fuelMargin: base.fuelMargin,
       etops: base.etops,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
@@ -843,6 +871,7 @@
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
+    tickEtopsService(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
@@ -1051,6 +1080,180 @@
     }
   }
 
+  /**
+   * 시험비행 — 형식증명은 기다리는 시간이 아니라 운영하는 과정이다.
+   *
+   * 설계를 동결하면 시험기를 만들어 규정 시간을 채워야 인증이 난다. 시험기를 더
+   * 만들면 빨라지지만 그만큼 현금이 먼저 나간다 — 787은 6대, A380은 5대를 띄웠고
+   * 그 선택이 곧 취항 시점과 초기 자금 부담을 갈랐다.
+   *
+   * 시험기 대수를 기본값으로 두면 예전과 같은 기간이 나오도록 눈금을 맞췄다.
+   */
+  const TEST_HOURS_PER_QUARTER = 350;
+  const DEFAULT_TEST_FLEET = 2;
+  const MAX_TEST_FLEET = 6;
+  /** 시험기는 선행 생산 기체라 손으로 만드는 부분이 많다. */
+  const TEST_AIRCRAFT_COST_MULT = 1.6;
+  /** 인증 후 시험기를 개수해 처분할 때 건지는 비율. 실제로도 헐값이다. */
+  const TEST_AIRCRAFT_SALVAGE = 0.4;
+
+  /** 그 프로그램이 이번 분기에 쌓는 시험비행 시간. */
+  function testHoursPerQuarter(p) {
+    return (p.testFleet || 0) * TEST_HOURS_PER_QUARTER;
+  }
+
+  /** 남은 시험 시간을 분기로 환산 — 화면과 옛 필드(certRemaining)가 읽는다. */
+  function certQuartersLeft(p) {
+    const rate = testHoursPerQuarter(p);
+    const left = Math.max(0, (p.testHoursNeeded || 0) - (p.testHours || 0));
+    if (rate <= 0) return Infinity;
+    return Math.ceil(left / rate);
+  }
+
+  /**
+   * 인증을 n분기 미룬다 — 이벤트가 부르는 통로.
+   *
+   * 예전 모델에서는 certRemaining 에 그냥 더하면 됐지만, 지금 잔여 분기는 시험비행
+   * 시간에서 계산되는 파생값이라 거기에 더해 봐야 다음 정산에서 덮어써진다.
+   * "n분기"를 그 편대 기준 시간으로 환산해야 실제로 밀린다.
+   */
+  function delayCertification(p, quarters) {
+    if (p.phase !== 'cert' || !(quarters > 0)) return 0;
+    const added = Math.round(quarters * Math.max(testHoursPerQuarter(p), TEST_HOURS_PER_QUARTER));
+    p.testHoursNeeded = (p.testHoursNeeded || 0) + added;
+    p.certRemaining = certQuartersLeft(p);
+    return added;
+  }
+
+  /** 시험기 한 대 값. 양산 원가에 선행 생산 할증을 얹는다. */
+  function testAircraftCost(s, p) {
+    return Math.round(currentUnitCost(s, p) * TEST_AIRCRAFT_COST_MULT);
+  }
+
+  /**
+   * 시험기를 한 대 더 만든다. 인증 심사 중에만 의미가 있다.
+   * 돈을 더 써서 취항을 앞당기는 선택 — 개발 막바지에 현금이 가장 마른 시점에 온다.
+   */
+  function addTestAircraft(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'cert') return { ok: false, error: '형식증명 심사 중인 기종만 시험기를 늘릴 수 있습니다.' };
+    if ((p.testFleet || 0) >= MAX_TEST_FLEET) return { ok: false, error: `시험기는 ${MAX_TEST_FLEET}대까지입니다.` };
+
+    // 남은 시간이 이미 다음 분기 안에 들어오면 한 대를 더 띄워도 취항이 앞당겨지지
+    // 않는다. 화면은 이 버튼을 "취항을 앞당기는 수단"으로만 광고하므로, 아무 이득
+    // 없이 제작비를 태우게 두면 안 된다.
+    const after = { testFleet: (p.testFleet || 0) + 1, testHours: p.testHours, testHoursNeeded: p.testHoursNeeded };
+    if (certQuartersLeft(after) >= certQuartersLeft(p)) {
+      return { ok: false, error: '남은 시험이 이미 다음 분기에 끝납니다. 시험기를 늘려도 취항이 앞당겨지지 않습니다.' };
+    }
+
+    const cost = testAircraftCost(s, p);
+    if (s.cash < cost) return { ok: false, error: `시험기 제작비 ${fmtMoney(cost)}이 부족합니다.` };
+    s.cash -= cost;
+    s.pending.rdCost += cost;
+    p.spent += cost;
+    p.testFleet = (p.testFleet || 0) + 1;
+    p.testSpent = (p.testSpent || 0) + cost;
+    pushLog(s, 'program', `${p.name} 시험기 ${p.testFleet}호기를 띄웠다 (${fmtMoney(cost)}). 남은 심사 ${certQuartersLeft(p)}분기.`);
+    return { ok: true, cost };
+  }
+
+  /**
+   * ETOPS — 설계 옵션이 아니라 따내는 인증이다.
+   *
+   * 쌍발기로 대양을 건너려면 기체가 그렇게 설계된 것만으로는 부족하다. 규제 당국은
+   * 운항 실적을 본다. 실제로 777 이전에는 취항 후 1년을 날아야 ETOPS 가 나왔고,
+   * 조기 취득(early ETOPS)은 시험비행에서 그만큼을 미리 증명해야 열렸다.
+   *
+   * 그래서 선택은 "설계에 넣는가"가 아니라 **"지금 돈을 내고 미리 따는가, 1년을
+   * 기다리는가"** 다. 장거리 공고가 몰리는 시점에 이 1년이 아프다.
+   */
+  const ETOPS_SERVICE_QUARTERS = 4;
+  /** 조기 취득에 필요한 추가 시험비행 — 기본 편대로 두 분기어치. */
+  const ETOPS_EARLY_QUARTERS = 2;
+  const ETOPS_EARLY_COST_RATE = 0.05;
+
+  /**
+   * 조기 ETOPS 취득 프로그램에 착수한다. 심사 중에만 열린다.
+   * 시험 시간을 더 쌓아 취항과 동시에 인증을 받는다 — 그만큼 취항이 늦어진다.
+   */
+  function startEarlyEtops(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (!p.etops) return { ok: false, error: 'ETOPS 대응으로 설계된 기종이 아닙니다.' };
+    if (p.phase !== 'cert') return { ok: false, error: '형식증명 심사 중에만 신청할 수 있습니다.' };
+    if (p.etopsEarly) return { ok: false, error: '이미 조기 취득을 진행 중입니다.' };
+
+    const cost = Math.round(p.devCost * ETOPS_EARLY_COST_RATE);
+    if (s.cash < cost) return { ok: false, error: `조기 취득 비용 ${fmtMoney(cost)}이 부족합니다.` };
+    s.cash -= cost;
+    s.pending.rdCost += cost;
+    p.spent += cost;
+    p.etopsEarly = true;
+    const addedHours = Math.round(ETOPS_EARLY_QUARTERS * DEFAULT_TEST_FLEET * TEST_HOURS_PER_QUARTER);
+    p.testHoursNeeded += addedHours;
+    pushLog(
+      s,
+      'program',
+      `${p.name} 조기 ETOPS 취득에 착수했다 (${fmtMoney(cost)}). 재시험 ${num(addedHours)}시간이 늘고, 취항과 동시에 대양 노선에 들어간다.`,
+    );
+    return { ok: true, cost };
+  }
+
+  /**
+   * 취항 후 운항 실적으로 ETOPS 를 따는 경로. 매 분기 정산에서 부른다.
+   *
+   * 양산 단계라는 것만으로는 안 된다 — 규제 당국이 보는 건 **실제로 굴러다닌 기록**이다.
+   * 라인도 인도분도 없는 기종이 네 분기를 세는 건 실적이 아니라 달력이다.
+   */
+  function tickEtopsService(s) {
+    for (const p of s.programs) {
+      if (p.phase !== 'production' || !p.etops || p.etopsCertified) continue;
+      if (!(p.delivered > 0)) continue;
+      p.etopsService = (p.etopsService || 0) + 1;
+      if (p.etopsService >= ETOPS_SERVICE_QUARTERS) {
+        p.etopsCertified = true;
+        pushLog(s, 'good', `${p.name} 운항 실적 ${p.etopsService}분기를 채워 ETOPS 인증을 받았다. 대양 노선에 응찰할 수 있다.`);
+      }
+    }
+  }
+
+  /** 설계 동결 — 시험비행 단계로 넘어간다. */
+  function enterCertification(s, p, report) {
+    p.phase = 'cert';
+    p.testHours = 0;
+    p.testHoursNeeded = Math.round(p.certQuarters * DEFAULT_TEST_FLEET * TEST_HOURS_PER_QUARTER);
+    p.testFleet = 0;
+    p.testSpent = 0;
+    // 기본 편대는 자동으로 띄운다. 시험기 0대면 인증이 영원히 안 끝나므로,
+    // "아무것도 안 하면 멈춘다"가 아니라 "더 넣으면 빨라진다"가 되게 한다.
+    for (let i = 0; i < DEFAULT_TEST_FLEET; i++) {
+      const cost = testAircraftCost(s, p);
+      s.cash -= cost;
+      // 이 경로는 endTurn 정산 중(리포트를 이미 만든 뒤)에 돌기 때문에 pending 에 적으면
+      // 현금은 이번 분기에 나가고 비용은 다음 분기 장부에 실린다. 파산하면 그 다음
+      // 분기가 아예 없어 비용이 통째로 사라지기도 한다. 리포트에 직접 단다.
+      if (report) report.rdCost += cost;
+      else s.pending.rdCost += cost;
+      p.spent += cost;
+      p.testSpent += cost;
+      p.testFleet++;
+    }
+    pushLog(
+      s,
+      'program',
+      `${p.name} 설계 동결 및 초도 비행 성공. 시험기 ${p.testFleet}대로 형식증명 심사에 들어간다 — ` +
+        `${num(p.testHoursNeeded)}시간 필요, 지금 속도로 ${certQuartersLeft(p)}분기.`,
+    );
+  }
+
+  function num(n) {
+    return Math.round(n).toLocaleString('ko-KR');
+  }
+
   function advanceDevelopment(s, rng, report) {
     // 이번 분기 시작 시점에 이미 인증 심사 중이던 프로그램 (아래 카운트다운 대상).
     const certifyingBefore = s.programs.filter((p) => p.phase === 'cert');
@@ -1083,10 +1286,7 @@
       s.cash -= spend;
       report.rdCost += spend;
 
-      if (p.progress >= 100) {
-        p.phase = 'cert';
-        pushLog(s, 'program', `${p.name} 설계 동결 및 초도 비행 성공. 형식증명 심사에 들어간다 (예상 ${p.certRemaining}분기).`);
-      }
+      if (p.progress >= 100) enterCertification(s, p, report);
     }
 
     // 개발 루프에서 방금 cert로 전환된 프로그램은 제외한다. 포함하면 개발에 그 분기를
@@ -1096,30 +1296,51 @@
       // 제동이 걸린다. 품질 투자는 이 확률을 함께 낮춘다.
       // 이 판정이 없으면 기술 슬라이더는 "비싸지만 확정된 이득"이라 도박이 아니게 된다.
       if (rng.chance(clamp(p.defectRisk * 0.26, 0.01, 0.12))) {
+        // 지적은 시간으로 값을 치른다 — 기본 편대 기준 1~2분기어치의 재시험이다.
+        // 시험기를 더 띄워 둔 팀은 그만큼 빨리 만회한다.
         const delay = rng.int(1, 2);
+        const addedHours = Math.round(delay * DEFAULT_TEST_FLEET * TEST_HOURS_PER_QUARTER);
         const cost = Math.round(p.devCost * 0.03 * delay);
-        p.certRemaining += delay;
+        p.testHoursNeeded += addedHours;
+        p.findings = (p.findings || 0) + 1;
         p.spent += cost;
         s.cash -= cost;
         report.rdCost += cost;
         pushLog(
           s,
           'bad',
-          `${p.name} 형식증명 심사에서 설계 변경 요구가 나왔다. ${delay}분기 지연, 대응 비용 ${fmtMoney(cost)}.`,
+          `${p.name} 형식증명 심사에서 설계 변경 요구가 나왔다. 재시험 ${num(addedHours)}시간, 대응 비용 ${fmtMoney(cost)}.`,
         );
-        // continue 로 아래 감소분까지 건너뛰면 "1분기 지연"이 실제로는 2분기가 된다.
-        // 이번 분기 심사는 정상적으로 소진되고, 순증이 delay 만큼이어야 광고와 맞는다.
       }
 
-      p.certRemaining -= 1;
-      if (p.certRemaining <= 0) {
+      p.testHours = (p.testHours || 0) + testHoursPerQuarter(p);
+      p.certRemaining = certQuartersLeft(p);
+      if (p.testHours >= p.testHoursNeeded) {
         p.phase = 'production';
         p.certTurn = s.turn;
+        p.certRemaining = 0;
+        // 조기 취득을 산 기종만 취항과 동시에 대양 노선에 들어간다.
+        // 나머지는 운항 실적을 채워야 한다.
+        p.etopsCertified = !!(p.etops && p.etopsEarly);
+        p.etopsService = 0;
         adjustReputation(s, 5);
+        // 시험기는 개수해 헐값에 넘긴다. 실제로도 시험기는 정상가로 안 팔린다.
+        const salvage = Math.round((p.testSpent || 0) * TEST_AIRCRAFT_SALVAGE);
+        if (salvage > 0) {
+          s.cash += salvage;
+          report.revenue += salvage;
+        }
         pushLog(
           s,
           'good',
-          `${p.name} 형식증명 취득! 이제 조립 라인을 세워 양산할 수 있다. (정가 ${fmtMoney(p.listPrice)}, 연비지수 ${p.efficiency})`,
+          `${p.name} 형식증명 취득! 시험비행 ${num(p.testHours)}시간` +
+            `${p.findings ? ` · 심사 지적 ${p.findings}건` : ''}. 시험기 ${p.testFleet}대를 개수해 ${fmtMoney(salvage)}을 회수했다. ` +
+            `(정가 ${fmtMoney(p.listPrice)}, 연비지수 ${p.efficiency})` +
+            (p.etops
+              ? p.etopsCertified
+                ? ' ETOPS 조기 취득 완료 — 대양 노선에 바로 들어간다.'
+                : ` ETOPS 는 운항 실적 ${ETOPS_SERVICE_QUARTERS}분기를 채워야 나온다.`
+              : ''),
         );
       }
     }
@@ -2186,6 +2407,7 @@
         s.cash -= amt;
         s.pending.overhead += amt;
       },
+      delayCert: (p, quarters) => delayCertification(p, quarters),
       pickWeighted: (arr, weightOf) => {
         const w = arr.map((x) => Math.max(1e-4, weightOf(x)));
         const total = w.reduce((a, b) => a + b, 0);
@@ -2550,6 +2772,11 @@
     launchProgram,
     derivativeSpec,
     investQuality,
+    addTestAircraft,
+    delayCertification,
+    startEarlyEtops,
+    testAircraftCost,
+    certQuartersLeft,
     cancelProgram,
     buildLine,
     retoolLine,

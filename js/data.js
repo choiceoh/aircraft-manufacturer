@@ -520,7 +520,9 @@
       apply: (s, h) => {
         const p = h.rng.pick(s.programs.filter((x) => x.phase === 'cert'));
         const q = h.rng.int(1, 3);
-        p.certRemaining += q;
+        // 잔여 분기는 시험비행 시간에서 나오는 파생값이라, 분기를 직접 더하면
+        // 다음 정산에서 덮어써진다 — 로그만 "밀린다"고 말하고 실제로는 그대로다.
+        h.delayCert(p, q);
         return `감항당국이 ${p.name}의 비행제어 소프트웨어에 추가 시험을 요구했다. 인증이 ${q}분기 밀린다.`;
       },
     },

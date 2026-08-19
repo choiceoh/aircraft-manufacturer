@@ -103,18 +103,53 @@
   }
 
   /**
-   * payload-range: 만석 항속과, 좌석을 20% 비웠을 때의 항속.
-   * 게임 안에서 별도 자원으로 관리하지는 않고 "이 설계가 실제로 어떤 노선을 뛰는가"를
-   * 보여주는 표시용이다 — 장거리 설계의 대가가 숫자로 보이게 한다.
+   * 연료 여유 (0~100) — 설계 항속을 넘는 노선을 위해 탱크·최대이륙중량에 얼마나
+   * 여유를 두는가. 세 번째 양방향 축이다.
+   *
+   *   0   = 설계 임무에 딱 맞춘 기체. 가볍고 싸고 연비가 좋다. 대신 설계 항속을
+   *         넘는 순간 태울 수 있는 승객이 급격히 준다
+   *   100 = 넉넉한 탱크와 높은 최대이륙중량. 감톤하면 훨씬 멀리 간다. 대신 늘
+   *         무거운 구조를 지고 다녀 짧은 노선에서 손해다
+   *
+   * 실제로 A321LR·777-200LR 이 이 선택이다 — 같은 동체에 연료와 MTOW 를 더해
+   * 노선 폭을 샀고, 그만큼 단거리 운용에서는 불리했다.
    */
-  function payloadRange(range, wing) {
+  const DEFAULT_FUEL_MARGIN = 35;
+
+  /**
+   * payload-range 곡선.
+   *
+   *   full  : 만석으로 갈 수 있는 거리(설계 항속)
+   *   light : 좌석을 20% 비웠을 때 갈 수 있는 거리
+   *
+   * 표시용이 아니라 입찰이 실제로 읽는 값이다. 항속이 모자란 기체는 실격이 아니라
+   * **승객을 덜 태우고** 그 노선을 뛴다 — 실제 항공사가 하는 일이 그거다.
+   */
+  function payloadRange(range, wing, fuelMargin) {
     const w = clamp(wing, 0, 100) / 100;
-    // 장거리형일수록 연료를 더 싣고 감톤 시 이득이 크다.
-    const gain = 1.16 + w * 0.16;
+    const m = clamp(fuelMargin === undefined ? DEFAULT_FUEL_MARGIN : fuelMargin, 0, 100) / 100;
+    // 장거리형 날개는 연료를 더 싣고, 여유를 둔 설계는 감톤 이득이 더 크다.
+    const gain = 1.06 + w * 0.12 + m * 0.34;
     return {
       full: Math.round(range),
       light: Math.round(range * gain),
     };
+  }
+
+  /**
+   * 그 거리를 뛸 때 실제로 채울 수 있는 좌석 비율 (0~1).
+   *
+   * 설계 항속 안이면 만석이고, 넘어서면 연료를 더 싣느라 승객을 내린다.
+   * full→light 구간에서 20% 를 내리는 기울기를 그대로 연장한다. 절벽이 아니라
+   * 경사라, 조금 모자란 기체는 조금 손해를 보고 크게 모자란 기체는 크게 잃는다.
+   */
+  function seatFactorAt(pr, distance) {
+    if (!pr || !(pr.full > 0)) return 1;
+    if (!(distance > pr.full)) return 1;
+    const span = Math.max(1, pr.light - pr.full);
+    // full→light 사이에서 좌석의 20% 를 내린다.
+    const factor = 1 - 0.2 * ((distance - pr.full) / span);
+    return clamp(factor, 0, 1);
   }
 
   root.AirlinerAirframe = {
@@ -125,5 +160,7 @@
     sectionFit,
     wingProfile,
     payloadRange,
+    seatFactorAt,
+    DEFAULT_FUEL_MARGIN,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

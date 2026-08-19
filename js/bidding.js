@@ -7,10 +7,11 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, RANGE_TOLERANCE, UPGAUGE_PER_YEAR, BID_PLEDGES, BID_FINANCING } =
+  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, UPGAUGE_PER_YEAR, BID_PLEDGES, BID_FINANCING } =
     root.AirlinerData;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
+  const Airframe = root.AirlinerAirframe;
 
   const SEGMENT_IDS = Object.keys(SEGMENTS);
 
@@ -33,29 +34,137 @@
   const COMMONALITY_BONUS = 6;
 
   /** 해당 분기에 새로 뜨는 RFP 목록을 만든다. */
+  /**
+   * 항공사 선단 계획.
+   *
+   * 예전에는 매 분기 항공사를 무작위로 뽑아 무작위 규모의 공고를 냈다. 그래서 공고가
+   * 서로 아무 관계가 없었고 — 같은 항공사가 두 분기 연속 같은 급을 부르거나, 20년
+   * 내내 한 번도 안 부르거나 — 시장이 배경 소음이었다.
+   *
+   * 이제 항공사마다 **필요분이 쌓인다**. 노후기가 매 분기 퇴역하고(교체 수요),
+   * 수요지수에 따라 노선이 늘거나 준다(성장 수요). 쌓인 필요분이 발주 단위를 넘으면
+   * 그때 공고가 나오고 필요분은 0 으로 돌아간다. 그래서:
+   *
+   *   - 공고 규모가 난수가 아니라 "그동안 쌓인 만큼"이다
+   *   - 방금 대량 발주한 항공사는 한동안 조용하다
+   *   - 불황에는 발주를 미루고, 회복하면 미뤄 둔 필요분이 한꺼번에 터진다
+   *
+   * 마지막 성질이 실제 항공업의 사이클이다 — 2001·2008 이후 발주가 얼어붙었다가
+   * 회복기에 몰린 것이 그거다.
+   */
+  const FLEET_PLAN = {
+    /**
+     * 세그먼트별 분기 신규 수요 (대). 수요지수가 곱해진다.
+     * 항공사마다 세 칸이 각각 쌓이므로, 한 칸이던 시절보다 총 수요가 커진다 —
+     * 파산률이 목표(회생 안 씀 기준 10/40 언저리)에 오도록 다시 잡은 값이다.
+     */
+    perQuarter: { regional: 2.15, narrow: 2.92, wide: 1.46 },
+    /** 이만큼 쌓이면 발주한다 — 곧 공고 규모이기도 하다. */
+    lot: { regional: 18, narrow: 26, wide: 10 },
+    /** 주력 밖 세그먼트의 적립 속도. 새 급 진출은 드물어야 한다. */
+    offProfileRate: 0.05,
+    /** 이 정도 쌓이면 발주 가능성이 생기고, ripeSpan 만큼 더 쌓이면 거의 확실해진다. */
+    ripeFrom: 0.55,
+    ripeSpan: 0.9,
+    /** 불황에 실제로 미룰 확률. 1.0 이면 침체 구간이 통째로 비어 버린다. */
+    deferChance: 0.72,
+    /** 수요지수가 이보다 낮으면 발주를 미룬다. 필요분은 계속 쌓인다. */
+    deferBelow: 0.82,
+    /** 다만 이 배수를 넘게 쌓이면 더는 못 미룬다 — 기체가 정말 낡았다. */
+    deferCap: 2.2,
+  };
+
+  /**
+   * 항공사별 계획을 확보한다. 옛 세이브는 빈 상태에서 시작한다.
+   *
+   * 필요분은 **세그먼트별로** 쌓는다. 한 칸으로 두면 주력 세그먼트 규모로 적립한
+   * 필요분이 노선망 밖 발주에서 다른 급 공고로 새고, 그 자리에서 통째로 지워진다 —
+   * 광동체 교체 10대가 리저널 10대 공고가 되는 식이다. 칸을 나누면 노선망 밖
+   * 진출도 그 급에 맞는 규모로 나온다.
+   *
+   * 첫 적립분을 흩뜨리는 것도 중요하다. 전부 0 에서 같은 속도로 쌓으면 같은 급의
+   * 항공사들이 **동기화돼** 한 분기에 몰려 나오고 그 사이는 통째로 빈다 —
+   * 공고 수는 그대로인데 할 일 없는 분기만 늘어난다. 실제 항공사의 교체 주기가
+   * 서로 맞을 이유도 없다.
+   */
+  function planFor(state, airline, rng) {
+    if (!state.airlinePlans) state.airlinePlans = {};
+    const cur = state.airlinePlans[airline.id];
+    if (!cur || !cur.need || typeof cur.need !== 'object') {
+      const need = {};
+      const deferred = {};
+      for (const seg of SEGMENT_IDS) {
+        need[seg] = rng ? rng.next() * FLEET_PLAN.lot[seg] : 0;
+        deferred[seg] = 0;
+      }
+      state.airlinePlans[airline.id] = { need, deferred, lastOrderTurn: -99 };
+    }
+    return state.airlinePlans[airline.id];
+  }
+
+  /**
+   * 이번 분기 공고. 항공사마다 필요분을 적립하고, 발주 단위를 넘긴 곳이 공고를 낸다.
+   *
+   * 난수는 규모의 흔들림에만 쓴다 — 어느 항공사가 언제 부를지는 계획이 정한다.
+   * 그래야 "저 항공사는 슬슬 교체할 때가 됐다"가 읽히는 정보가 된다.
+   */
   function generateRfps(state, rng) {
     const rfps = [];
-    const demand = state.market.demandIndex;
-    // 수요지수가 낮으면 입찰 자체가 줄어든다.
-    let count = 0;
-    if (rng.next() < clamp(demand * 0.85, 0.1, 0.95)) count++;
-    if (rng.next() < clamp(demand * 0.55, 0.05, 0.85)) count++;
-    if (rng.next() < clamp(demand * 0.22, 0.02, 0.5)) count++;
+    const demand = clamp(state.market.demandIndex, 0.3, 2.0);
 
-    for (let i = 0; i < count; i++) {
-      rfps.push(makeRfp(state, rng));
+    for (const airline of AIRLINES) {
+      const plan = planFor(state, airline, rng);
+
+      for (const seg of SEGMENT_IDS) {
+        // 주력 세그먼트가 대부분이고, 노선망 밖은 천천히 쌓인다 — 항공사가 새 급에
+        // 진출하는 건 드문 일이라 그만큼 오래 걸려야 한다.
+        const weight = seg === airline.bias ? 1 : FLEET_PLAN.offProfileRate;
+        // 교체 수요는 경기와 무관하게 쌓이고(기체는 계속 낡는다), 성장 수요만 경기를 탄다.
+        const replace = FLEET_PLAN.perQuarter[seg] * 0.55;
+        const grow = FLEET_PLAN.perQuarter[seg] * 0.45 * demand;
+        plan.need[seg] += (replace + grow) * weight;
+
+        const lot = FLEET_PLAN.lot[seg];
+        // 발주 시점은 문턱이 아니라 확률로 푼다. 딱 떨어지는 문턱을 쓰면 같은 급의
+        // 항공사들이 같은 속도로 쌓다가 한 분기에 몰려 나오고 — 이연이 그 동기화를
+        // 매번 되살린다 — 공고 수는 맞는데 빈 분기만 늘어난다.
+        // 많이 쌓일수록 확률이 오르므로 "슬슬 교체할 때가 됐다"는 성질은 그대로다.
+        const ripeness = plan.need[seg] / lot;
+        const chance = clamp((ripeness - FLEET_PLAN.ripeFrom) / FLEET_PLAN.ripeSpan, 0, 0.9);
+        if (!rng.chance(chance)) continue;
+
+        // 불황에는 미룬다. 다만 전부 얼어붙지는 않는다 — 최소한의 교체는 돌아간다.
+        // 확정 이연으로 두면 침체 구간이 통째로 빈 분기가 되어 할 일이 사라진다.
+        // 너무 낡으면 더는 못 미룬다.
+        if (demand < FLEET_PLAN.deferBelow && ripeness < FLEET_PLAN.deferCap && rng.chance(FLEET_PLAN.deferChance)) {
+          plan.deferred[seg]++;
+          continue;
+        }
+
+        // 규모는 쌓인 만큼 ±15%. 미뤘던 필요분이 한꺼번에 나오면 대형 발주가 된다.
+        const qty = Math.max(3, Math.round(plan.need[seg] * rng.range(0.85, 1.15)));
+        rfps.push(makeRfp(state, rng, { airline, segment: seg, qty, deferred: plan.deferred[seg] }));
+        plan.need[seg] = 0;
+        plan.deferred[seg] = 0;
+        plan.lastOrderTurn = state.turn;
+      }
     }
     return rfps;
   }
 
-  function makeRfp(state, rng) {
-    const airline = rng.pick(AIRLINES);
+  function makeRfp(state, rng, plan) {
+    // 계획이 있으면 그 항공사·규모로 낸다. 없으면(테스트·옛 호출) 예전처럼 무작위.
+    const airline = (plan && plan.airline) || rng.pick(AIRLINES);
     // 대부분은 자기 노선망 안에서 발주하고, 가끔 인접 세그먼트로 넘어간다.
     // 노선망 밖 발주는 **반드시 다른 세그먼트**여야 한다 — 자기 급을 뽑아 놓고
     // 대역·활주로 제약만 일반값으로 덮으면, 산악 공항 항공사가 이착륙 요건 0인
     // 공고를 내는 모순이 생긴다(노선 설명은 그대로 붙은 채로).
-    const onProfile = rng.next() < 0.85;
-    const segmentId = onProfile ? airline.bias : rng.pick(SEGMENT_IDS.filter((id) => id !== airline.bias));
+    //
+    // 다만 선단 계획이 낸 발주는 자기 급에 머문다. 쌓인 필요분은 그 항공사의
+    // **주력 세그먼트** 규모로 적립된 것이라, 다른 급으로 새면 광동체 교체 10대가
+    // 리저널 10대 공고가 되고 그 자리에서 광동체 필요분이 통째로 지워진다.
+    const segmentId = plan && plan.segment ? plan.segment : rng.next() < 0.85 ? airline.bias : rng.pick(SEGMENT_IDS.filter((id) => id !== airline.bias));
+    const onProfile = segmentId === airline.bias;
     const seg = SEGMENTS[segmentId];
 
     let seats;
@@ -82,9 +191,14 @@
     // 활주로"라고 적힌 광동체 공고가 요구 이착륙 성능 0으로 나가 서로 모순된다.
     const route = onProfile ? airline.route || '' : `${seg.name} 신규 진출 (노선망 밖)`;
 
-    // 발주 규모: 세그먼트가 작을수록 대량. 수요지수가 곱해진다.
-    const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
-    const qty = Math.max(3, Math.round(baseQty * clamp(state.market.demandIndex, 0.4, 1.8)));
+    // 발주 규모: 선단 계획이 쌓아 온 필요분이다. 계획 없이 부르면 예전 방식으로 뽑는다.
+    let qty;
+    if (plan && plan.qty > 0) {
+      qty = plan.qty;
+    } else {
+      const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
+      qty = Math.max(3, Math.round(baseQty * clamp(state.market.demandIndex, 0.4, 1.8)));
+    }
 
     const relation = state.relations[airline.id] ?? 40;
 
@@ -103,6 +217,9 @@
       reqEtops,
       route,
       qty,
+      // 왜 지금 이 공고가 나왔는가 — 화면이 읽는다.
+      reason: plan && plan.deferred > 0 ? 'deferred' : 'plan',
+      deferredQuarters: (plan && plan.deferred) || 0,
       priceSensitivity: airline.priceSensitivity,
       prestige: airline.prestige,
       relation,
@@ -134,6 +251,52 @@
    * 우리 기체 한 종의 입찰 점수를 계산한다.
    * @returns {{total:number, parts:object, blocked:string|null, price:number}}
    */
+  /**
+   * 그 노선에 이 기체를 넣었을 때의 편당 운용원가 (지수).
+   *
+   * 항공사는 기체 가격만 보지 않는다. 20년을 굴리면 자본비보다 운용비가 크고,
+   * 그래서 실제 기종 선정은 **편당 원가**와 **좌석마일 원가** 두 숫자로 한다.
+   *
+   *   연료 — 크기·거리에 비례하고 연비에 반비례한다. 유가가 비쌀수록 이 항이 지배한다
+   *   고정 — 승무·정비·착륙료. 거리에 덜 민감하고 편당으로 붙는다
+   *
+   * 감톤 운항이 여기서 제값을 한다: 연료는 기체 크기대로 태우는데 태울 수 있는
+   * 승객은 줄어드니, 좌석마일 원가가 그만큼 나빠진다.
+   */
+  function tripCostOf(seats, distance, efficiency, fuelIndex) {
+    const eff = clamp(efficiency, 5, 99);
+    const fuel = Math.pow(seats, 0.9) * distance * (60 / eff) * clamp(fuelIndex, 0.4, 2.4);
+    const fixed = Math.pow(seats, 0.7) * (900 + distance * 0.22);
+    return fuel + fixed;
+  }
+
+  /** 비교 기준이 되는 "그 공고에 딱 맞는 평범한 기체"의 연비 지수. */
+  const REF_EFFICIENCY = 58;
+
+  /**
+   * 가격 점수의 절편 — 좌석당 기준가와 같으면 (절편 − 1) 점이 된다.
+   *
+   * 좌석당으로 견주기 전에는 기체당으로 쟀는데, 그때는 **요구보다 작은 기체를 넣으면
+   * 싸 보여서 가산점**을 받았다(185석 기체가 225석 공고에서 가격 54점). 업게이지로
+   * 공고가 커지는 후반에 그 보너스가 점수의 큰 몫이었고, 좌석당으로 고치면서 통째로
+   * 사라졌다 — 그만큼 눈금을 올려 수주량을 예전 수준으로 되돌린다.
+   * 값을 만지면 수주량이 급하게 움직인다: 1.6 → 10.6천기, 1.75 → 18.0천기 (20판 합).
+   */
+  const PRICE_INTERCEPT = 1.69;
+
+  /** 이 할인까지는 점수에 그대로 반영되고, 그 위로는 체감한다. */
+  const DISCOUNT_KNEE = 0.2;
+  const DISCOUNT_FADE = 0.3;
+
+  /**
+   * 그 기종의 payload-range 곡선. 옛 세이브에는 없으므로 설계 항속에서 되만든다.
+   * 없다고 만석 항속만 보면, 마이그레이션된 기체가 감톤 능력을 통째로 잃는다.
+   */
+  function payloadRangeOf(program) {
+    if (program.payloadRange && program.payloadRange.full > 0) return program.payloadRange;
+    return Airframe.payloadRange(program.range, program.wing === undefined ? 45 : program.wing, program.fuelMargin);
+  }
+
   /** 입찰 조건을 정규화한다. 옛 세이브·기본 호출은 표준 조건으로 본다. */
   function normalizeTerms(terms) {
     const t = terms || {};
@@ -150,40 +313,75 @@
     if (program.segment !== rfp.segment) {
       return { total: 0, parts: {}, blocked: '세그먼트 불일치', price: 0 };
     }
-    // 요구 항속의 일정 비율에 못 미치면 노선 자체를 못 뛴다 — 실격.
-    if (program.range < rfp.reqRange * RANGE_TOLERANCE) {
-      return { total: 0, parts: {}, blocked: '항속거리 부족', price: 0 };
-    }
-    // 좌석이 요구의 80% 미만이면 수송력 미달 — 실격.
-    if (program.seats < rfp.reqSeats * 0.8) {
-      return { total: 0, parts: {}, blocked: '좌석수 부족', price: 0 };
-    }
     // 짧은 활주로·고온고지 노선은 이착륙 성능이 모자라면 애초에 못 뛴다.
     if (rfp.reqField && (program.fieldPerf ?? 100) < rfp.reqField) {
       return { total: 0, parts: {}, blocked: '이착륙 성능 미달', price: 0 };
     }
     // 장거리 노선은 ETOPS 인증이 없으면 취항 자체가 불가능하다.
-    if (rfp.reqEtops && !program.etops) {
+    // 설계만으로는 부족하다 — 실제로 인증을 가진 기종만 대양 노선에 들어간다.
+    if (rfp.reqEtops && !program.etopsCertified) {
       return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
     }
 
+    // ── 탑재-항속 ──
+    // 설계 항속보다 먼 노선이라고 실격은 아니다. 연료를 더 싣고 승객을 내리면 뛴다.
+    // 그래서 "몇 석짜리 기체인가"가 아니라 **이 노선에서 몇 석을 채울 수 있는가**로 잰다.
+    const pr = payloadRangeOf(program);
+    const seatFactor = Airframe.seatFactorAt(pr, rfp.reqRange);
+    const usableSeats = program.seats * seatFactor;
+
     // 좌석 적합도: 모자라도, 지나치게 커도 감점(공석은 곧 비용).
-    const seatDelta = (program.seats - rfp.reqSeats) / rfp.reqSeats;
+    // 분자가 실좌석이라, 항속이 모자란 기체는 여기서 자연히 수송력 미달로 잡힌다.
+    const seatDelta = (usableSeats - rfp.reqSeats) / rfp.reqSeats;
     const seatFit = seatDelta >= 0 ? clamp(1 - seatDelta * 1.35, 0, 1) : clamp(1 + seatDelta * 2.2, 0, 1);
 
-    // 항속 적합도: 여유는 조금 좋지만 과하면 중량 낭비.
+    // 항속 적합도: 이제 부족분은 좌석 쪽에서 값을 치르므로 여기서는 **과한 항속만**
+    // 본다 — 안 쓸 연료탱크와 구조를 지고 다니는 낭비다.
     const rangeDelta = (program.range - rfp.reqRange) / rfp.reqRange;
-    const rangeFit = rangeDelta >= 0 ? clamp(1 - Math.max(0, rangeDelta - 0.1) * 0.9, 0, 1) : clamp(1 + rangeDelta * 4, 0, 1);
+    const rangeFit = clamp(1 - Math.max(0, rangeDelta - 0.1) * 0.9, 0, 1);
 
-    const specFit = seatFit * 0.62 + rangeFit * 0.38;
+    // 감톤 운항 자체의 부담 — 역풍·고온에 날마다 여유가 없고, 화물을 못 싣는다.
+    // 좌석 수로 이미 값을 치른 위에 얹는 별도 감점이라 작게 잡는다.
+    const restricted = 1 - clamp(seatFactor, 0, 1);
 
-    // 가격: 동급 기준가 대비 실효가격.
+    const specFit = clamp(seatFit * 0.62 + rangeFit * 0.38 - restricted * 0.15, 0, 1);
+
+    // 가격: 동급 기준가 대비 실효가격 — 단, **좌석당**으로 견준다.
+    // 기체당으로 재면 요구보다 작고 싼 기체가 어느 노선에서나 가격 점수를 쓸어간다.
+    // 항공사가 사는 건 기체가 아니라 수송력이라, 같은 임무를 작은 기체로 하려면
+    // 더 많이 사거나 더 자주 띄워야 한다. 감톤으로 못 채우는 좌석은 여기서도 안 쳐준다.
     const refPrice = seg.listPriceBase * Math.pow(rfp.reqSeats / seg.seats.ref, 0.95);
     const effPrice = program.listPrice * (1 - discount);
-    const priceScore = clamp(1.6 - effPrice / refPrice, 0, 1);
+    // 계약가는 그대로 깎이지만, **점수로 쳐주는 할인은 체감한다**.
+    // 어느 선을 넘으면 항공사가 그 가격을 그대로 신뢰하지 않는다 — 20년을 함께 갈
+    // 제조사가 원가 밑으로 파는 건 부품·지원의 불안 요인이고, 경쟁사도 그쯤이면
+    // 맞불을 놓는다. 이 체감이 없으면 "최대한 깎기"가 언제나 정답이 되어 할인이
+    // 결정이 아니라 슬라이더가 된다.
+    const scored = discount <= DISCOUNT_KNEE ? discount : DISCOUNT_KNEE + (discount - DISCOUNT_KNEE) * DISCOUNT_FADE;
+    const scoredPrice = program.listPrice * (1 - scored);
+    const pricePerSeat = scoredPrice / Math.max(1, usableSeats);
+    const refPerSeat = refPrice / Math.max(1, rfp.reqSeats);
+    const priceScore = clamp(PRICE_INTERCEPT - pricePerSeat / refPerSeat, 0, 1);
 
-    // 연비: 연료지수가 높을수록 이 항목의 가중치가 커진다.
-    const effScore = clamp(program.efficiency / 100, 0, 1);
+    // ── 운용 경제성 ──
+    // 편당 원가와 좌석마일 원가를 따로 잰다. 어느 쪽이 중요한지는 노선이 정한다.
+    const fuelIndex = state.market.fuelIndex;
+    const tripCost = tripCostOf(program.seats, rfp.reqRange, program.efficiency, fuelIndex);
+    const refTrip = tripCostOf(rfp.reqSeats, rfp.reqRange, REF_EFFICIENCY, fuelIndex);
+    const tripScore = clamp(1.6 - tripCost / refTrip, 0, 1);
+
+    // 좌석마일은 **채울 수 있는** 좌석으로 나눈다 — 감톤 운항의 대가가 여기서 드러난다.
+    const casm = tripCost / Math.max(1, usableSeats);
+    const refCasm = refTrip / Math.max(1, rfp.reqSeats);
+    const casmScore = clamp(1.6 - casm / refCasm, 0, 1);
+
+    // 노선 밀도: 좌석이 크고 거리가 짧을수록 굵은 노선이다.
+    // 굵은 노선은 좌석마일로 싸움이 나고(빈 자리가 안 생긴다), 얇은 장거리 노선은
+    // 편당 원가가 결정한다(못 채울 걸 아니까 큰 기체를 띄우는 것 자체가 손해다).
+    const density = (rfp.reqSeats / seg.seats.ref) / clamp(rfp.reqRange / seg.range.ref, 0.35, 3);
+    const casmWeight = clamp(0.28 + density * 0.34, 0.22, 0.78);
+    const opScore = casmScore * casmWeight + tripScore * (1 - casmWeight);
+
     const comfortScore = clamp(program.comfort / 100, 0, 1);
     const repScore = clamp(state.reputation / 100, 0, 1);
     const relScore = clamp((state.relations[rfp.airlineId] ?? 40) / 100, 0, 1);
@@ -214,7 +412,8 @@
     const w = {
       spec: 0.3,
       price: 0.27 * rfp.priceSensitivity,
-      eff: 0.17 * clamp(state.market.fuelIndex, 0.4, 2.2),
+      // 유가 민감도는 편당 원가 안으로 들어갔다 — 여기서 또 곱하면 이중 계상이다.
+      op: 0.2,
       comfort: 0.07 * rfp.prestige,
       rep: 0.12,
       rel: 0.09,
@@ -225,7 +424,7 @@
       (100 *
         (specFit * w.spec +
           priceScore * w.price +
-          effScore * w.eff +
+          opScore * w.op +
           comfortScore * w.comfort +
           repScore * w.rep +
           relScore * w.rel)) /
@@ -251,11 +450,19 @@
       parts: {
         spec: Math.round(specFit * 100),
         price: Math.round(priceScore * 100),
-        eff: Math.round(effScore * 100),
+        op: Math.round(opScore * 100),
         comfort: Math.round(comfortScore * 100),
         rep: Math.round(repScore * 100),
         rel: Math.round(relScore * 100),
         common: Math.round(commonality * 100),
+      },
+      // 왜 그 점수가 나왔는지 화면이 풀어 쓸 수 있게 근거를 함께 싣는다.
+      economics: {
+        seatFactor: Math.round(seatFactor * 1000) / 1000,
+        usableSeats: Math.round(usableSeats),
+        trip: Math.round(tripScore * 100),
+        casm: Math.round(casmScore * 100),
+        casmWeight: Math.round(casmWeight * 100),
       },
       terms: t,
       termBonus: Math.round(termBonus * 10) / 10,

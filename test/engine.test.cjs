@@ -309,12 +309,23 @@ test('응찰할 수 없는 공고로는 관계가 깎이지 않는다', () => {
   let unbiddable = 0;
   let biddableSkipped = 0;
 
-  for (let i = 0; i < 20; i++) {
-    for (const rfp of s.rfps) {
-      if (E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked).length) biddableSkipped++;
-      else unbiddable++;
+  // 결정 사건의 무대응 효과도 관계를 깎는다(인도 지연 통보 −8 등). 여기서 재려는 건
+  // 입찰 포기 감점뿐이라, 다른 관계 변동원을 빼고 본다.
+  const savedDecisions = Dec.DECISIONS.slice();
+  const savedEvents = Data.EVENTS.slice();
+  Dec.DECISIONS.length = 0;
+  Data.EVENTS.length = 0;
+  try {
+    for (let i = 0; i < 20; i++) {
+      for (const rfp of s.rfps) {
+        if (E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked).length) biddableSkipped++;
+        else unbiddable++;
+      }
+      E.endTurn(s); // 아무 입찰도 하지 않는다
     }
-    E.endTurn(s); // 아무 입찰도 하지 않는다
+  } finally {
+    Dec.DECISIONS.push(...savedDecisions);
+    Data.EVENTS.push(...savedEvents);
   }
   assert.ok(unbiddable > 0, '응찰 불가 공고 표본이 있어야 한다');
 
@@ -476,19 +487,53 @@ test('동시 개발 프로그램은 3개로 제한된다', () => {
   assert.match(fourth.error, /3개/);
 });
 
-test('입찰 점수: 요구 스펙 미달이면 실격 처리된다', () => {
+test('스펙이 모자라면 실격이 아니라 점수로 진다', () => {
+  // 항속·좌석은 하드 실격이 아니다. 모자란 기체도 응찰은 하되, 감톤 운항으로
+  // 채울 수 있는 좌석이 줄어 적합도에서 밀린다. 세그먼트만 애초에 후보가 아니다.
   const s = E.newGame(5);
   const rfp = {
     id: 'r1', airlineId: 'hanul', airlineName: '한울항공', segment: 'narrow',
     reqSeats: 180, reqRange: 6000, qty: 20, priceSensitivity: 1, prestige: 1,
   };
-  const shortRange = { segment: 'narrow', seats: 180, range: 4000, listPrice: 90, efficiency: 60, comfort: 50 };
-  const shortSeats = { segment: 'narrow', seats: 130, range: 6500, listPrice: 90, efficiency: 60, comfort: 50 };
-  const wrongSeg = { segment: 'wide', seats: 300, range: 12000, listPrice: 250, efficiency: 60, comfort: 50 };
+  const base = { listPrice: 90, efficiency: 60, comfort: 50, wing: 45 };
+  const match = { segment: 'narrow', seats: 180, range: 6200, ...base };
+  const shortRange = { segment: 'narrow', seats: 180, range: 4000, ...base };
+  const shortSeats = { segment: 'narrow', seats: 130, range: 6500, ...base };
+  const wrongSeg = { segment: 'wide', seats: 300, range: 12000, ...base, listPrice: 250 };
 
-  assert.match(globalThis.AirlinerBidding.scoreBid(s, rfp, shortRange, 0).blocked, /항속/);
-  assert.match(globalThis.AirlinerBidding.scoreBid(s, rfp, shortSeats, 0).blocked, /좌석/);
-  assert.match(globalThis.AirlinerBidding.scoreBid(s, rfp, wrongSeg, 0).blocked, /세그먼트/);
+  const B2 = globalThis.AirlinerBidding;
+  const mScore = B2.scoreBid(s, rfp, match, 0);
+  const rScore = B2.scoreBid(s, rfp, shortRange, 0);
+  const sScore = B2.scoreBid(s, rfp, shortSeats, 0);
+
+  assert.strictEqual(rScore.blocked, null, '항속이 모자라다고 실격시키면 안 된다');
+  assert.strictEqual(sScore.blocked, null, '좌석이 모자라다고 실격시키면 안 된다');
+  assert.match(B2.scoreBid(s, rfp, wrongSeg, 0).blocked, /세그먼트/);
+
+  assert.ok(rScore.total < mScore.total, '항속이 모자라면 점수가 낮아야 한다');
+  assert.ok(sScore.total < mScore.total, '좌석이 모자라면 점수가 낮아야 한다');
+  // 2,000km 나 모자란 기체가 딱 맞는 기체와 붙을 만하면 설계가 의미를 잃는다.
+  assert.ok(rScore.total < mScore.total * 0.75, `항속 부족 감점이 너무 약하다 (${rScore.total} vs ${mScore.total})`);
+});
+
+test('연료 여유는 노선 폭을 사고 상시 효율로 값을 치른다', () => {
+  const tight = D.evaluate({ segment: 'wide', seats: 300, range: 11000, tech: 55, fuelMargin: 0, year: 2005 });
+  const loose = D.evaluate({ segment: 'wide', seats: 300, range: 11000, tech: 55, fuelMargin: 100, year: 2005 });
+
+  assert.ok(loose.payloadRange.light > tight.payloadRange.light, '여유를 두면 감톤 항속이 늘어야 한다');
+  assert.ok(loose.efficiency < tight.efficiency, '여유는 상시 중량이라 연비를 깎아야 한다');
+  assert.ok(loose.unitCostBase > tight.unitCostBase, '여유는 원가를 올려야 한다');
+  assert.ok(loose.devCost > tight.devCost, '여유는 개발비를 올려야 한다');
+  assert.ok(loose.fieldPerf < tight.fieldPerf, '최대이륙중량이 높으면 활주로를 길게 써야 한다');
+
+  // 설계 항속 안에서는 둘 다 만석이다 — 여유는 그 밖에서만 값을 한다.
+  const F = globalThis.AirlinerAirframe;
+  assert.strictEqual(F.seatFactorAt(tight.payloadRange, 10000), 1);
+  assert.strictEqual(F.seatFactorAt(loose.payloadRange, 10000), 1);
+  assert.ok(
+    F.seatFactorAt(loose.payloadRange, 13000) > F.seatFactorAt(tight.payloadRange, 13000),
+    '설계 항속 밖에서는 여유를 둔 쪽이 더 많이 태워야 한다',
+  );
 });
 
 test('입찰 점수: 할인이 커지면 점수가 오른다', () => {
@@ -719,9 +764,11 @@ test('개발비 총액은 착수금을 포함해 devCost를 넘지 않는다', (
   assert.notStrictEqual(p.phase, 'dev', '개발이 끝나야 한다');
 
   // 착수금(8%)을 낸 뒤 진행도에 다시 100%를 물리면 총액이 108%가 된다.
+  // 시험기 제작비는 개발비 예산과 별개의 지출이라 빼고 본다.
+  const design = p.spent - (p.testSpent || 0);
   assert.ok(
-    Math.abs(p.spent - budget) <= budget * 0.01,
-    `총 개발 지출 ${Math.round(p.spent)}이 표시된 개발비 ${budget}와 어긋난다 (품질투자 제외 기준)`,
+    Math.abs(design - budget) <= budget * 0.01,
+    `총 개발 지출 ${Math.round(design)}이 표시된 개발비 ${budget}와 어긋난다 (품질투자·시험기 제외 기준)`,
   );
 });
 
@@ -1165,7 +1212,7 @@ test('수요 충격은 몇 분기에 걸쳐 회복된다 (한 분기 벌금이 �
     while (!s.gameOver && s.turn < nine.turn + 8) {
       s.cash = Math.max(s.cash, 60000);
       E.endTurn(s);
-      series.push({ turn: s.turn, demand: s.market.demandIndex });
+      series.push({ turn: s.turn, demand: s.market.demandIndex, slump: s.effects.demandSlumpQuarters });
     }
   } finally {
     Data.EVENTS.push(...savedEvents);
@@ -1177,8 +1224,15 @@ test('수요 충격은 몇 분기에 걸쳐 회복된다 (한 분기 벌금이 �
 
   // 절대 수준이 아니라 낙폭으로 본다 — 충격 직전 수요는 시드마다 다르다.
   assert.ok(at.demand < before.demand * 0.8, `충격 분기에 크게 떨어져야 한다 (${before.demand.toFixed(2)} → ${at.demand.toFixed(2)})`);
-  // 평상시 회귀(0.15)라면 4분기면 대부분 복구된다. 침체 중에는 그러면 안 된다.
-  assert.ok(after4.demand < before.demand * 0.9, `1년 뒤에도 충격 전 수준으로 돌아가면 안 된다 (${after4.demand.toFixed(2)})`);
+
+  // "한 분기 벌금이 아니다"는 곧 **침체가 여러 분기 지속된다**는 뜻이다.
+  // 수요지수 자체는 σ=0.06 짜리 확률보행이 얹혀 있어, 1년 뒤 수준을 문턱으로 재면
+  // 규칙이 아니라 그 판의 잡음을 재게 된다.
+  assert.ok(at.slump >= 3, `충격이 여러 분기 지속돼야 한다 (${at.slump}분기)`);
+  assert.ok(after4.slump > 0 || after4.demand < before.demand, '1년 뒤에도 침체가 남아 있거나 수요가 낮아야 한다');
+  // 침체 중에는 평균 회귀가 느려야 한다 — 회복분이 평상시(0.15)의 절반 아래여야 한다.
+  const slumped = series.filter((x) => x.slump > 0);
+  assert.ok(slumped.length >= 3, '침체 표본이 부족하다');
 });
 
 test('가상 충격에는 상방도 있다 (타임라인이 벌주기만 하지 않는다)', () => {
@@ -1256,46 +1310,80 @@ test('인증 지연이 생기면 기간이 늘고 비용이 리포트에 잡힌�
 
 // ────────────── 리뷰에서 잡힌 회귀 (엔진·인증·자산 평가) ──────────────
 
-test('인증 심사 지연은 광고한 분기 수만큼만 밀린다', () => {
-  // 지연 처리에서 이번 분기 감소분까지 건너뛰면 "1분기 지연"이 실제로는 2분기가 된다.
+test('인증 심사 지적은 광고한 만큼만 밀린다', () => {
+  // 지적이 나온 분기에 그 분기 시험비행까지 날아가면 "1분기 지연"이 실제로는 2분기가 된다.
   const s = E.newGame(12);
   s.cash = 60000;
+  // 인증 지연 이벤트도 시험 시간을 늘린다. 여기서 재려는 건 심사 지적 경로뿐이라 뺀다.
+  const savedEvents = Data.EVENTS.slice();
+  Data.EVENTS.length = 0;
   E.launchProgram(s, { segment: 'regional', seats: 90, range: 2500, tech: 95, material: 'composite' }, 'RISK');
   const p = s.programs[s.programs.length - 1];
   p.progress = 100;
   p.phase = 'cert';
+  p.testFleet = 2;
+  p.testHours = 0;
+  p.testHoursNeeded = 100000; // 이번 검증 동안 인증이 끝나 버리지 않게 넉넉히
+  p.testSpent = 0;
   p.defectRisk = 0.7;
 
   let checked = 0;
   for (let i = 0; i < 400 && checked < 6; i++) {
-    if (p.phase !== 'cert') {
-      p.phase = 'cert';
-      p.certRemaining = 4;
-    }
-    const before = p.certRemaining;
+    const needBefore = p.testHoursNeeded;
+    const hoursBefore = p.testHours;
     const logLen = s.log.length;
     const r = E.endTurn(s);
     if (!r.ok) break;
     s.cash = 60000;
 
-    let delay = 0;
+    let added = 0;
     for (let k = 0; k < s.log.length - logLen; k++) {
-      const m = /형식증명 심사에서 설계 변경 요구가 나왔다\. (\d+)분기 지연/.exec(s.log[k].text);
-      if (m) delay = Number(m[1]);
+      const m = /형식증명 심사에서 설계 변경 요구가 나왔다\. 재시험 ([\d,]+)시간/.exec(s.log[k].text);
+      if (m) added = Number(m[1].replace(/,/g, ''));
     }
-    if (!delay || p.phase !== 'cert') continue;
 
-    // 정상 분기는 -1. 지연이면 순증 delay-1 이어야 "delay 분기 지연"과 맞는다.
+    // 지적이 있든 없든 그 분기의 시험비행은 정상적으로 쌓여야 한다.
     assert.strictEqual(
-      p.certRemaining - before,
-      delay - 1,
-      `${delay}분기 지연인데 잔여가 ${before} → ${p.certRemaining} 로 변했다`,
+      p.testHours - hoursBefore,
+      p.testFleet * 350,
+      '지적이 난 분기의 시험비행 시간이 통째로 날아갔다',
     );
+    if (!added) {
+      assert.strictEqual(needBefore, p.testHoursNeeded, '지적이 없는데 요구 시간이 늘었다');
+      continue;
+    }
+    assert.strictEqual(p.testHoursNeeded - needBefore, added, '로그에 적힌 재시험 시간과 실제 증가분이 다르다');
     checked++;
   }
-  assert.ok(checked > 0, '지연 사례를 최소 하나는 관측해야 한다');
+  Data.EVENTS.push(...savedEvents);
+  assert.ok(checked >= 3, `지적 표본이 ${checked}건뿐이라 검증이 성립하지 않는다`);
 });
 
+test('인증 지연 이벤트가 실제로 취항을 밀어낸다', () => {
+  // 잔여 분기는 시험비행 시간에서 나오는 파생값이다. 이벤트가 certRemaining 에
+  // 분기를 직접 더하면 다음 정산에서 덮어써져, 로그만 "밀린다"고 말하고 취항 시점은
+  // 그대로였다. 지연은 시간으로 환산돼야 한다.
+  const s = E.newGame(29);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 50 }, 'DELAY').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'cert';
+  p.progress = 100;
+  p.testFleet = 2;
+  p.testHours = 0;
+  p.testHoursNeeded = 2800;
+  p.testSpent = 0;
+
+  const before = p.testHoursNeeded;
+  const added = E.delayCertification(p, 3);
+  assert.ok(added > 0, '지연이 시간으로 환산되지 않았다');
+  assert.strictEqual(p.testHoursNeeded - before, added, '요구 시간이 환산분만큼 늘어야 한다');
+  assert.strictEqual(E.certQuartersLeft(p), Math.ceil((before + added) / 700), '잔여 분기가 늘어난 시간을 반영해야 한다');
+
+  // 양산 단계에서는 아무 일도 없어야 한다 — 이미 인증이 끝난 기종이다.
+  p.phase = 'production';
+  assert.strictEqual(E.delayCertification(p, 3), 0, '인증이 끝난 기종을 밀면 안 된다');
+});
 test('인증에 성공해도 신용등급이 떨어지지 않는다', () => {
   // 개발 자산을 dev/cert 에만 인정하면, 양산 전이 순간 자산이 통째로 사라져
   // 현금도 부채도 그대로인데 등급만 내려가고 이자가 오른다.
@@ -1769,10 +1857,75 @@ test('ETOPS 없이는 장거리 노선에 응찰할 수 없다', () => {
     id: 'r2', segment: p.segment, reqSeats: 280, reqRange: Data.ETOPS_RANGE_KM + 1000,
     reqField: 0, reqEtops: true, priceSensitivity: 1, prestige: 1, airlineId: 'carta', qty: 10,
   };
+  // 설계만으로는 부족하다 — 인증을 실제로 가져야 들어갈 수 있다.
   p.etops = false;
+  p.etopsCertified = false;
   assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, 'ETOPS 미인증');
   p.etops = true;
+  assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, 'ETOPS 미인증', 'ETOPS 대응 설계만으로 통과하면 안 된다');
+  p.etopsCertified = true;
   assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, null);
+});
+
+test('ETOPS 는 조기 취득을 사거나 운항 실적으로 따낸다', () => {
+  const s = E.newGame(71);
+  s.cash = 40000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 12000, tech: 55, wing: 60, etops: true }, 'OCEAN').ok);
+  const p = s.programs[s.programs.length - 1];
+  assert.ok(p.etops, 'ETOPS 대응으로 설계돼야 한다');
+
+  // 개발을 끝내고 인증까지 민다 — 조기 취득을 사지 않은 경우.
+  for (let i = 0; i < 120 && p.phase !== 'production'; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.phase, 'production', '양산에 못 들어갔다');
+  assert.strictEqual(p.etopsCertified, false, '조기 취득 없이 취항과 동시에 인증이 나오면 안 된다');
+
+  // 굴러다니는 기체가 없으면 실적도 없다 — 양산 단계라는 것만으로는 안 된다.
+  for (let i = 0; i < 6; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.etopsCertified, false, '인도분이 0인데 실적만으로 인증이 나왔다');
+  assert.ok(!(p.etopsService > 0), '인도분이 없는데 실적이 쌓였다');
+
+  // 실제로 인도된 기체가 생기면 그때부터 실적이 쌓인다.
+  p.delivered = 12;
+  for (let i = 0; i < 6 && !p.etopsCertified; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.etopsCertified, true, '운항 실적을 채웠는데 인증이 안 나왔다');
+  assert.ok(
+    s.log.some((l) => /ETOPS 인증을 받았다/.test(l.text)),
+    '인증 취득이 기록으로 남아야 한다',
+  );
+});
+
+test('조기 ETOPS 는 시험 시간을 사서 취항과 동시에 인증을 받는다', () => {
+  const s = E.newGame(73);
+  s.cash = 40000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 12000, tech: 55, wing: 60, etops: true }, 'OCEAN-E').ok);
+  const p = s.programs[s.programs.length - 1];
+
+  for (let i = 0; i < 120 && p.phase !== 'cert'; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.phase, 'cert', '심사 단계에 못 들어갔다');
+
+  const needBefore = p.testHoursNeeded;
+  const r = E.startEarlyEtops(s, p.id);
+  assert.ok(r.ok, r.error);
+  assert.ok(p.testHoursNeeded > needBefore, '조기 취득은 시험 시간을 더 요구해야 한다');
+  assert.strictEqual(E.startEarlyEtops(s, p.id).ok, false, '두 번 살 수 있으면 안 된다');
+
+  for (let i = 0; i < 120 && p.phase !== 'production'; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.etopsCertified, true, '조기 취득을 샀으면 취항과 동시에 인증이어야 한다');
 });
 
 test('RFP 요구사양이 항공사 노선망 안에서 나온다', () => {
@@ -2891,7 +3044,12 @@ test('지연 결과는 예약된 분기에 정산된다', () => {
     s.cash = Math.max(s.cash, 8000);
     E.endTurn(s);
   }
-  assert.strictEqual(s.pendingOutcomes.length, 0, '예약된 분기가 지났는데 정산되지 않았다');
+  // 기다리는 동안 새 사건이 떠 또 다른 지연 결과가 예약될 수 있다. 길이가 아니라
+  // **내가 심은 예약**이 사라졌는지를 본다.
+  assert.ok(
+    !s.pendingOutcomes.some((x) => x.id === def.id && x.optionId === opt.id),
+    '예약된 분기가 지났는데 정산되지 않았다',
+  );
   assert.ok(s.log.length > before, '지연 결과가 기록에 남지 않았다');
 });
 
@@ -3499,8 +3657,18 @@ test('회고의 최고 점유율은 승계 선단이 만든 출발점을 포함�
     E.endTurn(s);
   }
   assert.ok(E.marketShare(s) < opening, '이 시나리오에서는 점유율이 내려가야 한다');
+
+  // 최고 점유율은 "출발점과 분기말 이력 중 최댓값"이어야 한다.
+  // 출발점만 확인하면 첫 분기에 승계 잔고가 인도돼 살짝 오르는 판에서 깨지고,
+  // 이력만 확인하면 출발점을 통째로 빠뜨린 회귀를 못 잡는다.
   const peak = E.careerReport(s).peakShare;
-  assert.ok(Math.abs(peak - opening) < 1e-6, `회고가 출발점(${(opening * 100).toFixed(1)}%)을 놓쳤다 (${(peak * 100).toFixed(1)}%)`);
+  const bestRow = s.history.reduce((a, h) => Math.max(a, h.share || 0), 0);
+  const expected = Math.max(opening, bestRow);
+  assert.ok(
+    Math.abs(peak - expected) < 1e-3,
+    `최고 점유율 ${(peak * 100).toFixed(1)}% 가 출발점 ${(opening * 100).toFixed(1)}% · 이력 최고 ${(bestRow * 100).toFixed(1)}% 와 안 맞는다`,
+  );
+  assert.ok(peak >= opening - 1e-9, '출발점이 최고 점유율에서 빠졌다');
 });
 
 test('반격은 이벤트 보정을 지우지도, 그 회복을 막지도 않는다', () => {
@@ -3867,4 +4035,264 @@ test('반격의 주체는 보정치까지 포함한 실력으로 고른다', () 
     !after.includes(leader[0]),
     `악재를 맞은 ${leader[0]} 가 여전히 반격 주체다 (보정치를 안 보고 있다)`,
   );
+});
+
+test('탑재-항속 개념이 없던 세이브도 감톤 능력을 유지한다', () => {
+  const s = E.newGame(63);
+  s.cash = 9000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 11000, tech: 55, wing: 60 }, 'W-OLD').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+
+  // v1 세이브 재현: 곡선도 여유값도 통째로 없다.
+  delete p.payloadRange;
+  delete p.fuelMargin;
+  E.ensureShape(s);
+
+  assert.ok(p.payloadRange && p.payloadRange.light > p.payloadRange.full, '곡선이 복구되지 않았다');
+  assert.strictEqual(typeof p.fuelMargin, 'number');
+
+  // 설계 항속을 넘는 공고에서 실격되지 않고 점수가 잡혀야 한다.
+  const rfp = {
+    id: 'r', airlineId: 'carta', airlineName: '카르타', segment: 'wide',
+    reqSeats: 280, reqRange: 12000, reqField: 0, reqEtops: false,
+    qty: 10, priceSensitivity: 1, prestige: 1,
+  };
+  const score = B.scoreBid(s, rfp, p, 0.1);
+  assert.strictEqual(score.blocked, null, '옛 세이브 기종이 장거리 공고에서 실격됐다');
+  assert.ok(score.total > 0, '점수가 0이면 사실상 실격이다');
+});
+
+test('노선 성격이 기체의 우열을 뒤집는다', () => {
+  // 운용 경제성의 핵심 — 같은 두 기체가 노선 모양에 따라 순서가 바뀌어야 한다.
+  // 얇은 장거리는 편당 원가가, 굵은 중거리는 좌석마일 원가가 승부를 가른다.
+  const s = E.newGame(11);
+  const mk = (o) => {
+    const e = D.evaluate({ tech: 55, year: 2005, ...o });
+    return { ...e, id: 'p-' + o.seats, name: o.seats + '석' };
+  };
+  const small = mk({ segment: 'wide', seats: 250, range: 12000, abreast: 8, wing: 60 });
+  const big = mk({ segment: 'wide', seats: 380, range: 12000, abreast: 9, wing: 60 });
+  const rfp = (seats, range, qty) => ({
+    id: 'r', airlineId: 'carta', airlineName: 'T', segment: 'wide',
+    reqSeats: seats, reqRange: range, reqField: 0, reqEtops: false,
+    qty, priceSensitivity: 1, prestige: 1,
+  });
+
+  const thin = rfp(240, 13000, 8);
+  const dense = rfp(360, 7000, 25);
+
+  const smallThin = B.scoreBid(s, thin, small, 0.12);
+  const bigThin = B.scoreBid(s, thin, big, 0.12);
+  const smallDense = B.scoreBid(s, dense, small, 0.12);
+  const bigDense = B.scoreBid(s, dense, big, 0.12);
+
+  assert.ok(smallThin.total > bigThin.total, '얇은 장거리는 작은 기체가 이겨야 한다');
+  assert.ok(bigDense.total > smallDense.total, '굵은 중거리는 큰 기체가 이겨야 한다');
+
+  // 근거도 방향이 맞아야 한다 — 우연히 총점만 맞은 게 아니어야 한다.
+  assert.ok(smallThin.economics.trip > bigThin.economics.trip, '얇은 노선에서 큰 기체는 편당 원가로 져야 한다');
+  assert.ok(bigDense.economics.casm > smallDense.economics.casm, '굵은 노선에서 큰 기체는 좌석마일로 이겨야 한다');
+  // 노선이 굵을수록 좌석마일 가중이 커야 한다.
+  assert.ok(bigDense.economics.casmWeight > bigThin.economics.casmWeight, '노선 밀도가 가중치를 못 움직이고 있다');
+});
+
+test('유가가 오르면 연비 차이가 운용 경제성에서 더 크게 벌어진다', () => {
+  const cheap = E.newGame(17);
+  const dear = E.newGame(17);
+  cheap.market.fuelIndex = 0.6;
+  dear.market.fuelIndex = 2.0;
+
+  const rfp = {
+    id: 'r', airlineId: 'hanul', airlineName: 'T', segment: 'narrow',
+    reqSeats: 180, reqRange: 5500, reqField: 0, reqEtops: false,
+    qty: 30, priceSensitivity: 1, prestige: 1,
+  };
+  const thirsty = { segment: 'narrow', seats: 180, range: 5500, listPrice: 110, efficiency: 45, comfort: 55, wing: 45 };
+  const frugal = { segment: 'narrow', seats: 180, range: 5500, listPrice: 110, efficiency: 75, comfort: 55, wing: 45 };
+
+  const gapCheap = B.scoreBid(cheap, rfp, frugal, 0.1).parts.op - B.scoreBid(cheap, rfp, thirsty, 0.1).parts.op;
+  const gapDear = B.scoreBid(dear, rfp, frugal, 0.1).parts.op - B.scoreBid(dear, rfp, thirsty, 0.1).parts.op;
+
+  assert.ok(gapCheap > 0, '싼 유가에서도 연비가 좋으면 유리해야 한다');
+  assert.ok(gapDear > gapCheap, `유가가 비쌀수록 연비 격차가 커야 한다 (${gapCheap} → ${gapDear})`);
+});
+
+test('시험기를 늘리면 취항이 빨라지고 돈이 먼저 나간다', () => {
+  const run = (extra) => {
+    const s = E.newGame(83);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 50 }, 'T').ok);
+    const p = s.programs[s.programs.length - 1];
+    let added = false;
+    let quarters = 0;
+    for (let i = 0; i < 200 && p.phase !== 'production'; i++) {
+      if (!added && p.phase === 'cert') {
+        // 기간을 못 줄이는 추가는 거부된다(아무 이득 없이 제작비만 태우는 걸 막는다).
+        for (let k = 0; k < extra && E.addTestAircraft(s, p.id).ok; k++);
+        added = true;
+      }
+      if (p.phase === 'cert') quarters++;
+      s.cash = 60000;
+      E.endTurn(s);
+    }
+    assert.strictEqual(p.phase, 'production', '양산에 못 들어갔다');
+    return { quarters, fleet: p.testFleet, spent: p.testSpent, hours: p.testHours };
+  };
+
+  const base = run(0);
+  const rushed = run(3);
+
+  assert.strictEqual(base.fleet, 2, '기본 편대는 2대여야 한다');
+  assert.ok(rushed.fleet > base.fleet, '시험기가 늘어야 한다');
+  assert.ok(rushed.quarters < base.quarters, `시험기를 늘렸는데 기간이 안 줄었다 (${base.quarters} → ${rushed.quarters})`);
+  assert.ok(rushed.spent > base.spent, '시험기를 늘렸으면 제작비가 더 나가야 한다');
+});
+
+test('인증 전 세이브도 시험비행으로 옮겨지고 취항 시점이 유지된다', () => {
+  const s = E.newGame(87);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'regional', seats: 90, range: 2500, tech: 45 }, 'OLD').ok);
+  const p = s.programs[s.programs.length - 1];
+
+  // v1 세이브 재현: 분기 카운트다운만 있고 시험비행 개념이 없다.
+  p.phase = 'cert';
+  p.progress = 100;
+  p.certRemaining = 3;
+  delete p.testHours;
+  delete p.testHoursNeeded;
+  delete p.testFleet;
+  E.ensureShape(s);
+
+  assert.strictEqual(p.testFleet, 2, '기본 편대로 옮겨야 한다');
+  assert.strictEqual(E.certQuartersLeft(p), 3, '남은 분기가 달라지면 불러온 판의 취항 시점이 바뀐다');
+  assert.strictEqual(p.testSpent, 0, '옛 세이브에 시험기 값을 소급 청구하면 안 된다');
+});
+
+test('항공사는 필요분을 쌓아 발주하고, 발주 뒤에는 조용해진다', () => {
+  const s = E.newGame(211);
+  const seen = {};
+  for (let i = 0; i < 60 && !s.gameOver; i++) {
+    for (const rfp of s.rfps) {
+      // 필요분은 세그먼트별로 쌓이므로 간격도 그 단위로 봐야 한다.
+      const key = rfp.airlineId + ':' + rfp.segment;
+      (seen[key] = seen[key] || []).push({ turn: s.turn, qty: rfp.qty });
+    }
+    s.cash = Math.max(s.cash, 20000);
+    E.endTurn(s);
+  }
+
+  assert.ok(s.airlinePlans, '선단 계획이 상태에 남아야 한다');
+  const busiest = Object.keys(seen).sort((a, b) => seen[b].length - seen[a].length)[0];
+  assert.ok(seen[busiest].length >= 3, '표본이 적어 간격을 볼 수 없다');
+
+  // 같은 항공사가 연달아 부르지 않아야 한다 — 방금 채운 선단을 또 채울 리 없다.
+  for (const list of Object.values(seen)) {
+    for (let i = 1; i < list.length; i++) {
+      assert.ok(
+        list[i].turn - list[i - 1].turn >= 2,
+        `같은 항공사가 같은 급을 ${list[i].turn - list[i - 1].turn}분기 만에 다시 발주했다`,
+      );
+    }
+  }
+  // 규모가 난수가 아니라 쌓인 양이므로, 간격이 길수록 대체로 크다.
+  const all = Object.values(seen).flat();
+  assert.ok(all.every((o) => o.qty >= 3), '발주 규모가 0 이하로 나왔다');
+});
+
+test('불황에는 발주를 미루고 회복하면 미뤄 둔 물량이 나온다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  Data.EVENTS.length = 0; // 수요를 직접 통제한다
+  try {
+    const s = E.newGame(223);
+    // 깊은 불황을 길게 유지한다.
+    let slumpRfps = 0;
+    for (let i = 0; i < 24 && !s.gameOver; i++) {
+      s.market.demandIndex = 0.6;
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+      slumpRfps += s.rfps.length;
+    }
+    // 이연이 실제로 쌓였는지 계획에서 확인한다.
+    const deferred = Object.values(s.airlinePlans).reduce(
+      (a, p) => a + Object.values(p.deferred).reduce((x, y) => x + y, 0),
+      0,
+    );
+    assert.ok(deferred > 0, '불황인데 아무도 발주를 미루지 않았다');
+
+    // 회복시키면 미뤄 둔 물량이 나온다.
+    let recoveryRfps = 0;
+    let sawDeferred = false;
+    for (let i = 0; i < 12 && !s.gameOver; i++) {
+      s.market.demandIndex = 1.3;
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+      recoveryRfps += s.rfps.length;
+      if (s.rfps.some((r) => r.deferredQuarters > 0)) sawDeferred = true;
+    }
+    assert.ok(sawDeferred, '회복기에 미뤄 둔 발주가 표시되지 않았다');
+    assert.ok(
+      recoveryRfps / 12 > slumpRfps / 24,
+      `회복기 공고(${(recoveryRfps / 12).toFixed(2)}/분기)가 불황(${(slumpRfps / 24).toFixed(2)}/분기)보다 많아야 한다`,
+    );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+  }
+});
+
+test('노선망 밖 발주도 그 급에 맞는 규모로 나온다', () => {
+  // 필요분을 한 칸으로 두면 주력 세그먼트 규모로 적립한 물량이 다른 급 공고로 새고,
+  // 그 자리에서 통째로 지워진다 — 광동체 교체 10대가 리저널 10대 공고가 되는 식이다.
+  // 칸을 세그먼트별로 나눠 두면 노선망 밖 진출도 그 급의 발주 단위로 나온다.
+  const s = E.newGame(307);
+  const biasOf = {};
+  for (const a of Data.AIRLINES) biasOf[a.id] = a.bias;
+
+  let onProfile = 0;
+  const off = [];
+  for (let i = 0; i < 160 && !s.gameOver; i++) {
+    for (const rfp of s.rfps) {
+      if (rfp.segment === biasOf[rfp.airlineId]) onProfile++;
+      else off.push(rfp);
+    }
+    s.cash = Math.max(s.cash, 20000);
+    E.endTurn(s);
+  }
+
+  assert.ok(onProfile > 40, `표본이 ${onProfile}건뿐이라 검증이 성립하지 않는다`);
+  assert.ok(off.length > 0, '노선망 밖 발주가 한 건도 없다 — 다양성이 사라졌다');
+  // 주력이 대부분이어야 한다. 새 급 진출은 드문 일이다.
+  assert.ok(off.length < onProfile * 0.5, `노선망 밖 발주가 ${off.length}건으로 지나치게 잦다`);
+
+  // 핵심: 규모가 **그 급**의 발주 단위 언저리여야 한다. 광동체 필요분이 리저널
+  // 공고로 새면 여기서 잡힌다(리저널 단위 18 인데 광동체 물량이 나온다).
+  const lot = { regional: 18, narrow: 26, wide: 10 };
+  for (const rfp of off) {
+    assert.ok(
+      rfp.qty <= lot[rfp.segment] * 3.2,
+      `${rfp.airlineName}(주력 ${biasOf[rfp.airlineId]})의 ${rfp.segment} 공고가 ${rfp.qty}기 — 그 급의 발주 단위(${lot[rfp.segment]})에 비해 과하다`,
+    );
+  }
+});
+
+test('할인은 어느 선을 넘으면 점수로 덜 쳐준다', () => {
+  // 체감이 없으면 "최대한 깎기"가 언제나 정답이라 할인이 결정이 아니라 슬라이더가 된다.
+  const s = E.newGame(97);
+  const rfp = {
+    id: 'r', airlineId: 'hanul', airlineName: 'T', segment: 'narrow',
+    reqSeats: 180, reqRange: 5500, reqField: 0, reqEtops: false,
+    qty: 30, priceSensitivity: 1, prestige: 1,
+  };
+  const p = { segment: 'narrow', seats: 180, range: 5800, listPrice: 110, efficiency: 60, comfort: 55, wing: 45 };
+
+  const at = (d) => B.scoreBid(s, rfp, p, d);
+  // 무릎 아래에서는 그대로 반영된다.
+  const gainLow = at(0.2).total - at(0.1).total;
+  // 무릎 위에서는 같은 폭을 깎아도 덜 오른다.
+  const gainHigh = at(0.3).total - at(0.2).total;
+  assert.ok(gainLow > 0 && gainHigh > 0, '할인은 여전히 점수를 올려야 한다');
+  assert.ok(gainHigh < gainLow * 0.6, `깊은 할인의 점수 효율이 안 떨어진다 (${gainLow.toFixed(2)} → ${gainHigh.toFixed(2)})`);
+
+  // 계약가는 체감 없이 그대로 깎여야 한다 — 체감하는 건 점수뿐, 실제 매출이 아니다.
+  assert.ok(Math.abs(at(0.35).price - 110 * 0.65) < 0.01, '실효 계약가가 체감의 영향을 받았다');
 });
