@@ -256,6 +256,149 @@
    * 아래 이벤트는 거기에 얹히는 보정치(drift)만 움직인다.
    */
 
+  /**
+   * 애프터마켓 — 부품·정비 사업.
+   *
+   * 지금까지 매출은 오직 신규 인도였다. 그래서 개발 공백기에는 경영할 거리가 없고
+   * 후속기 하나에 회사가 통째로 걸린다. 실제 제조사 이익의 큰 몫은 이미 팔아 둔
+   * 기체에서 나온다 — 굴러다니는 기체가 많을수록 안정적으로 들어오는 돈이다.
+   *
+   * 게임에서는 "초반의 인도 노력이 후반의 안정 수익으로 복리가 된다"는 장치다.
+   * 대당 금액이 작아야 한다 — 크면 한 번 팔고 나서 아무것도 안 해도 되는 게임이 된다.
+   */
+  // 인도 1기당 분기 수익 (M$). 이 값과 아래 투자비는 함께 움직여야 한다 — 처음
+  // 잡았던 0.085/900/2400 조합은 투자 회수에 67분기가 걸려, 고를 이유가 없는
+  // 함정 선택지였다. 지금은 선단 400기 기준 약 20분기에 회수된다.
+  const AFTERMARKET_PER_UNIT = 0.1;
+
+  const AFTERMARKET_TIERS = {
+    none: {
+      id: 'none',
+      name: '위탁 정비',
+      hint: '투자 없음. 부품 마진만 얇게 남는다',
+      cost: 0,
+      mult: 1,
+      relation: 0,
+    },
+    regional: {
+      id: 'regional',
+      name: '지역 정비 거점',
+      hint: '거점을 세워 마진을 늘리고 고객 관계를 얻는다',
+      cost: 500,
+      mult: 1.6,
+      relation: 2,
+    },
+    global: {
+      id: 'global',
+      name: '글로벌 서비스망',
+      hint: '전 세계 부품·정비를 직접 굴린다. 비싸지만 선단이 클수록 값을 한다',
+      cost: 1100,
+      mult: 2.3,
+      relation: 4,
+    },
+  };
+
+  const AFTERMARKET_ORDER = ['none', 'regional', 'global'];
+
+  /**
+   * 화물형 개조 사업.
+   *
+   * 여객 수요가 꺾이면 할 게 없어지는 구조를 깬다 — 화물 수요는 여객과 다르게 움직이고,
+   * 침체기에 오히려 늘기도 한다. 실제로 여객기 노후분의 화물기 개조는 제조사·개조사의
+   * 불황기 버팀목이었다.
+   */
+  const FREIGHTER = {
+    /** 개조 프로그램 착수비 (원 기종 개발비 대비) */
+    devRate: 0.12,
+    /** 착수 후 사업이 서기까지 걸리는 분기 */
+    quarters: 4,
+    /** 인도 1기당 분기 수익 (M$) */
+    perUnit: 0.09,
+    /** 여객 수요 침체 중에는 화물이 버틴다 */
+    slumpMult: 1.8,
+  };
+
+  /**
+   * 입찰 조건 — 할인율 말고 무엇을 걸 수 있나.
+   *
+   * 할인 슬라이더 하나뿐일 때는 응찰만 하면 88% 이겼다(측정치). 결정이 하나면
+   * 최적값이 하나이기 때문이다. 아래 두 축은 각각 **이미 있는 자원**에 값을 매긴다 —
+   * 인도 약속은 라인 여력에, 금융 조건은 현금흐름에.
+   *
+   * bonus 는 입찰 점수(0~100 척도)에 그대로 더해진다. 분할 판정 폭이 ±4점이라
+   * 6.5점이면 판을 뒤집을 수 있다 — 대신 못 지키면 위약금과 관계 하락이 따른다.
+   */
+  const BID_PLEDGES = {
+    standard: {
+      id: 'standard',
+      name: '표준 인도',
+      hint: '통상 일정. 약속도 위약금도 없다',
+      bonus: 0,
+      dueQuarters: 14,
+      penaltyRate: 0,
+      priority: 0,
+    },
+    early: {
+      id: 'early',
+      name: '조기 인도 약속',
+      hint: '7분기 안에 다 넘긴다. 넘길 때까지 분기마다 위약금 1.5%',
+      bonus: 2,
+      dueQuarters: 7,
+      penaltyRate: 0.015,
+      priority: 1,
+    },
+    priority: {
+      id: 'priority',
+      name: '최우선 인도 약속',
+      hint: '4분기 안에 다 넘긴다. 넘길 때까지 분기마다 위약금 3.5%',
+      bonus: 4,
+      dueQuarters: 4,
+      penaltyRate: 0.035,
+      priority: 2,
+    },
+  };
+
+  /**
+   * 금융 조건. 같은 가격이라도 **언제 받느냐**가 다르다.
+   *   cash   — 선수금을 두 배로 당겨 받는다. 항공사는 싫어한다.
+   *   normal — 기준.
+   *   vendor — 우리가 대금을 빌려준다. 항공사는 좋아하고, 현금은 8분기에 걸쳐 들어온다.
+   * 실제로 제조사 금융(vendor financing)은 수주전의 핵심 무기이자 제조사를 무너뜨린
+   * 원인이기도 하다.
+   */
+  const BID_FINANCING = {
+    cash: {
+      id: 'cash',
+      name: '선수금 확대',
+      hint: '계약 즉시 두 배로 받는다. 점수는 깎인다',
+      bonus: -2,
+      depositMult: 2,
+      onDelivery: 1,
+      quarters: 0,
+      interest: 0,
+    },
+    normal: {
+      id: 'normal',
+      name: '표준 조건',
+      hint: '선수금 15%, 인도 시 잔금',
+      bonus: 0,
+      depositMult: 1,
+      onDelivery: 1,
+      quarters: 0,
+      interest: 0,
+    },
+    vendor: {
+      id: 'vendor',
+      name: '자체 금융 제공',
+      hint: '인도 대금의 42%만 즉시. 8분기 분할 + 이자 — 불황에는 떼일 수 있다',
+      bonus: 3,
+      depositMult: 1,
+      onDelivery: 0.42,
+      quarters: 8,
+      interest: 0.02,
+    },
+  };
+
   /** 경쟁사 경쟁력 상한 — 이벤트 누적으로 무한정 강해지는 것을 막는다. */
   const RIVAL_STRENGTH_CAP = 78;
   /** 경쟁사 경쟁력 하한 — 악재가 겹쳐도 시장이 무주공산이 되지는 않는다. */
@@ -712,6 +855,12 @@
     ETOPS_RANGE_KM,
     RANGE_TOLERANCE,
     ETOPS_USEFUL_RANGE,
+    AFTERMARKET_PER_UNIT,
+    AFTERMARKET_TIERS,
+    AFTERMARKET_ORDER,
+    FREIGHTER,
+    BID_PLEDGES,
+    BID_FINANCING,
     RIVAL_STRENGTH_CAP,
     RIVAL_STRENGTH_FLOOR,
     RIVAL_DRIFT_LIMIT,

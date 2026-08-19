@@ -5,17 +5,26 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE } = root.AirlinerData;
+  const { SEGMENTS, SEGMENT_ORDER, FUSELAGE_MATERIALS, WING_MATERIALS, LEGACY_MATERIAL_MAP, CONFIG, ETOPS_RANGE_KM, ETOPS_USEFUL_RANGE, AIRLINES, UPGAUGE_PER_YEAR, LINE_GRADES, OUTSOURCING, RETOOL_COST_RATE, BID_PLEDGES, BID_FINANCING, AFTERMARKET_TIERS, FREIGHTER } = root.AirlinerData;
   const E = root.AirlinerEngine;
   const Engines = root.AirlinerEngines;
   const Airframe = root.AirlinerAirframe;
   const D = root.AirlinerDesign;
   const B = root.AirlinerBidding;
+  const C = root.AirlinerCharts;
+  const Fleet = root.AirlinerFleet;
 
   const money = E.fmtMoney;
   const num = (n) => Math.round(n).toLocaleString('ko-KR');
   const esc = (t) =>
     String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  /**
+   * 카탈로그가 심은 <b> 강조만 살리고 나머지는 전부 이스케이프한다.
+   * 결정 사건 본문에는 플레이어가 지은 프로그램 이름이 그대로 끼어들기 때문에,
+   * 통째로 innerHTML 에 넣으면 그 이름이 태그로 해석된다. 이스케이프를 먼저 하고
+   * 허용 태그만 되돌리는 순서라야, 이미 저장된 세이브의 이름도 여기서 무력화된다.
+   */
+  const richText = (t) => esc(t).replace(/&lt;(\/?b)&gt;/g, '<$1>');
 
   function bar(pct, cls) {
     const v = Math.max(0, Math.min(100, pct));
@@ -23,7 +32,7 @@
   }
 
   function phaseLabel(p) {
-    return { dev: '개발 중', cert: '형식증명 심사', production: '양산', cancelled: '중단' }[p.phase] || p.phase;
+    return { dev: '개발 중', cert: '형식증명 심사', production: '양산', cancelled: '중단', sold: '매각' }[p.phase] || p.phase;
   }
 
   /** 기종별 미인도 주문 잔량 */
@@ -90,6 +99,14 @@
       warnings.push(`<b>${esc(p.name)}</b> 개발이 <b>동결</b> 상태다. 인력을 배분해야 진행된다.`);
     }
     if (s.cash < 400) warnings.push(`현금이 ${money(s.cash)}까지 떨어졌다. 차입·재고 처분·개발 동결을 검토하라.`);
+    const runway = E.cashRunway(s);
+    if (runway !== null && runway <= 8) {
+      warnings.push(
+        runway <= 0
+          ? '이번 분기 지출을 감당할 현금이 없다. <b>증자·프로그램 매각</b>을 지금 검토하라.'
+          : `최근 지출 속도라면 <b>${runway}분기 뒤 현금이 마른다</b>. 증자·프로그램 매각·개발 동결 중 하나는 지금 정해야 한다.`,
+      );
+    }
     if (s.debt >= CONFIG.maxDebt * 0.9) warnings.push(`차입이 한도(${money(CONFIG.maxDebt)})에 근접했다. 한 번 더 적자가 나면 파산이다.`);
     const idleLines = s.lines.filter((l) => l.idle).length;
     if (idleLines) warnings.push(`가동 중지된 라인이 ${idleLines}개 있다. 유지비는 계속 나간다.`);
@@ -98,9 +115,19 @@
       ? s.events.map((e) => `<li><b>${esc(e.name)}</b> — ${esc(e.text)}</li>`).join('')
       : '<li class="muted">특별한 일 없이 지나간 분기.</li>';
 
+    const news = (s.news || []).length
+      ? s.news.map((n) => `<li class="news-${n.kind}">${esc(n.text)}</li>`).join('')
+      : '<li class="muted">경쟁사 카탈로그에 변동이 없다.</li>';
+
     const last = s.history[s.history.length - 1];
+    const prev = s.history[s.history.length - 2];
+    const rows = s.history.slice(-24);
 
     return `
+      ${mandateCard(s)}
+      ${decisionCard(s)}
+      ${settlementCard(last, prev)}
+
       <section class="card">
         <h3>항공사 수요 프로필</h3>
         <p class="muted">각 항공사는 자기 노선망 안에서 발주한다. 설계를 어느 대역에 맞출지가 곧 누구를 고객으로 삼을지다.</p>
@@ -111,6 +138,8 @@
         <div class="card">
           <h3>이번 분기 소식</h3>
           <ul class="events">${events}</ul>
+          <h3 class="sub">업계 동향</h3>
+          <ul class="events news">${news}</ul>
         </div>
         <div class="card">
           <h3>경영 경고</h3>
@@ -123,10 +152,10 @@
       </section>
 
       <section class="cards">
-        ${statCard('수주 잔고', num(E.totalBacklog(s)) + '기', money(E.backlogValue(s)) + ' 상당')}
-        ${statCard('누적 인도', num(s.stats.delivered) + '기', '시장 점유율 ' + (E.marketShare(s) * 100).toFixed(1) + '%')}
-        ${statCard('순자산', money(E.netWorth(s)), '현금 ' + money(s.cash) + ' · 부채 ' + money(s.debt))}
-        ${statCard('평판', Math.round(s.reputation) + ' / 100', '엔지니어 ' + num(s.engineers) + '명')}
+        ${statCard('수주 잔고', num(E.totalBacklog(s)) + '기', money(E.backlogValue(s)) + ' 상당', '', spark(rows, 'backlog', 'accent'))}
+        ${statCard('누적 인도', num(s.stats.delivered) + '기', '시장 점유율 ' + (E.marketShare(s) * 100).toFixed(1) + '%', '', spark(rows, 'share', 'accent'))}
+        ${statCard('순자산', money(E.netWorth(s)), '현금 ' + money(s.cash) + ' · 부채 ' + money(s.debt), '', spark(rows, 'worth', 'good'))}
+        ${statCard('평판', Math.round(s.reputation) + ' / 100', '엔지니어 ' + num(s.engineers) + '명', '', spark(rows, 'reputation', 'warn'))}
         ${
           last
             ? statCard(
@@ -134,25 +163,14 @@
                 (last.net >= 0 ? '+' : '') + money(last.net),
                 '매출 ' + money(last.revenue) + ' · 비용 ' + money(last.cost),
                 last.net >= 0 ? 'good' : 'bad',
+                spark(rows, 'net', last.net >= 0 ? 'good' : 'bad'),
               )
             : statCard('전분기 손익', '—', '아직 정산 전')
         }
         ${statCard('보유 기종', s.programs.filter((p) => p.phase === 'production').length + '종', s.lines.length + '개 라인 가동')}
       </section>
 
-      <section class="card">
-        <h3>경쟁 구도</h3>
-        <p class="muted">지금 각 시장에서 우리가 이겨야 하는 상대다. 경쟁사는 실제 역사대로 신형을 내놓는다.</p>
-        <table class="spec">
-          ${SEGMENT_ORDER.map((seg) => {
-            const sg = SEGMENTS[seg];
-            const o = B.bestOffering(s, seg, Math.round(sg.seats.ref), Math.round(sg.range.ref));
-            const mine = s.programs.filter((p) => p.segment === seg && p.phase === 'production');
-            const ours = mine.length ? mine.map((p) => esc(p.name)).join(', ') : '<span class="muted">없음</span>';
-            return `<tr><th>${sg.name}</th><td>${o ? esc(o.name) : '—'} <span class="muted">· 우리: ${ours}</span></td></tr>`;
-          }).join('')}
-        </table>
-      </section>
+      ${rivalCard(s)}
 
       <section class="card">
         <h3>최근 기록</h3>
@@ -160,8 +178,98 @@
       </section>`;
   }
 
-  function statCard(label, value, sub, tone) {
-    return `<div class="stat ${tone || ''}"><span class="stat-label">${label}</span><span class="stat-value">${value}</span><span class="stat-sub">${sub || ''}</span></div>`;
+  function statCard(label, value, sub, tone, chart) {
+    return `<div class="stat ${tone || ''}"><span class="stat-label">${label}</span><span class="stat-value">${value}</span><span class="stat-sub">${sub || ''}</span>${chart || ''}</div>`;
+  }
+
+  /** 통계 카드에 붙는 미니 곡선. 옛 세이브에 없는 항목이면 조용히 빈 문자열이 된다. */
+  function spark(rows, key, cls) {
+    return C.spark(
+      rows.map((h) => h[key]).filter((v) => typeof v === 'number'),
+      cls,
+    );
+  }
+
+  /**
+   * 이사회 목표 카드 — 5년짜리 눈금.
+   * 최종 점수 하나로만 재면 중간이 없다. 남은 분기와 진행률을 늘 보이게 둔다.
+   */
+  function mandateCard(s) {
+    const m = E.mandateStatus(s);
+    if (!m) return '';
+    const pct = Math.round(m.ratio * 100);
+    const tone = m.met ? 'good' : m.quartersLeft <= 4 ? 'bad' : '';
+    return `
+      <section class="card mandate ${tone}">
+        <div class="row between">
+          <h3>이사회 목표 · ${esc(m.name)}</h3>
+          <span class="${m.met ? 'good' : m.quartersLeft <= 4 ? 'bad' : 'muted'}">
+            ${m.met ? '달성' : `${m.quartersLeft}분기 남음`}
+          </span>
+        </div>
+        <p class="muted">${esc(m.text)} — ${esc(E.turnLabel(m.dueTurn))}까지</p>
+        <div class="mandate-bar">${bar(pct, m.met ? 'good' : '')}</div>
+        <p class="hint">현재 ${esc(m.format(m.now))} / 목표 ${esc(m.format(m.target))} · 달성하면 증자와 신임, 미달하면 조달 금리가 오른다.</p>
+      </section>`;
+  }
+
+  /**
+   * 결정 사건 카드 — 답을 기다리는 사건을 개요 맨 위에 세운다.
+   * 고르지 않고 분기를 넘길 수 있지만 그때는 무대응이 적용되므로, 그 사실을 밝혀 둔다.
+   */
+  function decisionCard(s) {
+    const d = s.decision;
+    if (!d) return '';
+    return `
+      <section class="card decision">
+        <h3>${esc(d.name)}</h3>
+        <p class="decision-text">${richText(d.text)}</p>
+        <div class="decision-options">
+          ${d.options
+            .map(
+              (o) => `<button class="decision-opt" data-action="decide" data-opt="${esc(o.id)}">
+                <b>${esc(o.label)}</b>
+                <span class="muted">${esc(o.detail)}</span>
+              </button>`,
+            )
+            .join('')}
+        </div>
+        <p class="hint">고르지 않고 분기를 넘기면 <b>무대응</b>으로 처리된다 — 그것도 하나의 선택이다.</p>
+      </section>`;
+  }
+
+  /**
+   * 직전 분기 결산 카드.
+   * 정산 결과가 토스트 한 줄로만 흘러가면 무엇 때문에 적자였는지가 남지 않는다.
+   * 개요 맨 위에 고정해 두고, 전분기 대비 증감을 같이 보여준다.
+   */
+  function settlementCard(last, prev) {
+    if (!last) return '';
+    const delta = (key, fmt, invert) => {
+      if (!prev || typeof prev[key] !== 'number' || typeof last[key] !== 'number') return '';
+      const d = last[key] - prev[key];
+      if (Math.abs(d) < 1e-9) return '';
+      const good = invert ? d < 0 : d > 0;
+      return `<span class="delta ${good ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${fmt(Math.abs(d))}</span>`;
+    };
+
+    return `
+      <section class="card settle ${last.net >= 0 ? 'plus' : 'minus'}">
+        <h3>${esc(last.label)} 결산</h3>
+        <div class="settle-grid">
+          <div class="settle-main">
+            <span class="settle-label">분기 손익</span>
+            <b class="${last.net >= 0 ? 'good' : 'bad'}">${last.net >= 0 ? '+' : ''}${money(last.net)}</b>
+            ${delta('net', money)}
+          </div>
+          <div><span>매출</span><b>${money(last.revenue)}</b>${delta('revenue', money)}</div>
+          <div><span>비용</span><b>${money(last.cost)}</b>${delta('cost', money, true)}</div>
+          <div><span>인도</span><b>${num(last.delivered)}기</b>${delta('delivered', (v) => num(v) + '기')}</div>
+          <div><span>수주 잔고</span><b>${num(last.backlog)}기</b>${delta('backlog', (v) => num(v) + '기')}</div>
+          <div><span>현금</span><b>${money(last.cash)}</b>${delta('cash', money)}</div>
+          <div><span>부채</span><b>${money(last.debt)}</b>${delta('debt', money, true)}</div>
+        </div>
+      </section>`;
   }
 
   function logItem(l) {
@@ -382,7 +490,8 @@
   // ─────────────────────────────── 프로그램 ───────────────────────────────
 
   function renderPrograms(s) {
-    const active = s.programs.filter((p) => p.phase !== 'cancelled');
+    // 취소·매각된 기종은 목록에서 뺀다. 회고(종료 화면)에는 계보로 남는다.
+    const active = s.programs.filter((p) => p.phase !== 'cancelled' && p.phase !== 'sold');
     if (!active.length) return '<div class="card"><p class="muted">아직 기종이 없다. 설계 탭에서 개발을 착수하라.</p></div>';
 
     return active
@@ -556,6 +665,7 @@
       .join('');
 
     return `
+      ${servicesCard(s)}
       <section class="card"><h3>조달 전략</h3>
         <p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
         <div class="mats">${sourcingButtons}</div>
@@ -569,6 +679,53 @@
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
   }
 
+  /**
+   * 서비스 사업 — 부품·정비와 화물형.
+   * 신규 인도만이 매출이면 개발 공백기에 경영할 거리가 없다. 이미 팔아 둔 기체가
+   * 얼마를 벌어다 주는지 여기서 보인다.
+   */
+  function servicesCard(s) {
+    const inc = E.serviceIncome(s);
+    const order = ['none', 'regional', 'global'];
+    const curIdx = order.indexOf(s.aftermarket);
+
+    const tiers = order
+      .map((id, i) => {
+        const t = AFTERMARKET_TIERS[id];
+        const owned = i <= curIdx;
+        const cost = t.cost - (AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none).cost;
+        return `<button class="mat ${owned ? 'on' : ''}" data-action="aftermarket" data-tier="${id}"
+                  ${owned || i !== curIdx + 1 ? 'disabled' : ''}>
+                  <b>${esc(t.name)}</b>
+                  <span>${owned ? '보유' : `${money(cost)} · 수익 ×${t.mult}`}</span>
+                  <span class="muted">${esc(t.hint)}</span>
+                </button>`;
+      })
+      .join('');
+
+    const freighters = s.programs.filter((p) => p.phase === 'production');
+    const freightButtons = freighters.length
+      ? freighters
+          .map((p) => {
+            if (p.freighter) return `<span class="tag good">${esc(p.name)} 화물형 운영 중</span>`;
+            if (p.freighterAt !== undefined) return `<span class="tag">${esc(p.name)} 개조 준비 중</span>`;
+            return `<button data-action="freighter" data-id="${p.id}">${esc(p.name)} 화물형 개조 · ${money(p.devCost * FREIGHTER.devRate)}</button>`;
+          })
+          .join('')
+      : '<span class="muted">양산 중인 기종이 없다.</span>';
+
+    return `
+      <section class="card">
+        <h3>서비스 사업</h3>
+        <p class="muted">이미 팔아 둔 기체가 벌어다 주는 돈이다. 선단 ${num(inc.fleet)}기 기준 이번 분기 <b>${money(inc.total)}</b>
+          <span class="muted">(부품·정비 ${money(inc.aftermarket)}${inc.freight ? ` · 화물 ${money(inc.freight)}` : ''})</span></p>
+        <div class="mats">${tiers}</div>
+        <h3 class="sub">화물형 개조</h3>
+        <p class="hint">여객 수요가 꺾여도 화물은 돈다. 침체 분기에는 화물 수익이 ${FREIGHTER.slumpMult}배가 된다 — 불황 헤지다.</p>
+        <div class="row wrap">${freightButtons}</div>
+      </section>`;
+  }
+
   // ─────────────────────────────── 수주 ───────────────────────────────
 
   function renderRfps(s, discountDraft) {
@@ -579,7 +736,7 @@
         const bid = s.bids[rfp.id];
         const candidates = s.programs.filter((p) => p.phase === 'production' && p.segment === rfp.segment);
         const discount = bid ? bid.discount : (discountDraft && discountDraft[rfp.id]) ?? 0.1;
-        const scored = candidates.map((p) => ({ p, sc: B.scoreBid(s, rfp, p, discount) }));
+        const scored = candidates.map((p) => ({ p, sc: B.scoreBid(s, rfp, p, discount, bid && bid.terms) }));
         const anyBiddable = scored.some((x) => !x.sc.blocked);
 
         const options = renderBidCandidates(s, rfp, discount);
@@ -611,6 +768,7 @@
                      <span>할인율<b id="disc-label-${rfp.id}">${Math.round(discount * 100)}%</b></span>
                      <input type="range" data-action="discount" data-rfp="${rfp.id}" min="0" max="${CONFIG.maxDiscount * 100}" step="1" value="${Math.round(discount * 100)}">
                    </label>
+                   ${bidTerms(s, rfp)}
                    <div id="bidinfo-${rfp.id}">${renderBidInfo(s, rfp)}</div>`
           }
         </div>`;
@@ -624,7 +782,7 @@
     return s.programs
       .filter((p) => p.phase === 'production' && p.segment === rfp.segment)
       .map((p) => {
-        const sc = B.scoreBid(s, rfp, p, discount);
+        const sc = B.scoreBid(s, rfp, p, discount, bid && bid.terms);
         const sel = bid && bid.programId === p.id;
         return `<button class="cand ${sel ? 'on' : ''} ${sc.blocked ? 'blocked' : ''}"
                   data-action="pick-bid" data-rfp="${rfp.id}" data-id="${p.id}" ${sc.blocked ? 'disabled' : ''}>
@@ -636,24 +794,81 @@
   }
 
   /** 선택한 기종 + 할인율에 대한 입찰 요약 — 슬라이더 조작 시 이 영역만 갱신한다. */
+  /**
+   * 입찰 조건 — 인도 약속과 금융. 기종을 고르기 전에는 잠가 둔다(응찰이 없으면
+   * 조건도 없다). 각 조건의 대가를 버튼에 그대로 적는다 — 가산점만 보이면
+   * 언제나 최우선 인도가 정답이 된다.
+   */
+  function bidTerms(s, rfp) {
+    const bid = s.bids[rfp.id];
+    const t = B.normalizeTerms(bid && bid.terms);
+    const group = (kind, table, current) =>
+      Object.values(table)
+        .map(
+          (o) => `<button class="term ${current === o.id ? 'on' : ''}" data-action="bid-term"
+                    data-rfp="${rfp.id}" data-kind="${kind}" data-value="${o.id}" ${bid ? '' : 'disabled'}>
+                    <b>${esc(o.name)}${o.bonus ? ` <i class="${o.bonus > 0 ? 'good' : 'bad'}">${o.bonus > 0 ? '+' : ''}${o.bonus}점</i>` : ''}</b>
+                    <span class="muted">${esc(o.hint)}</span>
+                  </button>`,
+        )
+        .join('');
+
+    return `<div class="terms">
+        <div class="term-group">
+          <span class="term-label">인도 약속</span>
+          <div class="term-row">${group('pledge', BID_PLEDGES, t.pledge)}</div>
+        </div>
+        <div class="term-group">
+          <span class="term-label">금융 조건</span>
+          <div class="term-row">${group('financing', BID_FINANCING, t.financing)}</div>
+        </div>
+        ${bid ? '' : '<p class="hint">기종을 먼저 고르면 조건을 걸 수 있다.</p>'}
+      </div>`;
+  }
+
   function renderBidInfo(s, rfp) {
     const bid = s.bids[rfp.id];
     if (!bid) return '<p class="muted">입찰할 기종을 선택하라. 선택하지 않으면 이번 공고는 포기한다.</p>';
     const p = s.programs.find((x) => x.id === bid.programId);
     if (!p) return '';
-    const sc = B.scoreBid(s, rfp, p, bid.discount);
+    const sc = B.scoreBid(s, rfp, p, bid.discount, bid.terms);
     if (sc.blocked) return `<p class="warn-box">${sc.blocked} — 이 기종으로는 입찰할 수 없다.</p>`;
 
     const unitCost = E.currentUnitCost(s, p);
     const margin = sc.price - unitCost;
     const total = sc.price * rfp.qty;
+    const pledge = BID_PLEDGES[sc.terms.pledge];
+    const financing = BID_FINANCING[sc.terms.financing];
+    const deposit = total * CONFIG.depositRate * financing.depositMult;
+    // 약속을 지키려면 분기당 몇 기를 넘겨야 하나 — 라인 여력과 바로 비교된다.
+    // 명목 최대치가 아니라 **지금 실제로 뽑히는 양**을 쓴다. 램프업 15%짜리 새 라인을
+    // 만개로 보여 주면 지킬 수 없는 약속에 초록불을 켜 주는 셈이다. 이미 다른 주문이
+    // 잡아먹고 있는 몫도 빼야 남는 여력이 된다.
+    const perQuarter = Math.ceil(rfp.qty / pledge.dueQuarters);
+    const output = E.effectiveOutput(s, p.id);
+    const committed = s.backlog
+      .filter((o) => o.programId === p.id && o.remaining > 0)
+      .reduce((a, o) => a + o.remaining, 0);
+    const capacity = Math.max(0, output - Math.min(output, Math.ceil(committed / 4)));
 
     return `<table class="spec">
-        <tr><th>입찰 점수</th><td><b>${sc.total}</b> ${bar(sc.total, 'score')}</td></tr>
+        <tr><th>입찰 점수</th><td><b>${sc.total}</b> ${bar(sc.total, 'score')}${
+          sc.termBonus ? ` <span class="${sc.termBonus > 0 ? 'good' : 'bad'}">(조건 ${sc.termBonus > 0 ? '+' : ''}${sc.termBonus})</span>` : ''
+        }</td></tr>
         <tr><th>대당 가격</th><td>${money(sc.price)} <span class="muted">(정가 ${money(p.listPrice)})</span></td></tr>
         <tr><th>현재 대당 원가</th><td>${money(unitCost)}</td></tr>
         <tr><th>대당 마진</th><td class="${margin >= 0 ? 'good' : 'bad'}">${margin >= 0 ? '+' : ''}${money(margin)}</td></tr>
-        <tr><th>전량 수주 시</th><td>${money(total)} <span class="muted">(선수금 ${money(total * CONFIG.depositRate)})</span></td></tr>
+        <tr><th>전량 수주 시</th><td>${money(total)} <span class="muted">(선수금 ${money(deposit)})</span></td></tr>
+        <tr><th>인도 약속</th><td>${esc(pledge.name)}${
+          pledge.penaltyRate
+            ? ` · <b>${pledge.dueQuarters}분기 안에 ${rfp.qty}기</b> = 분기당 ${perQuarter}기 <span class="${capacity >= perQuarter ? 'good' : 'bad'}">(지금 실제 생산 ${output}기${committed ? ` · 기존 주문 몫을 빼면 ${capacity}기` : ''})</span>`
+            : ' <span class="muted">· 기한 약속 없음</span>'
+        }</td></tr>
+        <tr><th>대금 회수</th><td>${
+          financing.quarters
+            ? `인도 시 ${Math.round(financing.onDelivery * 100)}%, 나머지는 ${financing.quarters}분기 분할 <span class="muted">(이자 ${(financing.interest * 100).toFixed(0)}%)</span>`
+            : '인도 시 잔금 전액'
+        }</td></tr>
       </table>
       <div class="parts">
         ${part('제원 적합', sc.parts.spec)}${part('가격', sc.parts.price)}${part('연비', sc.parts.eff)}
@@ -703,6 +918,10 @@
           <p class="hint">분기 이자 ${money(s.debt * E.quarterRate(s))}</p>
         </div>
         <div class="card">
+          <h3>증자 · 회생</h3>
+          ${equityBlock(s)}
+        </div>
+        <div class="card">
           <h3>인력</h3>
           <p class="muted">엔지니어 ${num(s.engineers)}명 · 분기 인건비 ${money(s.engineers * CONFIG.engineerCostPerQuarter)}</p>
           <div class="row wrap">
@@ -716,11 +935,382 @@
       <section class="card">
         <h3>분기 실적</h3>
         ${
+          s.history.length
+            ? C.bars({
+                title: '분기 손익',
+                height: 110,
+                format: (v) => money(v),
+                labels: s.history.slice(-24).map((h) => h.label),
+                values: s.history.slice(-24).map((h) => h.net),
+              }) + '<p class="hint">최근 24분기 손익. 20년 전체 곡선은 <b>추이</b> 탭에 있다.</p>'
+            : ''
+        }
+        ${
           rows
             ? `<table class="hist"><thead><tr><th>분기</th><th>매출</th><th>비용</th><th>손익</th><th>인도</th><th>현금</th><th>부채</th></tr></thead><tbody>${rows}</tbody></table>`
             : '<p class="muted">아직 정산된 분기가 없다.</p>'
         }
       </section>`;
+  }
+
+  /**
+   * 경쟁 구도 — 세그먼트별 문턱 기종, 제조사별 누적 인도, 수주전 전적.
+   * 상대를 "점수 문턱"이 아니라 이름과 전적을 가진 회사로 보여준다.
+   */
+  function rivalCard(s) {
+    const year = E.yearOf(s.turn);
+    const segRows = SEGMENT_ORDER.map((seg) => {
+      const sg = SEGMENTS[seg];
+      const o = B.bestOffering(s, seg, Math.round(sg.seats.ref), Math.round(sg.range.ref));
+      const mine = s.programs.filter((p) => p.segment === seg && p.phase === 'production');
+      const ours = mine.length ? mine.map((p) => esc(p.name)).join(', ') : '<span class="muted">없음</span>';
+      const pool = Fleet.availableTypes(seg, year).length;
+      return `<tr>
+        <th>${sg.name}</th>
+        <td>${o ? `<b>${esc(o.name)}</b>` : '—'} <span class="muted">· 판매 중 ${pool}종 · 우리: ${ours}</span></td>
+      </tr>`;
+    }).join('');
+
+    const TOP = 6;
+    const all = E.makerStandings(s);
+    const standings = all.slice(0, TOP);
+    const bars = C.shareBars(
+      standings.map((r) => ({
+        name: r.name,
+        value: r.delivered,
+        text: `${num(r.delivered)}기 · ${(r.share * 100).toFixed(1)}%`,
+        highlight: r.us,
+      })),
+    );
+
+    const duels = E.duelRecords(s).slice(0, 4);
+    const duelLine = duels.length
+      ? `<ul class="duels">${duels
+          .map(
+            (d) =>
+              `<li><b>${esc(d.name)}</b> <span class="muted">${d.faced}회 맞붙어</span> <span class="good">${d.won}승</span> · <span>${d.split}분할</span> · <span class="bad">${d.lost}패</span>${d.lostQty ? ` <span class="muted">(놓친 물량 ${num(d.lostQty)}기)</span>` : ''}</li>`,
+          )
+          .join('')}</ul>`
+      : '<p class="muted">아직 맞붙은 수주전이 없다.</p>';
+
+    return `
+      <section class="card">
+        <h3>경쟁 구도</h3>
+        <p class="muted">지금 각 시장에서 우리가 이겨야 하는 상대다. 경쟁사는 실제 역사대로 신형을 내놓고 단산한다.</p>
+        <table class="spec">${segRows}</table>
+        <h3 class="sub">누적 인도 순위${all.length > TOP ? ` <span class="muted">· 상위 ${TOP}개</span>` : ''}</h3>
+        ${bars}
+        ${all.length > TOP ? '<p class="hint">전체 순위는 <b>추이</b> 탭에 있다.</p>' : ''}
+        <h3 class="sub">수주전 전적</h3>
+        ${duelLine}
+      </section>`;
+  }
+
+  // ─────────────────────────────── 추이 ───────────────────────────────
+
+  /** 마지막 N분기 기록. 전부 그리면 80분기가 한 화면에 눌려 들어가 흐름이 안 보인다. */
+  function tail(s, n) {
+    return s.history.slice(-n);
+  }
+
+  function pick(rows, key) {
+    return rows.map((h) => (typeof h[key] === 'number' ? h[key] : null));
+  }
+
+  function labelsOf(rows) {
+    return rows.map((h) => h.label);
+  }
+
+  function renderTrends(s) {
+    const rows = tail(s, 80);
+    if (!rows.length) {
+      return `<section class="card"><h3>경영 추이</h3><p class="muted">아직 정산된 분기가 없다. 분기를 한 번 넘기면 여기에 20년치 곡선이 쌓이기 시작한다.</p></section>`;
+    }
+
+    const labels = labelsOf(rows);
+    const pct = (v) => (v * 100).toFixed(0) + '%';
+    const standings = E.makerStandings(s);
+    const shareRows = standings.map((r) => ({
+      name: r.name,
+      value: r.delivered,
+      text: `${num(r.delivered)}기 · ${(r.share * 100).toFixed(1)}%`,
+      highlight: r.us,
+    }));
+
+    const duels = E.duelRecords(s);
+    const duelRows = duels.length
+      ? `<table class="spec cols">
+          <thead><tr><th>상대</th><th>붙은 횟수</th><th>완승</th><th>분할</th><th>완패</th><th>놓친 물량</th></tr></thead>
+          <tbody>${duels
+            .map(
+              (d) => `<tr>
+                <th>${esc(d.name)}</th>
+                <td>${d.faced}</td>
+                <td class="${d.won ? 'good' : 'muted'}">${d.won}</td>
+                <td>${d.split}</td>
+                <td class="${d.lost ? 'bad' : 'muted'}">${d.lost}</td>
+                <td>${num(d.lostQty)}기</td>
+              </tr>`,
+            )
+            .join('')}</tbody>
+        </table>`
+      : '<p class="muted">아직 경쟁사와 맞붙은 수주전이 없다.</p>';
+
+    return `
+      <section class="card">
+        <h3>재무 추이</h3>
+        <p class="muted">순자산이 곧 성적이다. 현금이 바닥을 기어도 순자산이 우상향이면 개발비가 자산으로 바뀌는 중이고, 둘이 같이 내려가면 사업이 녹고 있는 것이다.</p>
+        ${C.line({
+          title: '현금·부채·순자산 추이',
+          height: 120,
+          zero: true,
+          format: (v) => money(v),
+          labels,
+          series: [
+            { name: '순자산', values: pick(rows, 'worth'), cls: 'accent', fill: true },
+            { name: '현금', values: pick(rows, 'cash'), cls: 'good' },
+            { name: '부채', values: pick(rows, 'debt'), cls: 'bad' },
+          ],
+        })}
+        ${legend([
+          { name: '순자산', cls: 'accent' },
+          { name: '현금', cls: 'good' },
+          { name: '부채', cls: 'bad' },
+        ])}
+      </section>
+
+      <section class="card">
+        <h3>분기 손익</h3>
+        <p class="muted">개발 중에는 적자가, 양산이 궤도에 오르면 흑자가 정상이다. 적자 구간이 길게 이어지면 그 프로그램이 회수되지 않고 있다는 뜻이다.</p>
+        ${C.bars({ title: '분기 손익', height: 110, format: (v) => money(v), labels, values: pick(rows, 'net') })}
+      </section>
+
+      <section class="grid2">
+        <div class="card">
+          <h3>인도 · 수주 잔고</h3>
+          ${C.line({
+            title: '수주 잔고 추이',
+            height: 130,
+            zero: true,
+            format: (v) => num(v) + '기',
+            labels,
+            series: [{ name: '수주 잔고', values: pick(rows, 'backlog'), cls: 'accent', fill: true }],
+          })}
+          ${C.bars({ title: '분기 인도', height: 110, format: (v) => num(v) + '기', labels, values: pick(rows, 'delivered') })}
+          <p class="hint">위가 잔고, 아래가 실제 인도다. 잔고만 쌓이고 인도가 안 따라가면 라인이 모자란다.</p>
+        </div>
+        <div class="card">
+          <h3>점유율 · 평판</h3>
+          ${C.line({
+            title: '시장 점유율 추이',
+            height: 130,
+            format: pct,
+            labels,
+            series: [{ name: '점유율', values: pick(rows, 'share'), cls: 'accent', fill: true }],
+          })}
+          ${C.line({
+            title: '평판 추이',
+            height: 110,
+            format: (v) => Math.round(v),
+            labels,
+            series: [{ name: '평판', values: pick(rows, 'reputation'), cls: 'warn' }],
+          })}
+          <p class="hint">점유율은 우리 누적 인도 ÷ 업계 누적 인도다. 인도가 없는 분기에는 경쟁사만 쌓여 자연히 내려간다.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>시장 지표</h3>
+        <p class="muted">연료지수가 오르면 입찰 점수에서 연비 비중이 커지고, 수요지수가 내려가면 공고 자체가 줄어든다.</p>
+        ${C.line({
+          title: '연료·수요 지수 추이',
+          height: 110,
+          format: (v) => v.toFixed(2),
+          labels,
+          series: [
+            { name: '연료지수', values: pick(rows, 'fuel'), cls: 'bad' },
+            { name: '수요지수', values: pick(rows, 'demand'), cls: 'good' },
+          ],
+        })}
+        ${legend([
+          { name: '연료지수', cls: 'bad' },
+          { name: '수요지수', cls: 'good' },
+        ])}
+      </section>
+
+      <section class="card">
+        <h3>제조사별 누적 인도</h3>
+        <p class="muted">업계 인도량은 그 시점 카탈로그의 실력대로 갈린다. 787이 뜨면 보잉 몫이 늘고, 단산이 겹치면 줄어든다.</p>
+        ${C.shareBars(shareRows)}
+      </section>
+
+      <section class="card">
+        <h3>수주전 전적</h3>
+        <p class="muted">공고마다 그 시점 최강 기종이 상대로 나온다. 누구에게 얼마나 밀렸는지가 다음 설계의 근거다.</p>
+        ${duelRows}
+      </section>`;
+  }
+
+  function legend(items) {
+    return `<ul class="legend">${items.map((i) => `<li><i class="${i.cls}"></i>${esc(i.name)}</li>`).join('')}</ul>`;
+  }
+
+  // ─────────────────────────────── 종료 회고 ───────────────────────────────
+
+  /**
+   * 20년 회고 — 종료 화면 본문.
+   * 등급 한 글자로 끝내면 무엇이 그 등급을 만들었는지가 남지 않는다. 점수 구성,
+   * 남긴 기종, 곡선, 상대 전적까지 펼쳐 한 판의 이야기를 닫는다.
+   */
+  function renderCareer(s) {
+    const r = E.careerReport(s);
+    const rows = r.history;
+    const labels = rows.map((h) => h.label);
+
+    const breakdown = r.breakdown
+      .map((b) => `<tr><th>${esc(b.label)}</th><td class="muted">${esc(b.detail)}</td><td class="pts">${num(b.points)}</td></tr>`)
+      .join('');
+
+    const programs = r.programs.length
+      ? `<table class="spec cols career-programs">
+          <thead><tr><th>기종</th><th>급</th><th>착수</th><th>인도</th><th>잔고</th><th>상태</th></tr></thead>
+          <tbody>${r.programs
+            .map(
+              (p) => `<tr>
+                <th>${esc(p.name)}${p.legacy ? ' <span class="muted">승계</span>' : ''}</th>
+                <td class="muted wrap">${esc(p.segment)} · ${num(p.seats)}석 · ${num(p.range)}km</td>
+                <td class="muted">${esc(p.launched)}</td>
+                <td>${num(p.delivered)}기</td>
+                <td class="muted">${num(p.backlog)}기</td>
+                <td class="muted">${esc(phaseLabel(p))}</td>
+              </tr>`,
+            )
+            .join('')}</tbody>
+        </table>`
+      : '<p class="muted">끝내 한 기종도 남기지 못했다.</p>';
+
+    const customers = r.customers.length
+      ? C.shareBars(
+          r.customers.slice(0, 6).map((c) => ({
+            name: c.name,
+            value: c.units,
+            text: `${num(c.units)}기 · 관계 ${c.relation}`,
+          })),
+        )
+      : '<p class="muted">우리 기체를 굴린 항공사가 없다.</p>';
+
+    const standings = C.shareBars(
+      r.standings.map((x) => ({
+        name: x.name,
+        value: x.delivered,
+        text: `${num(x.delivered)}기 · ${(x.share * 100).toFixed(1)}%`,
+        highlight: x.us,
+      })),
+    );
+
+    const duels = r.duels.length
+      ? `<ul class="duels">${r.duels
+          .map(
+            (d) =>
+              `<li><b>${esc(d.name)}</b> <span class="muted">${d.faced}회</span> <span class="good">${d.won}승</span> · <span>${d.split}분할</span> · <span class="bad">${d.lost}패</span>${d.lostQty ? ` <span class="muted">(${num(d.lostQty)}기를 내줬다)</span>` : ''}</li>`,
+          )
+          .join('')}</ul>`
+      : '<p class="muted">경쟁사와 맞붙은 수주전이 없었다.</p>';
+
+    return `
+      <section class="career-sec">
+        <h3>점수 구성</h3>
+        <table class="spec">${breakdown}</table>
+      </section>
+
+      <section class="career-sec">
+        <h3>20년 요약</h3>
+        <table class="spec">
+          <tr><th>누적 매출</th><td>${money(r.totalRevenue)}</td></tr>
+          <tr><th>누적 개발비</th><td>${money(r.totalRd)}</td></tr>
+          <tr><th>최고 분기</th><td>${
+            r.best
+              ? `${esc(r.best.label)} · <span class="${r.best.net >= 0 ? 'good' : 'bad'}">${r.best.net >= 0 ? '+' : ''}${money(r.best.net)}</span>`
+              : '—'
+          }</td></tr>
+          <tr><th>최악 분기</th><td>${r.worst ? `${esc(r.worst.label)} · <span class="bad">${money(r.worst.net)}</span>` : '—'}</td></tr>
+          <tr><th>최고 점유율</th><td>${(r.peakShare * 100).toFixed(1)}%</td></tr>
+          <tr><th>최대 부채</th><td>${money(r.peakDebt)}</td></tr>
+        </table>
+      </section>
+
+      <section class="career-sec">
+        <h3>순자산 곡선</h3>
+        ${C.line({
+          title: '순자산 추이',
+          height: 130,
+          zero: true,
+          format: (v) => money(v),
+          labels,
+          series: [{ name: '순자산', values: rows.map((h) => (typeof h.worth === 'number' ? h.worth : null)), cls: 'accent', fill: true }],
+        })}
+      </section>
+
+      <section class="career-sec">
+        <h3>남긴 기종</h3>
+        ${programs}
+      </section>
+
+      <section class="career-sec">
+        <h3>주요 고객</h3>
+        ${customers}
+      </section>
+
+      <section class="career-sec">
+        <h3>업계 최종 순위</h3>
+        ${standings}
+      </section>
+
+      <section class="career-sec">
+        <h3>수주전 전적</h3>
+        ${duels}
+      </section>`;
+  }
+
+  /**
+   * 증자와 프로그램 매각 — 파산 말고 다른 출구.
+   * 둘 다 공짜가 아니라는 걸 버튼 옆에 그대로 적는다.
+   */
+  function equityBlock(s) {
+    const cap = E.equityCapacity(s);
+    const rounds = s.equityRounds || 0;
+    const dil = s.equityDilution || 0;
+    const sellable = s.programs.filter((p) => p.phase === 'dev' || p.phase === 'cert');
+    const runway = E.cashRunway(s);
+
+    const amounts = [Math.round(cap.max * 0.4), Math.round(cap.max * 0.7), cap.max].filter((v, i, arr) => v >= 300 && arr.indexOf(v) === i);
+
+    return `
+      <p class="muted">현재 지분 희석 ${(dil * 100).toFixed(1)}% · 증자 ${rounds}/3회 사용${
+        runway !== null ? ` · <b class="${runway <= 4 ? 'bad' : 'warn'}">현금 잔여 ${runway}분기</b>` : ''
+      }</p>
+      <p class="hint">증자는 최대 ${money(cap.max)}까지 받을 수 있고, 전액을 받으면 지분이 ${(cap.dilutionAtMax * 100).toFixed(1)}%p 희석된다. <b>희석된 만큼 최종 점수가 깎인다</b> — 잘 나갈 때 당겨 두는 편이 싸다.</p>
+      <div class="row wrap">
+        ${
+          rounds >= 3
+            ? '<span class="muted">증자 한도를 모두 썼다.</span>'
+            : amounts
+                .map((v) => `<button data-action="raise" data-amt="${v}">${money(v)} 증자</button>`)
+                .join('')
+        }
+      </div>
+      <h3 class="sub">프로그램 매각</h3>
+      ${
+        sellable.length
+          ? `<p class="hint">개발·인증 중인 기종을 경쟁사에 넘긴다. 즉시 현금이 되지만 도면이 넘어가 그 시장 경쟁이 세진다.</p>
+             <div class="row wrap">${sellable
+               .map(
+                 (p) =>
+                   `<button class="danger" data-action="sell-program" data-id="${p.id}">${esc(p.name)} 매각 <span class="muted">(진척 ${Math.round(p.progress)}%)</span></button>`,
+               )
+               .join('')}</div>`
+          : '<p class="muted">매각할 수 있는 개발 중 기종이 없다.</p>'
+      }`;
   }
 
   // ─────────────────────────────── 기록 ───────────────────────────────
@@ -731,6 +1321,9 @@
 
   root.AirlinerPanels = {
     renderOverview,
+    renderTrends,
+    mandateCard,
+    renderCareer,
     renderDesign,
     renderDesignOptions,
     renderDesignPreview,
@@ -739,9 +1332,11 @@
     renderRfps,
     renderBidInfo,
     renderBidCandidates,
+    bidTerms,
     renderFinance,
     renderLog,
     esc,
+    richText,
     money,
     num,
   };
