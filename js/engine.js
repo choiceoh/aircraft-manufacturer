@@ -627,15 +627,26 @@
    */
   const ORDER_VOID_REFUND_MULT = 1.5;
 
+  /**
+   * 미인도 주문을 파기할 때 나갈 돈. UI 확인창이 이 값을 미리 보여 준다 —
+   * 위약이 수십억일 수 있는데 확인창이 매몰비용만 말하면 동의가 아니라 함정이다.
+   */
+  function voidRefundFor(s, p) {
+    let refund = 0;
+    for (const o of s.backlog || []) {
+      if (o.programId !== p.id || o.remaining <= 0) continue;
+      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+    }
+    return Math.round(refund);
+  }
+
   function voidOrdersFor(s, p, why) {
     const dead = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0);
     if (!dead.length) return;
-    let refund = 0;
+    const refund = voidRefundFor(s, p);
     for (const o of dead) {
-      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
       s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 10, 0, 100);
     }
-    refund = Math.round(refund);
     s.cash -= refund;
     s.pending.overhead += refund;
     s.backlog = s.backlog.filter((o) => !(o.programId === p.id && o.remaining > 0));
@@ -657,7 +668,7 @@
    */
   const PREORDER_STALL_QUARTERS = 6;
 
-  function expirePreorders(s) {
+  function expirePreorders(s, report) {
     const expired = new Set();
     for (const o of s.backlog) {
       if (o.remaining <= 0) continue;
@@ -667,7 +678,10 @@
       if (s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
       const refund = Math.round(o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT);
       s.cash -= refund;
-      s.pending.overhead += refund;
+      // 이 분기 리포트에 직접 적는다(chargeLatePenalties 와 같은 이유). endTurn 은
+      // 리포트를 만들며 pending 을 이미 비웠으므로, pending 에 넣으면 현금은 지금
+      // 나가고 비용은 다음 분기 장부에 적힌다 — 이 위약으로 파산하면 아예 증발한다.
+      report.overhead += refund;
       s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 8, 0, 100);
       adjustReputation(s, -2);
       o.remaining = 0;
@@ -960,7 +974,7 @@
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
     runDeliveries(s, report);
-    expirePreorders(s);
+    expirePreorders(s, report);
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
@@ -1303,12 +1317,17 @@
    * 취항 후 운항 실적으로 ETOPS 를 따는 경로. 매 분기 정산에서 부른다.
    *
    * 양산 단계라는 것만으로는 안 된다 — 규제 당국이 보는 건 **실제로 굴러다닌 기록**이다.
-   * 라인도 인도분도 없는 기종이 네 분기를 세는 건 실적이 아니라 달력이다.
+   * 기체가 한 대도 없는 기종이 네 분기를 세는 건 실적이 아니라 달력이다.
+   *
+   * 재고도 실적으로 친다: 인도분만 세면 백로그가 전부 ETOPS 필수 주문인 기종이
+   * 영구 교착에 빠진다 — 인도 게이트(runDeliveries)가 인도를 막고, 인도가 없어
+   * 실적이 안 쌓이고, 실적이 없어 게이트가 안 열린다. 완성돼 놀고 있는 기체로
+   * 노선 실증을 도는 건 실제 관행이기도 하다(787 route proving).
    */
   function tickEtopsService(s) {
     for (const p of s.programs) {
       if (p.phase !== 'production' || !p.etops || p.etopsCertified) continue;
-      if (!(p.delivered > 0)) continue;
+      if (!(p.delivered > 0 || p.stock > 0)) continue;
       p.etopsService = (p.etopsService || 0) + 1;
       if (p.etopsService >= ETOPS_SERVICE_QUARTERS) {
         p.etopsCertified = true;
@@ -2926,6 +2945,7 @@
     testAircraftCost,
     certQuartersLeft,
     cancelProgram,
+    voidRefundFor,
     buildLine,
     retoolLine,
     retoolCompatibility,

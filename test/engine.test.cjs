@@ -4585,3 +4585,96 @@ test('개발을 동결한 종이 비행기의 선수금 농사는 손해다', ()
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+test('ETOPS 필수 주문만 있어도 재고 기체의 실증 비행으로 교착이 풀린다', () => {
+  // 인도 게이트가 인도를 막고, 인도가 없어 실적이 안 쌓이고, 실적이 없어
+  // 게이트가 안 열리는 순환 — 재고 기체를 실적으로 치지 않으면 영구 교착이다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(467);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'LOCK').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.etopsCertified = false;
+    p.etopsService = 0;
+    p.stock = 6;
+    s.backlog.push({
+      id: 'ord-lock', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+    });
+
+    for (let i = 0; i < 8 && !s.gameOver; i++) {
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+    }
+    assert.strictEqual(p.etopsCertified, true, '재고 기체가 있는데 ETOPS 실적이 안 쌓인다 — 교착이 그대로다');
+    assert.ok(p.delivered > 0, '인증이 나왔는데 밀린 ETOPS 주문이 인도되지 않는다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('무른 선주문의 위약은 이번 분기 장부에 적힌다', () => {
+  // endTurn 은 리포트를 만들며 pending 을 비운다. 위약을 pending 에 넣으면 현금은
+  // 지금 나가고 비용은 다음 분기 행에 적힌다 — 같은 분기에 파산하면 증발한다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const make = (withOrder) => {
+      const s = E.newGame(479);
+      s.cash = 60000;
+      assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'BOOK').ok);
+      const p = s.programs[s.programs.length - 1];
+      p.progress = 45;
+      p.share = 0;
+      p.lastProgressTurn = s.turn - 6; // 이미 6분기째 정체 — 이번 정산에서 무른다
+      if (withOrder) {
+        s.backlog.push({
+          id: 'ord-book', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+          qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn - 6, depositRate: 0.15, pledge: 'standard',
+        });
+      }
+      return s;
+    };
+
+    const ctrl = make(false);
+    const s = make(true);
+    E.endTurn(ctrl);
+    E.endTurn(s);
+    assert.ok(s.log.some((l) => /물렀다/.test(l.text)), '정체 6분기인데 주문이 무르지 않았다');
+
+    const refund = Math.round(10 * 250 * 0.15 * 1.5);
+    const row = s.history[s.history.length - 1];
+    const ctrlRow = ctrl.history[ctrl.history.length - 1];
+    assert.strictEqual(row.cost - ctrlRow.cost, refund, '위약이 이번 분기 행에 정확히 적혀야 한다');
+    assert.strictEqual(s.pending.overhead, 0, '위약이 다음 분기 장부로 밀렸다 — 현금 이동과 비용 계상이 한 분기 어긋난다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('취소 확인창이 보여 줄 위약 예상액이 실제 지출과 일치한다', () => {
+  const s = E.newGame(487);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'WARN').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 60;
+  s.backlog.push({
+    id: 'ord-warn', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+  });
+
+  const quoted = E.voidRefundFor(s, p);
+  assert.ok(quoted > 0, '미인도 주문이 있는데 위약 예상액이 0이다');
+  const cashBefore = s.cash;
+  assert.ok(E.cancelProgram(s, p.id).ok);
+  assert.strictEqual(cashBefore - s.cash, quoted, '확인창이 보여 준 위약과 실제 지출이 다르면 안내가 거짓이 된다');
+});
