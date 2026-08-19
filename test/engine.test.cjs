@@ -3605,3 +3605,30 @@ test('지연 결과로 자금이 마르면 그 분기 이벤트가 되살리지 
     assert.strictEqual(s.decision, null, '지급불능인데 새 사건이 떴다');
   }
 });
+
+test('플레이어가 지은 이름은 결정 사건 본문에서 태그가 되지 않는다', () => {
+  // 1층: 애초에 꺾쇠를 저장하지 않는다.
+  const s = E.newGame(613);
+  s.cash = 6000;
+  const r = E.launchProgram(
+    s,
+    { segment: 'narrow', seats: 180, range: 5200, tech: 55, material: 'hybrid' },
+    '<img src=x onerror=alert(1)>',
+  );
+  assert.ok(r.ok, '착수가 실패해 이름 검증을 못 했다');
+  assert.ok(!/[<>]/.test(r.program.name), '프로그램 이름에 꺾쇠가 그대로 저장됐다');
+
+  // 2층: 그런 이름이 이미 박힌 옛 세이브의 본문도 화면에서 무력화된다.
+  s.decision = {
+    id: 'launch_customer',
+    name: '런치 커스터머',
+    text: '<b>강조</b> — <img src=x onerror=alert(1)> 기종을 두고 협상이 붙었다.',
+    memo: {},
+    turn: s.turn,
+    options: [{ id: 'a', label: '수락', detail: '지금 받는다' }],
+  };
+  const html = P.renderOverview(s);
+  assert.ok(!/<img/i.test(html), '결정 사건 본문의 스크립트 태그가 그대로 렌더링됐다');
+  assert.ok(/&lt;img/.test(html), '이스케이프된 흔적이 없다 — 본문이 통째로 사라졌나');
+  assert.ok(/<b>강조<\/b>/.test(html), '카탈로그가 의도한 <b> 강조까지 죽었다');
+});

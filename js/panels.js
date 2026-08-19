@@ -18,6 +18,13 @@
   const num = (n) => Math.round(n).toLocaleString('ko-KR');
   const esc = (t) =>
     String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  /**
+   * 카탈로그가 심은 <b> 강조만 살리고 나머지는 전부 이스케이프한다.
+   * 결정 사건 본문에는 플레이어가 지은 프로그램 이름이 그대로 끼어들기 때문에,
+   * 통째로 innerHTML 에 넣으면 그 이름이 태그로 해석된다. 이스케이프를 먼저 하고
+   * 허용 태그만 되돌리는 순서라야, 이미 저장된 세이브의 이름도 여기서 무력화된다.
+   */
+  const richText = (t) => esc(t).replace(/&lt;(\/?b)&gt;/g, '<$1>');
 
   function bar(pct, cls) {
     const v = Math.max(0, Math.min(100, pct));
@@ -216,7 +223,7 @@
     return `
       <section class="card decision">
         <h3>${esc(d.name)}</h3>
-        <p class="decision-text">${d.text}</p>
+        <p class="decision-text">${richText(d.text)}</p>
         <div class="decision-options">
           ${d.options
             .map(

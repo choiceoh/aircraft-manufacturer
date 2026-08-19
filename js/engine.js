@@ -453,9 +453,15 @@
       return { ok: false, error: '동시에 개발 가능한 프로그램은 3개까지입니다.' };
     }
 
+    // 프로그램 이름은 결정 사건 본문처럼 서식을 허용하는 자리에도 그대로 끼어든다.
+    // 꺾쇠를 아예 저장하지 않아, 세이브에 태그가 남을 여지를 없앤다.
+    const cleanName = String(name || '')
+      .replace(/[<>]/g, '')
+      .trim()
+      .slice(0, 40);
     const program = {
       id: 'prog-' + s.nextId++,
-      name: name || `${SEGMENTS[evalSpec.segment].name}-${s.programs.length + 1}`,
+      name: cleanName || `${SEGMENTS[evalSpec.segment].name}-${s.programs.length + 1}`,
       ...evalSpec,
       phase: 'dev',
       progress: 0,
@@ -888,7 +894,10 @@
       // 종료 화면의 현금·매출·순자산 곡선이 실제 잔고와 맞는다. 새 행을 만들면
       // 존재하지 않는 81번째 분기가 재무표에 뜬다.
       foldPendingIntoLastRow(s);
-      finishGame(s);
+      // 강제 정산이 현금을 다 태웠다면 완주가 아니라 파산이다. 이 검사를 빼면
+      // 마지막 기술료 상환으로 회사가 무너지고도 완주 등급(F 아님)을 받는다.
+      // 표시 분기는 마지막으로 경영한 분기여야 한다 — s.turn 은 이미 80이다.
+      if (!checkBankrupt(s, Math.max(0, s.turn - 1))) finishGame(s);
       saveRng(s, rng);
       return { ok: true, report };
     }
@@ -900,18 +909,16 @@
     rollMarketNews(s);
     resolvePendingOutcomes(s, rng);
 
-    // 지연 결과가 현금을 말렸다면 여기서 멈춘다. 그대로 이벤트를 굴리면 연구지원금
-    // 같은 현금 유입이 이미 지급불능인 회사를 되살려, 정산에서 확정하려던 파산이
-    // 없던 일이 된다. (rollEvents 안에도 같은 취지의 중단이 있다.)
-    if (isInsolvent(s)) {
-      s.events = [];
-      s.decision = null;
-      saveRng(s, rng);
-      return { ok: true, report };
-    }
-
-    s.events = rollEvents(s, rng);
-    s.decision = rollDecision(s, rng);
+    // 지연 결과가 현금을 말렸다면 이번 분기 이벤트·사건은 굴리지 않는다. 그대로 두면
+    // 연구지원금 같은 현금 유입이 이미 지급불능인 회사를 되살려, 확정될 파산이 없던
+    // 일이 된다. (rollEvents 안에도 같은 취지의 중단이 있다.)
+    //
+    // 다만 여기서 곧장 반환하지는 않는다. 공고 갱신과 아래 파산 확정을 건너뛰면
+    // 회사는 지급불능인 채로 살아 있고, 지난 분기 공고·입찰이 그대로 남아 다음
+    // 정산에서 같은 입찰이 한 번 더 판정된다.
+    const doomedByOutcomes = isInsolvent(s);
+    s.events = doomedByOutcomes ? [] : rollEvents(s, rng);
+    s.decision = doomedByOutcomes ? null : rollDecision(s, rng);
     s.rfps = generateRfps(s, rng);
     s.bids = {};
 
@@ -2196,12 +2203,13 @@
   }
 
   /** 지급불능 판정 — 종료됐으면 true. */
-  function checkBankrupt(s) {
+  function checkBankrupt(s, lastTurnOverride) {
     if (s.gameOver) return true;
     // 부채가 한도에 1M 못 미친 채 이벤트로 현금이 -741M 이 된 상태도 잡아야 하므로
     // debt >= maxDebt 가 아니라 "남은 여유까지 합쳐 음수인가"로 본다.
     if (isInsolvent(s)) {
-      s.gameOver = { reason: 'bankrupt', lastTurn: s.turn, ...finalScore(s, true) };
+      const lastTurn = typeof lastTurnOverride === 'number' ? lastTurnOverride : s.turn;
+      s.gameOver = { reason: 'bankrupt', lastTurn, ...finalScore(s, true) };
       pushLog(s, 'bad', '자금이 완전히 고갈되고 차입 한도도 소진됐다. 회사는 법정관리에 들어간다.');
       return true;
     }
