@@ -396,6 +396,14 @@
                 const waited = h.recall('grantWaited', 0) + 1;
                 h.remember('grantWaited', waited);
                 if (waited >= 6) return `${p.name}이 끝내 시장에 나오지 못했다. 산업부가 기술료를 면제했다.`;
+                // 종료 정산에는 미룰 다음 분기가 없다. 유예로 닫으면 지원금이 통째로
+                // 공짜가 되므로(종료 직전에 받고 튀는 수가 생긴다), 성공하지 못한
+                // 지원은 원금을 회수당한다 — 기술료가 아니라 지원금 자체다.
+                if (h.final) {
+                  const clawback = 900;
+                  h.expense(clawback);
+                  return `${p.name}이 시장에 나오지 못한 채 경영이 끝났다. 산업부가 개발 지원금 ${money(clawback)}을 회수했다.`;
+                }
                 return { text: `${p.name}이 아직 시장에 없다. 기술료 상환이 4분기 유예됐다.`, retryIn: 4 };
               }
               const fee = 1150;

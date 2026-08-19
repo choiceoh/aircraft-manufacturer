@@ -140,7 +140,9 @@
   function toast(text, tone) {
     const el = document.getElementById('toast');
     el.className = 'toast show ' + (tone || '');
-    el.innerHTML = text;
+    // 결정 결과·엔진 오류 문구에는 플레이어가 지은 프로그램 이름이 그대로 끼어든다.
+    // 손익 강조처럼 우리가 넣은 <b> 만 살리고 나머지는 이스케이프한다(결정 카드와 같은 규칙).
+    el.innerHTML = P.richText(text);
     clearTimeout(toast._t);
     toast._t = setTimeout(() => (el.className = 'toast'), 4200);
   }
@@ -245,7 +247,7 @@
         if (base) {
           ui.spec = E.derivativeSpec(base, 20);
           ui.tab = 'design';
-          toast(`${P.esc(base.name)} 파생형 설계를 불러왔다. 좌석수를 조정해 보라.`);
+          toast(`${base.name} 파생형 설계를 불러왔다. 좌석수를 조정해 보라.`);
           render();
         }
         break;
@@ -258,7 +260,7 @@
         if (act(r)) {
           ui.designName = '';
           ui.tab = 'programs';
-          toast(`${P.esc(r.program.name)} 개발에 착수했다.`, 'good');
+          toast(`${r.program.name} 개발에 착수했다.`, 'good');
           render();
         }
         break;

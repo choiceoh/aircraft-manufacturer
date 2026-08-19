@@ -3632,3 +3632,67 @@ test('플레이어가 지은 이름은 결정 사건 본문에서 태그가 되�
   assert.ok(/&lt;img/.test(html), '이스케이프된 흔적이 없다 — 본문이 통째로 사라졌나');
   assert.ok(/<b>강조<\/b>/.test(html), '카탈로그가 의도한 <b> 강조까지 죽었다');
 });
+
+test('토스트도 결정 카드와 같은 규칙으로 걸러 낸다', () => {
+  // 결정 결과 문구는 카드가 아니라 토스트로 나가고, 그 안에도 프로그램 이름이
+  // 끼어든다. 두 경로가 다른 규칙을 쓰면 한쪽만 막힌다.
+  assert.strictEqual(P.richText('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
+  assert.strictEqual(P.richText('손익 <b>+$10M</b>'), '손익 <b>+$10M</b>');
+
+  // ui.js 는 DOM 에 묶여 있어 여기서 실행할 수 없다. innerHTML 에 날문자열이
+  // 다시 꽂히는 회귀만 막는다.
+  const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
+  const fn = src.slice(src.indexOf('function toast('), src.indexOf('function act('));
+  assert.ok(/innerHTML\s*=\s*P\.richText\(/.test(fn), '토스트가 문자열을 그대로 innerHTML 에 넣는다');
+});
+
+test('남은 기간이 없으면 이사회 목표를 발령하지 않는다', () => {
+  // 목표 개념이 없던 세이브를 막판에 불러오면, 기한이 게임 밖인 목표가 서고
+  // 종료 정산이 그걸 한 분기 만에 채점한다.
+  const s = E.newGame(211);
+  s.turn = Data.CONFIG.totalTurns - 1;
+  s.mandate = null;
+  const before = s.reputation;
+  E.endTurn(s);
+
+  assert.strictEqual(s.mandate, null, '기한이 게임 밖인 목표가 발령됐다');
+  assert.ok(s.gameOver, '마지막 분기를 정산했는데 끝나지 않았다');
+  assert.strictEqual(s.stats.mandatesMissed || 0, 0, '발령된 적 없는 목표로 벌점을 받았다');
+  assert.strictEqual(s.stats.mandatesMet || 0, 0, '발령된 적 없는 목표로 보상을 받았다');
+  assert.ok(Math.abs(s.reputation - before) < 6, '한 분기 만에 목표 채점 폭의 평판이 움직였다');
+});
+
+test('종료 직전에 받은 개발 지원금은 유예로 사라지지 않는다', () => {
+  const s = E.newGame(223);
+  s.cash = 6000;
+  E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 55, material: 'hybrid' }, 'GRANT-1');
+  const p = s.programs[s.programs.length - 1];
+
+  // 종료 두 분기 전에 지원을 받았다 — 그 기종은 끝까지 개발 중이다.
+  s.turn = Data.CONFIG.totalTurns - 2;
+  s.pendingOutcomes = [
+    { turn: s.turn + 8, id: 'gov_grant', optionId: 'take', memo: { program: p.id, grantWaited: 0 } },
+  ];
+
+  // 같은 판을 의무만 빼고 한 번 더 돌려 차액으로 잰다. 마지막 두 분기에도
+  // 인도·서비스 수입이 들어와 절대 현금만으로는 회수분이 묻힌다.
+  const control = JSON.parse(JSON.stringify(s));
+  control.pendingOutcomes = [];
+
+  while (!s.gameOver) E.endTurn(s);
+  while (!control.gameOver) E.endTurn(control);
+
+  assert.ok(p.phase !== 'production', '기종이 양산에 들어가 시나리오가 성립하지 않았다');
+  assert.ok(
+    s.log.some((l) => /회수/.test(l.text)),
+    '유예로 닫히고 회수 기록이 남지 않았다',
+  );
+  assert.ok(
+    !s.log.some((l) => /유예/.test(l.text)),
+    '정산할 분기가 없는데 유예로 닫았다',
+  );
+  assert.ok(
+    control.cash - s.cash >= 900,
+    `회수액이 지원금에 못 미친다 (차액 ${Math.round(control.cash - s.cash)})`,
+  );
+});

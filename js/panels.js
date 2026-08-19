@@ -1336,6 +1336,7 @@
     renderFinance,
     renderLog,
     esc,
+    richText,
     money,
     num,
   };

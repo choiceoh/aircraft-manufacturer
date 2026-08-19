@@ -1784,6 +1784,13 @@
 
   /** 다음 목표를 발령한다. 같은 목표가 연달아 나오지 않게 직전 것은 뺀다. */
   function issueMandate(s, rng) {
+    // 온전한 20분기가 남아 있을 때만 발령한다. 목표가 없던 옛 세이브를 79분기에
+    // 불러오면 기한이 게임 밖(99분기)인 목표가 서고, 종료 정산이 그것을 한 분기
+    // 만에 채점해 평판을 깎거나 증자를 안긴다. 정상 주기(0·20·40·60)에서는 늘 참이다.
+    if (s.turn + MANDATE_QUARTERS > CONFIG.totalTurns) {
+      s.mandate = null;
+      return null;
+    }
     const pool = MANDATES.filter((m) => !s.mandate || m.id !== s.mandate.id);
     const def = pool[Math.floor(rng.next() * pool.length)] || MANDATES[0];
     const target = def.target(s);
@@ -1956,10 +1963,13 @@
    * 선택지 apply 와 몇 분기 뒤 지연 결과가 같이 봐야 하기 때문이다. 다시 뽑으면
    * "판아메르가 제안했는데 코스모와 계약됐다" 같은 어긋남이 생긴다.
    */
-  function decisionHelpers(s, rng, memo) {
+  function decisionHelpers(s, rng, memo, opts) {
     return {
       rng,
       fmt: fmtMoney,
+      // 종료 정산이라 다음 분기가 없다는 뜻. 유예로 닫으면 안 되는 약속이
+      // 이 값을 보고 그 자리에서 결말을 낸다.
+      final: !!(opts && opts.final),
       remember: (k, v) => {
         memo[k] = v;
         return v;
@@ -2118,11 +2128,12 @@
       const def = Decisions.get(item.id);
       if (!opt || !opt.after || !def) continue;
       const memo = item.memo || {};
-      const out = opt.after.apply(s, decisionHelpers(s, rng, memo));
+      const out = opt.after.apply(s, decisionHelpers(s, rng, memo, { final }));
       // 결과가 { text, retryIn } 을 내면 아직 끝난 게 아니라 미뤄진 것이다.
       // 조건이 안 맞았다고 그냥 버리면 상환 의무 같은 약속이 공짜로 사라진다.
       const text = typeof out === 'string' ? out : out && out.text;
-      // 종료 정산에서는 다시 예약해 봐야 정산할 분기가 없다.
+      // 종료 정산에서는 다시 예약해 봐야 정산할 분기가 없다. 이때 retryIn 이 돌아온다면
+      // 그 선택지가 h.final 을 보고 결말을 내지 않았다는 뜻이고, 약속은 여기서 사라진다.
       if (!final && out && typeof out === 'object' && out.retryIn > 0) {
         s.pendingOutcomes.push({ turn: s.turn + out.retryIn, id: item.id, optionId: item.optionId, memo });
       }
