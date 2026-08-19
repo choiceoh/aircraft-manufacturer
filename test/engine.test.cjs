@@ -4678,3 +4678,64 @@ test('취소 확인창이 보여 줄 위약 예상액이 실제 지출과 일치
   assert.ok(E.cancelProgram(s, p.id).ok);
   assert.strictEqual(cashBefore - s.cash, quoted, '확인창이 보여 준 위약과 실제 지출이 다르면 안내가 거짓이 된다');
 });
+
+test('정체된 프로그램의 새 수주에도 6분기 유예가 통째로 주어진다', () => {
+  // 프로그램이 이미 6분기 멈춰 있어도 방금 딴 주문이 같은 분기에 무르면 안 된다 —
+  // 선수금을 받자마자 1.5배로 물어 주는 함정이 된다. 시계는 주문마다 따로 간다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(491);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'CLOCK').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    p.share = 0;
+    p.lastProgressTurn = s.turn - 6; // 프로그램은 이미 오래 정체
+
+    s.backlog.push({
+      id: 'ord-clock', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, pledge: 'standard',
+    });
+
+    E.endTurn(s);
+    const o = s.backlog.find((x) => x.id === 'ord-clock');
+    assert.ok(o && o.remaining === 10, '방금 딴 주문이 수주 당일 무르면 유예가 광고와 다르다');
+
+    // 계속 정체하면 수주 후 6분기째부터는 무른다.
+    for (let i = 0; i < 7 && s.backlog.some((x) => x.id === 'ord-clock'); i++) {
+      s.cash = Math.max(s.cash, 8000);
+      E.endTurn(s);
+    }
+    assert.ok(!s.backlog.some((x) => x.id === 'ord-clock'), '수주 후에도 계속 멈춘 주문은 무르러야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('파생형은 경험 할인을 받지 않는다 — 파생 배율과 겹치면 이중 할인', () => {
+  const D2 = globalThis.AirlinerDesign;
+  const base = {
+    id: 'base-x', segment: 'narrow', seats: 180, range: 5800, tech: 40,
+    fuselage: 'aluminum', wingMat: 'aluminum', engine: undefined, family: false,
+  };
+  const spec = {
+    segment: 'narrow', seats: 200, range: 5800, tech: 40,
+    fuselage: 'aluminum', wingMat: 'aluminum',
+    derivedFrom: base,
+  };
+  const noXp = D2.evaluate({ ...spec, experience: 0 });
+  const withXp = D2.evaluate({ ...spec, experience: 4 });
+  assert.ok(noXp.derivative, '파생형 판정이 성립해야 검증이 의미 있다');
+  assert.strictEqual(withXp.devCost, noXp.devCost, '파생형 개발비에 경험 할인이 겹치면 안 된다');
+  assert.strictEqual(withXp.devQuarters, noXp.devQuarters, '파생형 기간에 경험 할인이 겹치면 안 된다');
+  assert.strictEqual(withXp.engineersNeeded, noXp.engineersNeeded, '파생형 필요 인력에 경험 할인이 겹치면 안 된다');
+
+  // 신규 설계는 경험 할인을 받아야 한다 — 파생형만 제외됐는지 대조.
+  const freshNo = D2.evaluate({ segment: 'narrow', seats: 200, range: 5800, tech: 40, experience: 0 });
+  const freshXp = D2.evaluate({ segment: 'narrow', seats: 200, range: 5800, tech: 40, experience: 4 });
+  assert.ok(freshXp.devCost < freshNo.devCost, '신규 설계의 경험 할인까지 사라지면 안 된다');
+});

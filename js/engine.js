@@ -674,8 +674,14 @@
       if (o.remaining <= 0) continue;
       const p = s.programs.find((x) => x.id === o.programId);
       if (!p || p.phase === 'production') continue;
-      const lastMoved = typeof p.lastProgressTurn === 'number' ? p.lastProgressTurn : o.wonTurn;
-      if (s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
+      // 시계는 주문마다 따로 간다 — 수주 시점과 마지막 진척 중 **늦은 쪽**부터.
+      // 프로그램의 정체 시점만 보면 이미 6분기 멈춘 기종의 새 수주가 같은 분기에
+      // 즉시 무른다: 선수금을 받자마자 1.5배로 물어 주는 함정이 된다. 항공사의
+      // 인내심은 자기가 계약한 날부터 세는 게 맞다.
+      const won = typeof o.wonTurn === 'number' ? o.wonTurn : -Infinity;
+      const moved = typeof p.lastProgressTurn === 'number' ? p.lastProgressTurn : -Infinity;
+      const lastMoved = Math.max(won, moved);
+      if (!Number.isFinite(lastMoved) || s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
       const refund = Math.round(o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT);
       s.cash -= refund;
       // 이 분기 리포트에 직접 적는다(chargeLatePenalties 와 같은 이유). endTurn 은
