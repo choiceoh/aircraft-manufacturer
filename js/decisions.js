@@ -378,7 +378,14 @@
             quarters: 8,
             apply: (s, h) => {
               const cert = s.programs.some((p) => p.phase === 'production' && !p.legacy);
-              if (!cert) return '지원받은 프로그램이 아직 시장에 없다. 기술료 상환은 유예됐다.';
+              if (!cert) {
+                // 유예이지 면제가 아니다. 다시 예약하지 않으면 개발이 8분기보다
+                // 오래 걸리는 흔한 경우에 지원금이 통째로 공짜가 된다.
+                const waited = h.recall('grantWaited', 0) + 1;
+                h.remember('grantWaited', waited);
+                if (waited >= 6) return '지원받은 기종이 끝내 시장에 나오지 못했다. 산업부가 기술료를 면제했다.';
+                return { text: '지원받은 프로그램이 아직 시장에 없다. 기술료 상환이 4분기 유예됐다.', retryIn: 4 };
+              }
               const fee = 1150;
               h.expense(fee);
               return `지원받은 기종이 양산에 들어가면서 기술료 ${money(fee)}을 상환했다.`;
@@ -493,18 +500,29 @@
         const o = h.rng.pick(s.backlog.filter((x) => x.remaining > 0));
         h.remember('airline', o.airlineId);
         h.remember('airlineName', o.airlineName);
-        return `${o.airlineName}의 인도 일정이 밀리고 있다. 먼저 알릴지, 특별 연장 근무로 메울지 정해야 한다.`;
+        h.remember('orderId', o.id);
+        return `${o.airlineName}의 ${o.programName} ${o.remaining}기 인도가 밀리고 있다. 먼저 알릴지, 특별 연장 근무로 메울지 정해야 한다.`;
       },
       options: [
         {
           id: 'overtime',
-          label: '특별 근무로 맞춘다',
-          detail: '비용을 쓰고 약속을 지킨다',
+          label: '특별 근무로 만회한다',
+          detail: '비용을 쓰고 그 주문을 앞당겨 넘긴다. 기한도 다시 맞춘다',
           apply: (s, h) => {
             const cost = Math.round(s.engineers * CONFIG.engineerCostPerQuarter * 0.12 + 60);
             h.expense(cost);
             h.relation(h.recall('airline'), 6);
-            return `${money(cost)}을 들여 일정을 맞췄다. ${h.recall('airlineName', '고객사')}의 신뢰를 지켰다.`;
+
+            // 돈만 쓰고 끝나면 같은 분기에 곧바로 지연 위약금을 문다 — 광고한 효과와
+            // 정반대다. 특별 근무는 실제로 기체를 더 뽑고 기한을 다시 맞춘다.
+            const order = s.backlog.find((o) => o.id === h.recall('orderId'));
+            if (!order || order.remaining <= 0) return `${money(cost)}을 들여 라인을 돌렸지만 그 주문은 이미 정리됐다.`;
+            const p = s.programs.find((x) => x.id === order.programId);
+            const rushed = Math.max(1, Math.ceil(order.remaining * 0.35));
+            if (p) p.stock += rushed;
+            if (typeof order.dueTurn === 'number') order.dueTurn += 2;
+            order.lastPenaltyTurn = undefined;
+            return `${money(cost)}을 들여 ${rushed}기를 앞당겨 뽑고 ${h.recall('airlineName', '고객사')}과 기한을 다시 맞췄다.`;
           },
         },
         {
@@ -536,8 +554,10 @@
           apply: (s, h) => {
             const fee = Math.round(s.debt * 0.015);
             h.expense(fee);
-            s.effects.rateBump = -0.0025;
-            s.effects.rateBumpQuarters = Math.max(s.effects.rateBumpQuarters || 0, 6);
+            // 감면은 가산과 다른 슬롯이다. 같은 칸을 쓰면 금융위기 가산을 지우고
+            // 남은 기간 내내 할인 금리가 되어 버린다.
+            s.effects.rateCut = Math.max(s.effects.rateCut || 0, 0.0025);
+            s.effects.rateCutQuarters = Math.max(s.effects.rateCutQuarters || 0, 6);
             return `수수료 ${money(fee)}을 내고 차환했다. 6분기 동안 이자율이 0.25%p 내려간다.`;
           },
         },

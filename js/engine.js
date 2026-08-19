@@ -76,6 +76,9 @@
         grounded: {}, // programId → 남은 정지 분기수 (기종별로 독립)
         rateBump: 0,
         rateBumpQuarters: 0,
+        // 차환 감면 — 가산과 상쇄되지 않도록 슬롯을 따로 둔다.
+        rateCut: 0,
+        rateCutQuarters: 0,
       },
       programs: [],
       lines: [],
@@ -99,9 +102,11 @@
         duels: {},
         // 분기말 이력만 보면 분기 중에 빌렸다 갚은 봉우리가 통째로 빠진다.
         peakDebt: 0,
+        // 승계 선단 덕에 시작부터 43%대다. 이력만 보면 그 출발점이 회고에서 사라진다.
+        peakShare: 0,
       },
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
-      pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 },
+      pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 },
       events: [],
       // 이번 분기 업계 동향 (경쟁사 취항·단산). 개요 화면이 읽는다.
       news: [],
@@ -129,6 +134,8 @@
     markDebtPeak(s);
 
     seedLegacyProgram(s);
+    // 승계 선단(186기)이 들어온 **뒤에** 재야 시작 점유율(43.7%)이 잡힌다.
+    s.stats.peakShare = marketShare(s);
 
     const rng = rngFor(s);
     s.shocks = buildShockSchedule(s, rng);
@@ -246,8 +253,8 @@
       delete s.effects.groundedProgram;
       delete s.effects.groundedQuarters;
     }
-    if (!s.pending) s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 };
-    for (const k of ['revenue', 'delivered', 'rdCost', 'capex', 'overhead']) {
+    if (!s.pending) s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 };
+    for (const k of ['revenue', 'delivered', 'rdCost', 'capex', 'overhead', 'ordersWon']) {
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
@@ -259,6 +266,12 @@
     // 봉우리를 모르는 세이브는 지금 부채와 분기말 이력의 최댓값에서 시작한다.
     if (typeof s.stats.peakDebt !== 'number') {
       s.stats.peakDebt = (s.history || []).reduce((a, h) => (h.debt > a ? h.debt : a), Math.round(s.debt));
+    }
+    if (typeof s.stats.peakShare !== 'number') {
+      s.stats.peakShare = (s.history || []).reduce(
+        (a, h) => (typeof h.share === 'number' && h.share > a ? h.share : a),
+        marketShare(s),
+      );
     }
     if (!Array.isArray(s.news)) s.news = [];
     if (s.decision === undefined) s.decision = null;
@@ -786,6 +799,16 @@
     if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
     ensureShape(s);
     const rng = rngFor(s);
+
+    // 답하지 않은 사건을 **리포트를 만들기 전에** 닫는다. 여기서 나가는 돈은
+    // 플레이어 행동과 같은 통로(pending)를 쓰므로, 리포트를 먼저 만들면 이 분기에
+    // 현금은 나가고 비용은 다음 분기 장부에 적히는 한 분기 어긋남이 생긴다.
+    resolveOpenDecision(s, rng);
+
+    // 목표 개념이 없던 세이브를 불러오면 목표가 비어 있다. 정산 함수는 빈 목표에서
+    // 그냥 돌아가므로, 여기서 채워 주지 않으면 그 판은 끝까지 목표 없이 흘러간다.
+    if (!s.mandate) issueMandate(s, rng);
+
     const report = {
       label: turnLabel(s.turn),
       revenue: s.pending.revenue,
@@ -795,12 +818,11 @@
       overhead: s.pending.overhead,
       interest: 0,
       delivered: s.pending.delivered,
-      ordersWon: 0,
+      // 결정으로 성사된 수주도 이 분기 실적이다. 0으로 시작하면 리스사 대량 발주를
+      // 받은 분기가 "신규 수주 0기"로 기록된다.
+      ordersWon: s.pending.ordersWon || 0,
     };
-    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 };
-
-    // 답하지 않은 사건을 먼저 닫는다. 이 분기의 생산·인도가 그 결과를 받아야 한다.
-    resolveOpenDecision(s, rng);
+    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 };
 
     resolveBids(s, rng, report);
     advanceDevelopment(s, rng, report);
@@ -813,6 +835,8 @@
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
     settleFinance(s, report);
+
+    s.stats.peakShare = Math.max(s.stats.peakShare || 0, marketShare(s));
 
     s.history.push({
       turn: s.turn,
@@ -848,6 +872,9 @@
     // 마지막 분기를 정산했다면 여기서 끝낸다. 존재하지 않는 다음 분기의 경쟁사 인도량이
     // 최종 점유율을 깎거나, 이벤트가 최종 현금·평판까지 바꾼다.
     if (s.turn >= CONFIG.totalTurns) {
+      // 60분기에 발령된 목표는 80분기가 기한이다. 여기서 닫지 않으면 완주한 판마다
+      // 마지막 5년치 성과가 보상·벌점 없이 사라진다.
+      settleMandate(s, rng, { final: true });
       finishGame(s);
       saveRng(s, rng);
       return { ok: true, report };
@@ -1184,7 +1211,8 @@
       const first = o.lastPenaltyTurn === undefined;
       o.lastPenaltyTurn = s.turn;
       s.cash -= penalty;
-      s.pending.overhead += penalty;
+      // 이 분기 리포트에만 적는다. pending 에도 넣으면 다음 분기 장부가 현금 이동
+      // 없이 같은 위약금을 한 번 더 세어 손익과 신용등급이 어긋난다.
       report.overhead += penalty;
       s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 3, 0, 100);
       adjustReputation(s, -1);
@@ -1294,7 +1322,7 @@
       demand: Math.round(s.market.demandIndex * 1000) / 1000,
     });
     if (s.history.length > 120) s.history.shift();
-    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0 };
+    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 };
   }
 
   function tickEffects(s) {
@@ -1304,6 +1332,10 @@
     if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
     if (e.demandBoomQuarters > 0) e.demandBoomQuarters--;
     if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
+    if (e.rateCutQuarters > 0) {
+      e.rateCutQuarters--;
+      if (e.rateCutQuarters === 0) e.rateCut = 0;
+    }
     if (e.rateBumpQuarters > 0) {
       e.rateBumpQuarters--;
       // 기간이 끝나면 가산폭도 함께 지운다. 남겨두면 나중에 약한 경색이
@@ -1708,8 +1740,9 @@
    * 달성하면 이사회가 증자로 답하고, 실패하면 조달 비용이 오른다 — 실패가 곧바로
    * 파산으로 이어지지는 않되 다음 5년이 확실히 무거워진다.
    */
-  function settleMandate(s, rng) {
-    if (!s.mandate || s.turn < s.mandate.dueTurn) return;
+  function settleMandate(s, rng, opts) {
+    const final = !!(opts && opts.final);
+    if (!s.mandate || (!final && s.turn < s.mandate.dueTurn)) return;
     const st = mandateStatus(s);
     if (!st) {
       s.mandate = null;
@@ -1734,7 +1767,10 @@
         `이사회 목표 미달 — ${s.mandate.text} (${st.format(st.now)} / ${st.format(st.target)}). 신임이 흔들리고 조달 금리가 올랐다.`,
       );
     }
-    issueMandate(s, rng);
+    // 마지막 정산에서는 새 목표를 발령하지 않는다 — 끝난 판에 20분기짜리 숙제가
+    // 남으면 회고 화면이 존재하지 않는 미래를 가리킨다.
+    if (final) s.mandate = null;
+    else issueMandate(s, rng);
   }
 
   // ─────────────────────────────── 회생 수단 ───────────────────────────────
@@ -1867,6 +1903,7 @@
         s.cash += deposit;
         s.pending.revenue += deposit;
         s.stats.ordersWon += qty;
+        s.pending.ordersWon = (s.pending.ordersWon || 0) + qty;
         s.backlog.push({
           id: 'ord-' + s.nextId++,
           airlineId,
@@ -1974,7 +2011,14 @@
       const opt = Decisions.optionOf(item.id, item.optionId);
       const def = Decisions.get(item.id);
       if (!opt || !opt.after || !def) continue;
-      const text = opt.after.apply(s, decisionHelpers(s, rng, item.memo || {}));
+      const memo = item.memo || {};
+      const out = opt.after.apply(s, decisionHelpers(s, rng, memo));
+      // 결과가 { text, retryIn } 을 내면 아직 끝난 게 아니라 미뤄진 것이다.
+      // 조건이 안 맞았다고 그냥 버리면 상환 의무 같은 약속이 공짜로 사라진다.
+      const text = typeof out === 'string' ? out : out && out.text;
+      if (out && typeof out === 'object' && out.retryIn > 0) {
+        s.pendingOutcomes.push({ turn: s.turn + out.retryIn, id: item.id, optionId: item.optionId, memo });
+      }
       if (text) pushLog(s, 'event', `[${def.name}] ${text}`);
     }
   }
@@ -2085,7 +2129,12 @@
   }
 
   function backlogValue(s) {
-    return s.backlog.reduce((a, o) => a + o.remaining * o.unitPrice * (1 - CONFIG.depositRate), 0);
+    // 선수금 확대로 계약한 주문은 이미 30%를 받았다. 고정 15%로 빼면 남은 대금을
+    // 계약가의 15%만큼 부풀려 보여 준다. 조건이 없던 옛 주문만 기본값을 쓴다.
+    return s.backlog.reduce(
+      (a, o) => a + o.remaining * o.unitPrice * (1 - (typeof o.depositRate === 'number' ? o.depositRate : CONFIG.depositRate)),
+      0,
+    );
   }
 
   function marketShare(s) {
@@ -2148,10 +2197,13 @@
    * 계산하면 등급이 BBB 가 아닐 때 표시와 청구가 어긋난다.
    */
   function interestRate(s) {
-    return (
-      CONFIG.interestPerQuarter * creditRating(s).mult +
-      (s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0)
-    );
+    // 가산(위기·목표 미달)과 감면(차환)은 슬롯을 따로 쓴다. 한 칸을 공유하면
+    // 차환 0.25%p 감면이 금융위기 1.2%p 가산을 통째로 지워 버리고, 남은 기간 동안
+    // 오히려 할인 금리가 된다.
+    const bump = s.effects.rateBumpQuarters > 0 ? s.effects.rateBump : 0;
+    const discount = s.effects.rateCutQuarters > 0 ? s.effects.rateCut : 0;
+    const base = CONFIG.interestPerQuarter * creditRating(s).mult;
+    return Math.max(CONFIG.interestPerQuarter * 0.4, base + bump - discount);
   }
 
   /** 이번 분기에 실제로 청구될 이자율 — 분기 시작 시 고정된 값. 화면은 이걸 보여준다. */
@@ -2251,7 +2303,10 @@
     const settled = hist.filter((h) => typeof h.net === 'number');
     const best = settled.reduce((a, h) => (!a || h.net > a.net ? h : a), null);
     const worst = settled.reduce((a, h) => (!a || h.net < a.net ? h : a), null);
-    const peakShare = hist.reduce((a, h) => (typeof h.share === 'number' && h.share > a ? h.share : a), 0);
+    const peakShare = hist.reduce(
+      (a, h) => (typeof h.share === 'number' && h.share > a ? h.share : a),
+      Math.max(s.stats.peakShare || 0, marketShare(s)),
+    );
     const peakDebt = hist.reduce((a, h) => (h.debt > a ? h.debt : a), Math.max(s.stats.peakDebt || 0, s.debt));
     const totalRevenue = settled.reduce((a, h) => a + h.revenue, 0);
     const totalRd = settled.reduce((a, h) => a + (h.rd || 0), 0);

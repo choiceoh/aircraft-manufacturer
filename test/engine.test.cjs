@@ -3326,3 +3326,174 @@ test('서비스 사업이 없던 옛 세이브도 그대로 돈다', () => {
   assert.doesNotThrow(() => E.endTurn(s));
   assert.ok(E.serviceIncome(s).total > 0);
 });
+
+// ─────────────────── 리뷰 지적 회귀 (2차) ───────────────────
+
+test('위약금은 이번 분기 리포트에만 잡힌다 (다음 분기 이중 계상 금지)', () => {
+  const s = E.newGame(301);
+  const p = s.programs.find((x) => x.legacy);
+  for (const l of s.lines) l.idle = true;
+  s.backlog.push({
+    id: 'ord-pen', airlineId: 'hanul', airlineName: '한울항공', programId: p.id, programName: p.name,
+    qty: 20, remaining: 20, unitPrice: 60, wonTurn: s.turn, pledge: 'priority', financing: 'normal',
+    dueTurn: s.turn, depositRate: 0.15,
+  });
+
+  s.cash = 30000;
+  const r1 = E.endTurn(s);
+  assert.ok(r1.report.overhead > 0, '위약금이 이번 분기에 안 잡혔다');
+  const charged = r1.report.overhead;
+
+  // 다음 분기: 현금은 또 나가지만(계속 밀리므로) 직전 분기 몫이 얹히면 안 된다.
+  const cashBefore = s.cash;
+  const r2 = E.endTurn(s);
+  const cashSpent = cashBefore - s.cash;
+  const reported = r2.report.overhead + r2.report.interest + r2.report.rdCost + r2.report.capex + r2.report.productionCost - r2.report.revenue;
+  assert.ok(
+    Math.abs(cashSpent - reported) < 2,
+    `현금 ${Math.round(cashSpent)} 이 나갔는데 장부는 ${Math.round(reported)} — 지난 분기 위약금 ${Math.round(charged)}이 다시 세어졌다`,
+  );
+});
+
+test('결정으로 성사된 수주도 그 분기 실적에 잡힌다', () => {
+  const s = E.newGame(307);
+  const def = Dec.get('lessor_bulk');
+  const p = s.programs.find((x) => x.legacy);
+  s.decision = {
+    id: 'lessor_bulk', name: def.name, text: 'x',
+    memo: { program: p.id, qty: 24 }, turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+  assert.ok(E.decide(s, 'accept').ok);
+  const r = E.endTurn(s);
+  assert.strictEqual(r.report.ordersWon, 24, '결정으로 받은 물량이 리포트에 0으로 남았다');
+  assert.strictEqual(s.history[s.history.length - 1].ordersWon, 24);
+});
+
+test('백로그 가치는 주문별 선수금률을 뺀다', () => {
+  const s = E.newGame(311);
+  const p = s.programs.find((x) => x.legacy);
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'a', airlineId: 'hanul', airlineName: 'x', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 100, wonTurn: 0, depositRate: 0.3,
+  });
+  // 선수금 30%를 이미 받았으므로 남은 값은 700 이어야 한다.
+  assert.ok(Math.abs(E.backlogValue(s) - 700) < 1, `선수금 확대 주문의 잔여 가치가 틀렸다 (${E.backlogValue(s)})`);
+
+  // 조건이 없던 옛 주문은 기본값(15%)을 쓴다.
+  s.backlog[0] = { ...s.backlog[0], depositRate: undefined };
+  assert.ok(Math.abs(E.backlogValue(s) - 850) < 1, `옛 주문의 잔여 가치가 틀렸다 (${E.backlogValue(s)})`);
+});
+
+test('완주하면 마지막 이사회 목표까지 정산된다', () => {
+  const s = E.newGame(313);
+  // 마지막 구간으로 건너뛴다.
+  s.turn = Data.CONFIG.totalTurns - 2;
+  s.mandate = { id: 'delivery', name: '인도 확대', target: 1, text: '인도 1기', issuedTurn: s.turn - 18, dueTurn: Data.CONFIG.totalTurns };
+  s.stats.delivered = 9999;
+  s.cash = 40000;
+  while (!s.gameOver) E.endTurn(s);
+
+  assert.ok(s.gameOver, '게임이 끝나지 않았다');
+  assert.ok((s.stats.mandatesMet || 0) >= 1, '마지막 목표가 정산되지 않고 사라졌다');
+  assert.strictEqual(s.mandate, null, '끝난 판에 새 목표가 발령됐다');
+});
+
+test('목표 개념이 없던 세이브도 다음 분기에 목표를 받는다', () => {
+  const s = E.newGame(317);
+  s.mandate = null;
+  E.ensureShape(s);
+  assert.strictEqual(E.mandateStatus(s), null);
+  s.cash = 20000;
+  E.endTurn(s);
+  assert.ok(E.mandateStatus(s), '옛 세이브가 끝까지 목표 없이 흘러간다');
+});
+
+test('차환 감면이 위기 가산을 지우지 않는다', () => {
+  const s = E.newGame(319);
+  // 부채를 먼저 확정한다 — 신용등급이 부채비율을 보므로, 나중에 늘리면 비교가 어긋난다.
+  s.debt = 4000;
+  s.effects.rateBump = 0.012;
+  s.effects.rateBumpQuarters = 8;
+  const crisisRate = E.interestRate(s);
+
+  const def = Dec.get('refinance');
+  s.decision = {
+    id: 'refinance', name: def.name, text: 'x', memo: {}, turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+  E.decide(s, 'refi');
+
+  const after = E.interestRate(s);
+  assert.ok(after < crisisRate, '차환했는데 금리가 안 내려갔다');
+  assert.ok(after > E.interestRate({ ...s, effects: { ...s.effects, rateBumpQuarters: 0, rateCutQuarters: 0 } }) - 0.0001 - 0.012,
+    '차환이 위기 가산을 통째로 지웠다');
+  // 가산이 살아 있어야 한다 — 감면은 별도 슬롯.
+  assert.strictEqual(s.effects.rateBump, 0.012, '위기 가산이 덮어써졌다');
+  assert.ok(s.effects.rateCut > 0, '감면이 기록되지 않았다');
+});
+
+test('정부 지원금 상환 의무는 유예돼도 사라지지 않는다', () => {
+  const s = E.newGame(323);
+  const def = Dec.get('gov_grant');
+  s.cash = 5000;
+  E.launchProgram(s, { segment: 'wide', seats: 300, range: 12000, tech: 70, fuselage: 'composite', wingMat: 'composite' }, 'SLOW');
+  s.decision = {
+    id: 'gov_grant', name: def.name, text: 'x', memo: {}, turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+  E.decide(s, 'take');
+  assert.strictEqual(s.pendingOutcomes.length, 1);
+
+  // 8분기 뒤에도 양산 기종이 없다 — 의무가 사라지면 지원금이 공짜가 된다.
+  for (let i = 0; i < 9 && !s.gameOver; i++) {
+    s.cash = Math.max(s.cash, 20000);
+    E.endTurn(s);
+  }
+  assert.ok(s.pendingOutcomes.length >= 1, '상환 의무가 통째로 사라졌다 (지원금이 공짜가 된다)');
+  assert.ok(s.log.some((l) => l.text.includes('유예')), '유예 사실이 기록되지 않았다');
+});
+
+test('특별 근무는 실제로 인도를 앞당기고 기한을 다시 맞춘다', () => {
+  const s = E.newGame(331);
+  const p = s.programs.find((x) => x.legacy);
+  p.stock = 0;
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'ord-late', airlineId: 'hanul', airlineName: '한울항공', programId: p.id, programName: p.name,
+    qty: 20, remaining: 20, unitPrice: 60, wonTurn: s.turn, pledge: 'priority', financing: 'normal',
+    dueTurn: s.turn, depositRate: 0.15,
+  });
+  const def = Dec.get('delivery_slip');
+  s.decision = {
+    id: 'delivery_slip', name: def.name, text: 'x',
+    memo: { airline: 'hanul', airlineName: '한울항공', orderId: 'ord-late' }, turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+
+  const dueBefore = s.backlog[0].dueTurn;
+  E.decide(s, 'overtime');
+  assert.ok(p.stock > 0, '특별 근무를 하고도 기체가 안 나왔다');
+  assert.ok(s.backlog[0].dueTurn > dueBefore, '기한이 그대로라 바로 위약금을 문다');
+
+  s.cash = 20000;
+  const r = E.endTurn(s);
+  assert.ok(s.backlog[0].remaining < 20, '앞당겨 뽑은 기체가 인도되지 않았다');
+  assert.ok(!s.log.some((l) => l.text.includes('위약금')), '만회했는데 같은 분기에 위약금을 물었다');
+});
+
+test('회고의 최고 점유율은 승계 선단이 만든 출발점을 포함한다', () => {
+  const s = E.newGame(337);
+  const opening = E.marketShare(s);
+  assert.ok(opening > 0.3, '승계분 덕에 시작 점유율이 이미 높아야 한다');
+
+  // 아무것도 안 하면 경쟁사만 쌓여 점유율은 계속 내려간다.
+  for (let i = 0; i < 12 && !s.gameOver; i++) {
+    s.cash = Math.max(s.cash, 20000);
+    E.endTurn(s);
+  }
+  assert.ok(E.marketShare(s) < opening, '이 시나리오에서는 점유율이 내려가야 한다');
+  const peak = E.careerReport(s).peakShare;
+  assert.ok(Math.abs(peak - opening) < 1e-6, `회고가 출발점(${(opening * 100).toFixed(1)}%)을 놓쳤다 (${(peak * 100).toFixed(1)}%)`);
+});
