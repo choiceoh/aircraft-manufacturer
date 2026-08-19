@@ -202,7 +202,9 @@
       sectionName: sec.name,
       sectionFit: Math.round(secFit * 100),
       wing: Math.round(wing),
-      fieldPerf: Math.max(5, Math.round(wingP.field - (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 13)),
+      // 위아래 모두 조인다. wingProfile 이 이미 5~99 로 자른 값에 보정을 더하는 구조라,
+      // 상한을 안 걸면 그 계약이 우연한 여유(현재 98.55)로만 유지된다.
+      fieldPerf: clamp(Math.round(wingP.field - (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 13), 5, 99),
       fuelMargin: Math.round(fuelMargin),
       payloadRange: Airframe.payloadRange(range, wing, fuelMargin),
       // 성숙도 위험이 남아 있으면 UI가 경고할 수 있게 노출한다.

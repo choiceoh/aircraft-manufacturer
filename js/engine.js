@@ -1110,6 +1110,21 @@
     return Math.ceil(left / rate);
   }
 
+  /**
+   * 인증을 n분기 미룬다 — 이벤트가 부르는 통로.
+   *
+   * 예전 모델에서는 certRemaining 에 그냥 더하면 됐지만, 지금 잔여 분기는 시험비행
+   * 시간에서 계산되는 파생값이라 거기에 더해 봐야 다음 정산에서 덮어써진다.
+   * "n분기"를 그 편대 기준 시간으로 환산해야 실제로 밀린다.
+   */
+  function delayCertification(p, quarters) {
+    if (p.phase !== 'cert' || !(quarters > 0)) return 0;
+    const added = Math.round(quarters * Math.max(testHoursPerQuarter(p), TEST_HOURS_PER_QUARTER));
+    p.testHoursNeeded = (p.testHoursNeeded || 0) + added;
+    p.certRemaining = certQuartersLeft(p);
+    return added;
+  }
+
   /** 시험기 한 대 값. 양산 원가에 선행 생산 할증을 얹는다. */
   function testAircraftCost(s, p) {
     return Math.round(currentUnitCost(s, p) * TEST_AIRCRAFT_COST_MULT);
@@ -1125,6 +1140,14 @@
     if (!p) return { ok: false, error: '없는 프로그램입니다.' };
     if (p.phase !== 'cert') return { ok: false, error: '형식증명 심사 중인 기종만 시험기를 늘릴 수 있습니다.' };
     if ((p.testFleet || 0) >= MAX_TEST_FLEET) return { ok: false, error: `시험기는 ${MAX_TEST_FLEET}대까지입니다.` };
+
+    // 남은 시간이 이미 다음 분기 안에 들어오면 한 대를 더 띄워도 취항이 앞당겨지지
+    // 않는다. 화면은 이 버튼을 "취항을 앞당기는 수단"으로만 광고하므로, 아무 이득
+    // 없이 제작비를 태우게 두면 안 된다.
+    const after = { testFleet: (p.testFleet || 0) + 1, testHours: p.testHours, testHoursNeeded: p.testHoursNeeded };
+    if (certQuartersLeft(after) >= certQuartersLeft(p)) {
+      return { ok: false, error: '남은 시험이 이미 다음 분기에 끝납니다. 시험기를 늘려도 취항이 앞당겨지지 않습니다.' };
+    }
 
     const cost = testAircraftCost(s, p);
     if (s.cash < cost) return { ok: false, error: `시험기 제작비 ${fmtMoney(cost)}이 부족합니다.` };
@@ -1180,10 +1203,16 @@
     return { ok: true, cost };
   }
 
-  /** 취항 후 운항 실적으로 ETOPS 를 따는 경로. 매 분기 정산에서 부른다. */
+  /**
+   * 취항 후 운항 실적으로 ETOPS 를 따는 경로. 매 분기 정산에서 부른다.
+   *
+   * 양산 단계라는 것만으로는 안 된다 — 규제 당국이 보는 건 **실제로 굴러다닌 기록**이다.
+   * 라인도 인도분도 없는 기종이 네 분기를 세는 건 실적이 아니라 달력이다.
+   */
   function tickEtopsService(s) {
     for (const p of s.programs) {
       if (p.phase !== 'production' || !p.etops || p.etopsCertified) continue;
+      if (!(p.delivered > 0)) continue;
       p.etopsService = (p.etopsService || 0) + 1;
       if (p.etopsService >= ETOPS_SERVICE_QUARTERS) {
         p.etopsCertified = true;
@@ -1193,7 +1222,7 @@
   }
 
   /** 설계 동결 — 시험비행 단계로 넘어간다. */
-  function enterCertification(s, p) {
+  function enterCertification(s, p, report) {
     p.phase = 'cert';
     p.testHours = 0;
     p.testHoursNeeded = Math.round(p.certQuarters * DEFAULT_TEST_FLEET * TEST_HOURS_PER_QUARTER);
@@ -1204,7 +1233,11 @@
     for (let i = 0; i < DEFAULT_TEST_FLEET; i++) {
       const cost = testAircraftCost(s, p);
       s.cash -= cost;
-      s.pending.rdCost += cost;
+      // 이 경로는 endTurn 정산 중(리포트를 이미 만든 뒤)에 돌기 때문에 pending 에 적으면
+      // 현금은 이번 분기에 나가고 비용은 다음 분기 장부에 실린다. 파산하면 그 다음
+      // 분기가 아예 없어 비용이 통째로 사라지기도 한다. 리포트에 직접 단다.
+      if (report) report.rdCost += cost;
+      else s.pending.rdCost += cost;
       p.spent += cost;
       p.testSpent += cost;
       p.testFleet++;
@@ -1253,7 +1286,7 @@
       s.cash -= spend;
       report.rdCost += spend;
 
-      if (p.progress >= 100) enterCertification(s, p);
+      if (p.progress >= 100) enterCertification(s, p, report);
     }
 
     // 개발 루프에서 방금 cert로 전환된 프로그램은 제외한다. 포함하면 개발에 그 분기를
@@ -2374,6 +2407,7 @@
         s.cash -= amt;
         s.pending.overhead += amt;
       },
+      delayCert: (p, quarters) => delayCertification(p, quarters),
       pickWeighted: (arr, weightOf) => {
         const w = arr.map((x) => Math.max(1e-4, weightOf(x)));
         const total = w.reduce((a, b) => a + b, 0);
@@ -2739,6 +2773,7 @@
     derivativeSpec,
     investQuality,
     addTestAircraft,
+    delayCertification,
     startEarlyEtops,
     testAircraftCost,
     certQuartersLeft,

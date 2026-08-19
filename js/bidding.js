@@ -53,13 +53,21 @@
    * 회복기에 몰린 것이 그거다.
    */
   const FLEET_PLAN = {
-    /** 세그먼트별 분기 신규 수요 (대). 수요지수가 곱해진다. */
-    perQuarter: { regional: 3.0, narrow: 4.0, wide: 2.0 },
+    /**
+     * 세그먼트별 분기 신규 수요 (대). 수요지수가 곱해진다.
+     * 항공사마다 세 칸이 각각 쌓이므로, 한 칸이던 시절보다 총 수요가 커진다 —
+     * 파산률이 목표(회생 안 씀 기준 10/40 언저리)에 오도록 다시 잡은 값이다.
+     */
+    perQuarter: { regional: 2.15, narrow: 2.92, wide: 1.46 },
     /** 이만큼 쌓이면 발주한다 — 곧 공고 규모이기도 하다. */
     lot: { regional: 18, narrow: 26, wide: 10 },
+    /** 주력 밖 세그먼트의 적립 속도. 새 급 진출은 드물어야 한다. */
+    offProfileRate: 0.05,
     /** 이 정도 쌓이면 발주 가능성이 생기고, ripeSpan 만큼 더 쌓이면 거의 확실해진다. */
     ripeFrom: 0.55,
     ripeSpan: 0.9,
+    /** 불황에 실제로 미룰 확률. 1.0 이면 침체 구간이 통째로 비어 버린다. */
+    deferChance: 0.72,
     /** 수요지수가 이보다 낮으면 발주를 미룬다. 필요분은 계속 쌓인다. */
     deferBelow: 0.82,
     /** 다만 이 배수를 넘게 쌓이면 더는 못 미룬다 — 기체가 정말 낡았다. */
@@ -69,20 +77,27 @@
   /**
    * 항공사별 계획을 확보한다. 옛 세이브는 빈 상태에서 시작한다.
    *
-   * 첫 적립분을 흩뜨리는 게 중요하다. 전부 0 에서 같은 속도로 쌓으면 같은 급의
+   * 필요분은 **세그먼트별로** 쌓는다. 한 칸으로 두면 주력 세그먼트 규모로 적립한
+   * 필요분이 노선망 밖 발주에서 다른 급 공고로 새고, 그 자리에서 통째로 지워진다 —
+   * 광동체 교체 10대가 리저널 10대 공고가 되는 식이다. 칸을 나누면 노선망 밖
+   * 진출도 그 급에 맞는 규모로 나온다.
+   *
+   * 첫 적립분을 흩뜨리는 것도 중요하다. 전부 0 에서 같은 속도로 쌓으면 같은 급의
    * 항공사들이 **동기화돼** 한 분기에 몰려 나오고 그 사이는 통째로 빈다 —
    * 공고 수는 그대로인데 할 일 없는 분기만 늘어난다. 실제 항공사의 교체 주기가
    * 서로 맞을 이유도 없다.
    */
   function planFor(state, airline, rng) {
     if (!state.airlinePlans) state.airlinePlans = {};
-    if (!state.airlinePlans[airline.id]) {
-      const lot = FLEET_PLAN.lot[airline.bias] || FLEET_PLAN.lot.narrow;
-      state.airlinePlans[airline.id] = {
-        need: rng ? rng.next() * lot : 0,
-        deferred: 0,
-        lastOrderTurn: -99,
-      };
+    const cur = state.airlinePlans[airline.id];
+    if (!cur || !cur.need || typeof cur.need !== 'object') {
+      const need = {};
+      const deferred = {};
+      for (const seg of SEGMENT_IDS) {
+        need[seg] = rng ? rng.next() * FLEET_PLAN.lot[seg] : 0;
+        deferred[seg] = 0;
+      }
+      state.airlinePlans[airline.id] = { need, deferred, lastOrderTurn: -99 };
     }
     return state.airlinePlans[airline.id];
   }
@@ -99,33 +114,40 @@
 
     for (const airline of AIRLINES) {
       const plan = planFor(state, airline, rng);
-      const seg = airline.bias;
-      // 교체 수요는 경기와 무관하게 쌓이고(기체는 계속 낡는다), 성장 수요만 경기를 탄다.
-      const replace = FLEET_PLAN.perQuarter[seg] * 0.55;
-      const grow = FLEET_PLAN.perQuarter[seg] * 0.45 * demand;
-      plan.need += replace + grow;
 
-      const lot = FLEET_PLAN.lot[seg];
-      // 발주 시점은 문턱이 아니라 확률로 푼다. 딱 떨어지는 문턱을 쓰면 같은 급의
-      // 항공사들이 같은 속도로 쌓다가 한 분기에 몰려 나오고 — 이연이 그 동기화를
-      // 매번 되살린다 — 공고 수는 맞는데 빈 분기만 늘어난다.
-      // 많이 쌓일수록 확률이 오르므로 "슬슬 교체할 때가 됐다"는 성질은 그대로다.
-      const ripeness = plan.need / lot;
-      const chance = clamp((ripeness - FLEET_PLAN.ripeFrom) / FLEET_PLAN.ripeSpan, 0, 0.9);
-      if (!rng.chance(chance)) continue;
+      for (const seg of SEGMENT_IDS) {
+        // 주력 세그먼트가 대부분이고, 노선망 밖은 천천히 쌓인다 — 항공사가 새 급에
+        // 진출하는 건 드문 일이라 그만큼 오래 걸려야 한다.
+        const weight = seg === airline.bias ? 1 : FLEET_PLAN.offProfileRate;
+        // 교체 수요는 경기와 무관하게 쌓이고(기체는 계속 낡는다), 성장 수요만 경기를 탄다.
+        const replace = FLEET_PLAN.perQuarter[seg] * 0.55;
+        const grow = FLEET_PLAN.perQuarter[seg] * 0.45 * demand;
+        plan.need[seg] += (replace + grow) * weight;
 
-      // 불황에는 미룬다. 다만 너무 낡으면 더는 못 미룬다.
-      if (demand < FLEET_PLAN.deferBelow && ripeness < FLEET_PLAN.deferCap) {
-        plan.deferred++;
-        continue;
+        const lot = FLEET_PLAN.lot[seg];
+        // 발주 시점은 문턱이 아니라 확률로 푼다. 딱 떨어지는 문턱을 쓰면 같은 급의
+        // 항공사들이 같은 속도로 쌓다가 한 분기에 몰려 나오고 — 이연이 그 동기화를
+        // 매번 되살린다 — 공고 수는 맞는데 빈 분기만 늘어난다.
+        // 많이 쌓일수록 확률이 오르므로 "슬슬 교체할 때가 됐다"는 성질은 그대로다.
+        const ripeness = plan.need[seg] / lot;
+        const chance = clamp((ripeness - FLEET_PLAN.ripeFrom) / FLEET_PLAN.ripeSpan, 0, 0.9);
+        if (!rng.chance(chance)) continue;
+
+        // 불황에는 미룬다. 다만 전부 얼어붙지는 않는다 — 최소한의 교체는 돌아간다.
+        // 확정 이연으로 두면 침체 구간이 통째로 빈 분기가 되어 할 일이 사라진다.
+        // 너무 낡으면 더는 못 미룬다.
+        if (demand < FLEET_PLAN.deferBelow && ripeness < FLEET_PLAN.deferCap && rng.chance(FLEET_PLAN.deferChance)) {
+          plan.deferred[seg]++;
+          continue;
+        }
+
+        // 규모는 쌓인 만큼 ±15%. 미뤘던 필요분이 한꺼번에 나오면 대형 발주가 된다.
+        const qty = Math.max(3, Math.round(plan.need[seg] * rng.range(0.85, 1.15)));
+        rfps.push(makeRfp(state, rng, { airline, segment: seg, qty, deferred: plan.deferred[seg] }));
+        plan.need[seg] = 0;
+        plan.deferred[seg] = 0;
+        plan.lastOrderTurn = state.turn;
       }
-
-      // 규모는 쌓인 만큼 ±15%. 미뤘던 필요분이 한꺼번에 나오면 대형 발주가 된다.
-      const qty = Math.max(3, Math.round(plan.need * rng.range(0.85, 1.15)));
-      rfps.push(makeRfp(state, rng, { airline, qty, deferred: plan.deferred }));
-      plan.need = 0;
-      plan.deferred = 0;
-      plan.lastOrderTurn = state.turn;
     }
     return rfps;
   }
@@ -137,8 +159,12 @@
     // 노선망 밖 발주는 **반드시 다른 세그먼트**여야 한다 — 자기 급을 뽑아 놓고
     // 대역·활주로 제약만 일반값으로 덮으면, 산악 공항 항공사가 이착륙 요건 0인
     // 공고를 내는 모순이 생긴다(노선 설명은 그대로 붙은 채로).
-    const onProfile = rng.next() < 0.85;
-    const segmentId = onProfile ? airline.bias : rng.pick(SEGMENT_IDS.filter((id) => id !== airline.bias));
+    //
+    // 다만 선단 계획이 낸 발주는 자기 급에 머문다. 쌓인 필요분은 그 항공사의
+    // **주력 세그먼트** 규모로 적립된 것이라, 다른 급으로 새면 광동체 교체 10대가
+    // 리저널 10대 공고가 되고 그 자리에서 광동체 필요분이 통째로 지워진다.
+    const segmentId = plan && plan.segment ? plan.segment : rng.next() < 0.85 ? airline.bias : rng.pick(SEGMENT_IDS.filter((id) => id !== airline.bias));
+    const onProfile = segmentId === airline.bias;
     const seg = SEGMENTS[segmentId];
 
     let seats;
@@ -258,6 +284,10 @@
    */
   const PRICE_INTERCEPT = 1.69;
 
+  /** 이 할인까지는 점수에 그대로 반영되고, 그 위로는 체감한다. */
+  const DISCOUNT_KNEE = 0.2;
+  const DISCOUNT_FADE = 0.3;
+
   /**
    * 그 기종의 payload-range 곡선. 옛 세이브에는 없으므로 설계 항속에서 되만든다.
    * 없다고 만석 항속만 보면, 마이그레이션된 기체가 감톤 능력을 통째로 잃는다.
@@ -322,7 +352,14 @@
     // 더 많이 사거나 더 자주 띄워야 한다. 감톤으로 못 채우는 좌석은 여기서도 안 쳐준다.
     const refPrice = seg.listPriceBase * Math.pow(rfp.reqSeats / seg.seats.ref, 0.95);
     const effPrice = program.listPrice * (1 - discount);
-    const pricePerSeat = effPrice / Math.max(1, usableSeats);
+    // 계약가는 그대로 깎이지만, **점수로 쳐주는 할인은 체감한다**.
+    // 어느 선을 넘으면 항공사가 그 가격을 그대로 신뢰하지 않는다 — 20년을 함께 갈
+    // 제조사가 원가 밑으로 파는 건 부품·지원의 불안 요인이고, 경쟁사도 그쯤이면
+    // 맞불을 놓는다. 이 체감이 없으면 "최대한 깎기"가 언제나 정답이 되어 할인이
+    // 결정이 아니라 슬라이더가 된다.
+    const scored = discount <= DISCOUNT_KNEE ? discount : DISCOUNT_KNEE + (discount - DISCOUNT_KNEE) * DISCOUNT_FADE;
+    const scoredPrice = program.listPrice * (1 - scored);
+    const pricePerSeat = scoredPrice / Math.max(1, usableSeats);
     const refPerSeat = refPrice / Math.max(1, rfp.reqSeats);
     const priceScore = clamp(PRICE_INTERCEPT - pricePerSeat / refPerSeat, 0, 1);
 
