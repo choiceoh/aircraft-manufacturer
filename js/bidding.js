@@ -463,12 +463,17 @@
     // 선주문 감점 — 아직 하늘에 없는 기체다. 항공사는 종이 비행기를 믿는 대신
     // 값을 깎아 위험을 산다(런치 커스터머가 실제로 받는 게 그 할인이다).
     // 결함 위험이 높은 설계일수록 신뢰 격차가 크다.
-    const preorderPenalty = preorder
-      ? (program.phase === 'cert'
+    // 기본 감점: 시제기(인증)는 상수, 종이(개발)는 진행도가 낮을수록 크다.
+    // 그 위에 결함 위험 배수가 **두 단계 모두에** 곱해진다 — 중첩 삼항에 배수를
+    // 붙여 두니 리뷰 봇이 "cert 는 위험 무관"으로 잘못 읽었다. 사람도 그럴 것이다.
+    let preorderPenalty = 0;
+    if (preorder) {
+      const base =
+        program.phase === 'cert'
           ? PREORDER_PENALTY
-          : PREORDER_PENALTY + 3 + 8 * (1 - clamp((program.progress || 0) / 100, 0, 1))) *
-        (1 + (program.defectRisk || 0))
-      : 0;
+          : PREORDER_PENALTY + 3 + 8 * (1 - clamp((program.progress || 0) / 100, 0, 1));
+      preorderPenalty = base * (1 + (program.defectRisk || 0));
+    }
 
     // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
     // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.

@@ -604,6 +604,9 @@
 
   /** 개발 취소 — 투입 비용은 돌아오지 않는다. */
   function cancelProgram(s, programId) {
+    // voidOrdersFor 가 pending·relations 를 만진다 — 옛 세이브를 불러온 직후라면
+    // 그 칸들이 없어 절반만 적용된 채 예외가 날 수 있다.
+    ensureShape(s);
     const p = s.programs.find((x) => x.id === programId);
     if (!p || p.phase === 'production' || p.phase === 'cancelled') {
       return { ok: false, error: '취소할 수 없는 프로그램입니다.' };
@@ -2223,6 +2226,7 @@
    */
   function sellProgram(s, programId) {
     if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
     const p = s.programs.find((x) => x.id === programId);
     if (!p) return { ok: false, error: '없는 프로그램입니다.' };
     if (p.phase !== 'dev' && p.phase !== 'cert') {

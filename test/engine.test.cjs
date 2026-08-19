@@ -4500,3 +4500,23 @@ test('사다리의 보상 — 후광·급별 서비스 단가·급별 인도 점
   assert.ok(withWide - base > withNarrow - base, '광동체 50기가 협동체 50기보다 점수가 커야 한다');
   assert.ok(legacyDelivered > 0, '승계 인도분이 있어야 기준 점수 검증이 성립한다');
 });
+
+test('옛 세이브에서 곧바로 취소해도 위약 정산이 온전히 적용된다', () => {
+  const s = E.newGame(449);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'OLD-W').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 60;
+  s.backlog.push({
+    id: 'ord-old', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+  });
+
+  // v1 세이브 재현: pending 이 통째로 없다 — ensureShape 없이 만지면 여기서 터진다.
+  delete s.pending;
+  const cashBefore = s.cash;
+  assert.ok(E.cancelProgram(s, p.id).ok, '옛 세이브에서 취소가 실패했다');
+  assert.ok(cashBefore - s.cash > 0, '위약 반환이 나가야 한다');
+  assert.ok(!s.backlog.some((o) => o.programId === p.id), '주문이 남았다');
+  assert.ok(s.pending && typeof s.pending.overhead === 'number' && !Number.isNaN(s.pending.overhead), 'pending 이 복구되고 오염되지 않아야 한다');
+});
