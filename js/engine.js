@@ -25,6 +25,7 @@
     BID_PLEDGES,
     BID_FINANCING,
     AFTERMARKET_PER_UNIT,
+    AFTERMARKET_PER_UNIT_BY_SEG,
     AFTERMARKET_TIERS,
     FREIGHTER,
     RIVAL_DRIFT_LIMIT,
@@ -469,9 +470,31 @@
 
   // ─────────────────────────────── 플레이어 행동 ───────────────────────────────
 
+  /** 세그먼트별 완성 경험치 — 큰 기체일수록 조직이 배우는 게 많다. */
+  const EXPERIENCE_POINTS = { regional: 1, narrow: 2, wide: 3 };
+
+  /**
+   * 조직 경험 — 형식증명까지 가 본 프로그램의 합.
+   *
+   * 저장하지 않고 매번 계산한다(certTurn 에서 유도되므로 옛 세이브도 그대로 된다).
+   * 승계 기종은 뺀다 — 그 경험은 이미 기준 밸런스에 들어 있고, 포함하면 모든 판이
+   * 2점을 들고 시작해 기준 일정이 통째로 움직인다. 매각한 프로그램은 남는다:
+   * 도면은 넘겨도 그걸 만들어 본 사람들은 회사에 있다.
+   * 파생형은 절반 — 새로 배우는 것이 훨씬 적다.
+   */
+  function companyExperience(s) {
+    let xp = 0;
+    for (const p of s.programs) {
+      if (p.legacy || p.certTurn === null || p.certTurn === undefined) continue;
+      const pts = EXPERIENCE_POINTS[p.segment] || 1;
+      xp += p.derivedFrom ? pts * 0.5 : pts;
+    }
+    return xp;
+  }
+
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn) });
+    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -588,7 +611,33 @@
     p.phase = 'cancelled';
     adjustReputation(s, -4);
     pushLog(s, 'bad', `${p.name} 개발 중단. 매몰비용 ${fmtMoney(p.spent)}, 업계 신뢰가 흔들린다.`);
+    voidOrdersFor(s, p, '개발 중단');
     return { ok: true };
+  }
+
+  /**
+   * 죽은 프로그램의 미인도 주문을 정리한다 — 선수금을 위약 배수로 물어 준다.
+   *
+   * 선주문이 생기면서 필요해졌다: 종이 비행기를 팔아 선수금을 챙기고 개발을
+   * 접으면, 이 정리가 없을 때 그 돈이 통째로 공짜가 된다. 실제 계약도 제조사
+   * 귀책 취소에는 선수금 반환 + 위약이 붙는다.
+   */
+  const ORDER_VOID_REFUND_MULT = 1.5;
+
+  function voidOrdersFor(s, p, why) {
+    const dead = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0);
+    if (!dead.length) return;
+    let refund = 0;
+    for (const o of dead) {
+      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 10, 0, 100);
+    }
+    refund = Math.round(refund);
+    s.cash -= refund;
+    s.pending.overhead += refund;
+    s.backlog = s.backlog.filter((o) => !(o.programId === p.id && o.remaining > 0));
+    adjustReputation(s, -Math.min(6, dead.length * 2));
+    pushLog(s, 'bad', `${why}으로 ${p.name} 주문 ${dead.length}건이 파기됐다. 선수금 반환과 위약금으로 ${fmtMoney(refund)}이 나갔다.`);
   }
 
   /** 조립 라인 신설 — 인증 완료 기종만 가능. */
@@ -1014,7 +1063,7 @@
         continue;
       }
       const program = s.programs.find((p) => p.id === bid.programId);
-      if (!program || program.phase !== 'production') continue;
+      if (!program || !biddablePhase(program)) continue;
 
       const score = scoreBid(s, rfp, program, bid.discount, bid.terms);
       if (score.blocked) continue;
@@ -1329,6 +1378,14 @@
         if (salvage > 0) {
           s.cash += salvage;
           report.revenue += salvage;
+        }
+        if (!p.legacy) {
+          const gained = (EXPERIENCE_POINTS[p.segment] || 1) * (p.derivedFrom ? 0.5 : 1);
+          pushLog(
+            s,
+            'program',
+            `${p.name}을 끝까지 만들어 본 경험이 조직에 남았다 (+${gained}). 다음 신규 설계의 기간과 필요 인력이 줄어든다.`,
+          );
         }
         pushLog(
           s,
@@ -1942,8 +1999,7 @@
    */
   function runServices(s, report) {
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
-    const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
-    const after = fleet * AFTERMARKET_PER_UNIT * tier.mult;
+    const after = aftermarketBase(s) * tier.mult;
 
     let freight = 0;
     for (const p of s.programs) {
@@ -1965,11 +2021,19 @@
     report.services = total;
   }
 
+  /** 급별 단가로 계산한 선단의 분기 기본 서비스 수익 (투자 배수 적용 전). */
+  function aftermarketBase(s) {
+    return s.programs.reduce(
+      (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT),
+      0,
+    );
+  }
+
   /** 화면이 읽는 서비스 수익 내역. */
   function serviceIncome(s) {
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
     const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
-    const after = fleet * AFTERMARKET_PER_UNIT * tier.mult;
+    const after = aftermarketBase(s) * tier.mult;
     let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
     return { fleet, aftermarket: after, freight, total: after + freight, tier };
@@ -2171,6 +2235,7 @@
     s.pending.revenue += value;
     p.phase = 'sold';
     adjustReputation(s, -5);
+    voidOrdersFor(s, p, '프로그램 매각');
 
     // 사는 쪽은 그 시장에 이미 들어와 있는 제조사다 — 남의 도면을 살 이유가 있는 곳.
     // 그 시장에서 가장 약한 축이 따라잡으려 산다고 보는 편이 자연스럽다.
@@ -2619,6 +2684,17 @@
     return s.cash + assetValue + receivable - s.debt;
   }
 
+  /**
+   * 인도 점수의 급별 가중 — 리저널기와 광동체가 같은 1기일 수는 없다.
+   * 협동체가 종전 계수(1.2) 그대로라, 협동체 중심의 기존 판 점수·등급 문턱은
+   * 움직이지 않는다. 광동체 가중은 사다리를 오른 값의 마지막 몫이다.
+   */
+  const DELIVERED_SCORE_WEIGHT = { regional: 0.7, narrow: 1.2, wide: 3.2 };
+
+  function deliveredScore(s) {
+    return s.programs.reduce((a, p) => a + (p.delivered || 0) * (DELIVERED_SCORE_WEIGHT[p.segment] ?? 1.2), 0);
+  }
+
   function finalScore(s, bankrupt) {
     const share = marketShare(s);
     const worth = netWorth(s);
@@ -2626,7 +2702,7 @@
     // "위험해지면 찍어낸다"가 언제나 정답이 된다.
     const ownership = 1 - (s.equityDilution || 0);
     const score = Math.round(
-      (s.stats.delivered * 1.2 + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership,
+      (deliveredScore(s) + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership,
     );
     // 파산은 아무리 많이 팔았어도 실패다 — 등급으로 성적을 덮지 않는다.
     // 문턱은 시뮬레이션으로 잡는다. 회생 수단이 생기기 전에는 파산 아니면 A·S 뿐이라
@@ -2649,7 +2725,7 @@
     const worth = netWorth(s);
     const own = 1 - (s.equityDilution || 0);
     const rows = [
-      { label: '누적 인도', detail: `${s.stats.delivered}기 × 1.2`, points: Math.round(s.stats.delivered * 1.2) },
+      { label: '누적 인도', detail: `${s.stats.delivered}기 (급별 가중 — 광동체 ×3.2)`, points: Math.round(deliveredScore(s)) },
       { label: '시장 점유율', detail: `${(share * 100).toFixed(1)}% × 4,000`, points: Math.round(share * 4000) },
       { label: '순자산', detail: `${fmtMoney(Math.max(0, worth))} × 0.08`, points: Math.round(Math.max(0, worth) * 0.08) },
       { label: '평판', detail: `${Math.round(s.reputation)} × 12`, points: Math.round(s.reputation * 12) },
@@ -2750,9 +2826,23 @@
   }
 
   /** 현재 열린 RFP에 대해 입찰 가능한 기종 목록 */
+  /**
+   * 응찰 가능 단계 — 양산 중이거나 **인증 심사 중**(설계 동결, 시제기 비행 중).
+   *
+   * 선주문은 실제 항공업의 자금 구조다: 787 은 초도비행 전에 800대를 팔았고
+   * 그 선수금이 인증을 먹여 살렸다. 게임에서도 광동체 개발 막바지 — 부채 한도에
+   * 목이 졸리는 바로 그 구간 — 을 선수금으로 버티는 게 사다리의 마지막 칸이다.
+   * 미인증 기체는 입찰 점수에서 신뢰 감점을 받는다(bidding.js).
+   */
+  function biddablePhase(p) {
+    // 개발 40%부터 — 설계가 잡히고 항공사에 팔 수 있는 구체적 제원이 나온 시점.
+    // A350 XWB 가 실물 없이 팔린 게 이 단계다. 멀수록 감점이 크다(bidding.js).
+    return p.phase === 'production' || p.phase === 'cert' || (p.phase === 'dev' && p.progress >= 40);
+  }
+
   function eligiblePrograms(s, rfp) {
     return s.programs
-      .filter((p) => p.phase === 'production' && p.segment === rfp.segment)
+      .filter((p) => biddablePhase(p) && p.segment === rfp.segment)
       .map((p) => ({ program: p, score: scoreBid(s, rfp, p, s.bids[rfp.id]?.discount ?? 0) }));
   }
 
@@ -2762,6 +2852,9 @@
    * 여기 한 곳에만 둔다. 둘이 갈라지면 대응 불가능한 공고로 사용자를 괴롭히게 된다.
    */
   function canBid(s, rfp) {
+    // 감점·확인창의 기준은 **양산 기종**이다. 선주문(개발·인증 중)은 응찰할 수 있는
+    // 선택지일 뿐 의무가 아니다 — 종이 비행기를 안 팔았다고 관계가 깎이면, 개발이
+    // 40%를 넘는 순간부터 모든 해당 세그먼트 공고가 벌금 고지서가 된다.
     return s.programs.some(
       (p) => p.phase === 'production' && p.segment === rfp.segment && !scoreBid(s, rfp, p, 0).blocked,
     );
@@ -2770,6 +2863,7 @@
   root.AirlinerEngine = {
     newGame,
     launchProgram,
+    companyExperience,
     derivativeSpec,
     investQuality,
     addTestAircraft,

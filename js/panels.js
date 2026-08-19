@@ -395,7 +395,7 @@
    * 그리면 여기가 옛 상태로 남아 실제 착수 결과와 어긋난다.
    */
   function renderDesignOptions(s, spec) {
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn) });
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s) });
     const family = ev.inFamily
       ? `<button class="mat on" disabled>
           <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
@@ -426,7 +426,7 @@
   function renderDesignPreview(s, spec, designName) {
     // 미리보기는 항상 "지금" 기준으로 평가한다. spec.year 를 들고 다니면 분기가
     // 지나도 갱신되지 않아, 이미 살 수 없는 엔진으로 계산된 값을 보여주게 된다.
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn) });
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s) });
     const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
     const seg = SEGMENTS[spec.segment];
 
@@ -451,6 +451,11 @@
         <tr><th>총 개발비</th><td class="${heavy ? 'bad' : ''}">${money(ev.devCost)}</td></tr>
         <tr><th>착수금 (${Math.round(CONFIG.launchUpfrontRate * 100)}%)</th><td class="${affordable ? '' : 'bad'}">${money(upfront)}</td></tr>
         <tr><th>개발 기간</th><td>${ev.devQuarters}분기 <span class="muted">(현 인력 기준 약 ${realQuarters === Infinity ? '∞' : realQuarters}분기)</span></td></tr>
+        ${
+          ev.experience > 0
+            ? `<tr><th>조직 경험</th><td>${ev.experience}점 <span class="muted">— 기간 −${ev.expTimeCut}% · 필요 인력 −${ev.expEngCut}% 반영됨</span></td></tr>`
+            : ''
+        }
         <tr><th>인증 기간</th><td>${ev.certQuarters}분기</td></tr>
         <tr><th>필요 인력</th><td>${num(ev.engineersNeeded)}명 <span class="muted">(보유 ${num(s.engineers)}명)</span></td></tr>
         <tr><th>연비 지수</th><td>${ev.efficiency} ${bar(ev.efficiency, 'eff')}</td></tr>
@@ -761,7 +766,7 @@
     return s.rfps
       .map((rfp) => {
         const bid = s.bids[rfp.id];
-        const candidates = s.programs.filter((p) => p.phase === 'production' && p.segment === rfp.segment);
+        const candidates = s.programs.filter((p) => (p.phase === 'production' || p.phase === 'cert' || (p.phase === 'dev' && p.progress >= 40)) && p.segment === rfp.segment);
         const discount = bid ? bid.discount : (discountDraft && discountDraft[rfp.id]) ?? 0.1;
         const scored = candidates.map((p) => ({ p, sc: B.scoreBid(s, rfp, p, discount, bid && bid.terms) }));
         const anyBiddable = scored.some((x) => !x.sc.blocked);
@@ -791,7 +796,7 @@
           </table>
           ${
             !candidates.length
-              ? '<p class="muted">이 세그먼트에 양산 중인 기종이 없다.</p>'
+              ? '<p class="muted">이 세그먼트에 양산·인증 중인 기종이 없다. 인증 단계부터는 선주문으로 응찰할 수 있다.</p>'
               : !anyBiddable
                 ? `<div class="cands" id="cands-${rfp.id}">${options}</div>
                    <p class="warn-box">보유 기종 중 이 공고의 요구를 만족하는 기체가 없다. 후속기 개발이 급하다.</p>`
@@ -812,14 +817,14 @@
   function renderBidCandidates(s, rfp, discount) {
     const bid = s.bids[rfp.id];
     return s.programs
-      .filter((p) => p.phase === 'production' && p.segment === rfp.segment)
+      .filter((p) => (p.phase === 'production' || p.phase === 'cert' || (p.phase === 'dev' && p.progress >= 40)) && p.segment === rfp.segment)
       .map((p) => {
         const sc = B.scoreBid(s, rfp, p, discount, bid && bid.terms);
         const sel = bid && bid.programId === p.id;
         return `<button class="cand ${sel ? 'on' : ''} ${sc.blocked ? 'blocked' : ''}"
                   data-action="pick-bid" data-rfp="${rfp.id}" data-id="${p.id}" ${sc.blocked ? 'disabled' : ''}>
-                  <b>${esc(p.name)}</b>
-                  <span>${sc.blocked ? sc.blocked : `점수 ${sc.total} · 대당 ${money(sc.price)}`}</span>
+                  <b>${esc(p.name)}${sc.preorder ? ' <i class="warn">선주문</i>' : ''}</b>
+                  <span>${sc.blocked ? sc.blocked : `점수 ${sc.total} · 대당 ${money(sc.price)}${sc.preorder ? ' · 미인증 감점 반영' : ''}`}</span>
                 </button>`;
       })
       .join('');
