@@ -927,6 +927,11 @@
     // 자기모순이 화면에 뜬다.
     s.ratingForQuarter = creditRating(s).grade;
     s.rateForQuarter = interestRate(s);
+    // 금리 보정 기간은 여기서 센다. tickEffects 에서 다른 효과와 같이 깎으면,
+    // 플레이어가 분기 중에 차환한 경우 이번 분기 금리는 이미 확정돼 있는데 기간만
+    // 하나 줄어 광고한 6분기가 5번만 적용된다. 방금 확정한 금리가 곧 한 번의
+    // 적용이므로, 확정 직후에 세는 것이 "몇 번의 이자에 붙는가"와 정확히 맞는다.
+    tickRateEffects(s);
 
     // 이벤트(결함 수리비 등)가 현금을 빼앗아 지급불능이 된 경우도 즉시 종료다.
     // 정산 직후 검사만 두면, 이벤트발 지급불능은 다음 분기 내내 살아남아
@@ -1030,7 +1035,9 @@
         // 약속과 조건은 주문에 붙어 다닌다 — 인도 순서, 위약금, 대금 회수가 여기서 갈린다.
         pledge: pledge.id,
         financing: financing.id,
-        dueTurn: s.turn + pledge.dueQuarters,
+        // 수주한 이 분기의 인도가 이미 첫 번째 기회다. 그대로 더하면 "4분기 안에"가
+        // 다섯 번의 인도를 허용해, 광고한 대가가 한 분기씩 무뎌진다.
+        dueTurn: s.turn + pledge.dueQuarters - 1,
         // 선수금을 두 배로 받았으면 인도 시 잔금도 그만큼 줄어야 총액이 계약가다.
         depositRate: CONFIG.depositRate * financing.depositMult,
       });
@@ -1398,13 +1405,13 @@
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
   }
 
-  function tickEffects(s) {
+  /**
+   * 금리 보정의 남은 기간. 방금 확정한 s.rateForQuarter 가 그 보정을 한 번 쓴 것이므로,
+   * 확정 직후에 부른다. 다른 효과처럼 tickEffects 에서 깎으면 안 된다 — 그쪽은
+   * 플레이어 행동으로 걸린 보정이 첫 적용 전에 한 분기를 잃는다.
+   */
+  function tickRateEffects(s) {
     const e = s.effects;
-    if (e.strikeQuarters > 0) e.strikeQuarters--;
-    if (e.supplyQuarters > 0) e.supplyQuarters--;
-    if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
-    if (e.demandBoomQuarters > 0) e.demandBoomQuarters--;
-    if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
     if (e.rateCutQuarters > 0) {
       e.rateCutQuarters--;
       if (e.rateCutQuarters === 0) e.rateCut = 0;
@@ -1415,6 +1422,15 @@
       // 재발할 때 max() 병합이 만료된 높은 값을 되살린다.
       if (e.rateBumpQuarters === 0) e.rateBump = 0;
     }
+  }
+
+  function tickEffects(s) {
+    const e = s.effects;
+    if (e.strikeQuarters > 0) e.strikeQuarters--;
+    if (e.supplyQuarters > 0) e.supplyQuarters--;
+    if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
+    if (e.demandBoomQuarters > 0) e.demandBoomQuarters--;
+    if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
     for (const id of Object.keys(e.grounded)) {
       e.grounded[id] -= 1;
       if (e.grounded[id] <= 0) {
@@ -1473,12 +1489,21 @@
       const pool = availableTypes(seg, year);
       if (!pool.length) continue;
       const segWeight = SEGMENT_UNIT_SHARE[seg];
-      for (const type of pool) {
-        // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
-        // 이벤트 보정치(drift)까지 얹어야 입찰과 같은 실력으로 나뉜다 — 빼면 "인도가
-        // 대거 지연됐다"는 소식이 뜬 회사의 인도량이 그대로인 모순이 생긴다.
-        const power = Math.max(0, typeScore(type, s.market.fuelIndex, null, null) + driftOf(s, type.maker, seg) - 30);
-        weights.set(type.maker, (weights.get(type.maker) || 0) + segWeight * power * power);
+      // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
+      // 이벤트 보정치(drift)까지 얹어야 입찰과 같은 실력으로 나뉜다 — 빼면 "인도가
+      // 대거 지연됐다"는 소식이 뜬 회사의 인도량이 그대로인 모순이 생긴다.
+      const powers = pool.map((type) => ({
+        maker: type.maker,
+        w: Math.pow(Math.max(0, typeScore(type, s.market.fuelIndex, null, null) + driftOf(s, type.maker, seg) - 30), 2),
+      }));
+      // 세그먼트 안에서 먼저 정규화한다. 곧바로 segWeight 를 곱해 합치면 그 세그먼트
+      // 몫이 "등재된 기종 수 × 실력 합"에 비례해 버려, 선언한 30/53/17 이 지켜지지
+      // 않는다(1998년 카탈로그로 재면 11/64/24 가 나왔다). 기종을 많이 올린 제조사가
+      // 그 사실만으로 점유율을 얻는 것도 같은 원인이다.
+      const segTotal = powers.reduce((a, x) => a + x.w, 0);
+      if (segTotal <= 0) continue;
+      for (const x of powers) {
+        weights.set(x.maker, (weights.get(x.maker) || 0) + (segWeight * x.w) / segTotal);
       }
     }
     if (!weights.size) return;
@@ -1574,7 +1599,10 @@
       const pool = availableTypes(seg, year);
       let leader = null;
       for (const t of pool) {
-        const power = typeScore(t, s.market.fuelIndex, null, null);
+        // 입찰·인도 배분과 같은 실력(보정치 포함)으로 봐야 한다. 카탈로그 점수만
+        // 보면 "인도가 대거 지연됐다"는 악재를 맞은 회사가 반격의 주체로 뽑혀,
+        // 실제로 수주전을 이기고 있는 쪽 대신 엉뚱한 회사에 공세 보너스가 붙는다.
+        const power = typeScore(t, s.market.fuelIndex, null, null) + driftOf(s, t.maker, seg);
         if (!leader || power > leader.power) leader = { maker: t.maker, power };
       }
 
@@ -1996,8 +2024,10 @@
       rushProduce: (program, units, premium) => {
         let cost = 0;
         for (let i = 0; i < units; i++) {
-          program.produced++;
+          // currentUnitCost 는 "다음에 만들 1기"(produced+1 번째)의 원가다. 번호를
+          // 먼저 올리면 방금 찍은 N 번기를 N+1 번기 값에 매겨 학습곡선만큼 덜 문다.
           cost += currentUnitCost(s, program) * (premium || 1);
+          program.produced++;
         }
         cost = Math.round(cost);
         program.stock += units;

@@ -3696,3 +3696,175 @@ test('종료 직전에 받은 개발 지원금은 유예로 사라지지 않는�
     `회수액이 지원금에 못 미친다 (차액 ${Math.round(control.cash - s.cash)})`,
   );
 });
+
+test('차환 감면은 광고한 분기 수만큼 이자에 적용된다', () => {
+  // 금리 보정을 tickEffects 에서 다른 효과와 같이 깎으면, 분기 중에 건 감면은
+  // 첫 적용 전에 한 분기를 잃는다 — 6분기짜리가 5번만 붙는다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const cut = E.newGame(307);
+    const control = E.newGame(307);
+    // 등급이 흔들려 금리가 따로 놀지 않게 양쪽 다 넉넉히 쥐여 준다.
+    cut.cash = control.cash = 40000;
+
+    cut.effects.rateCut = 0.0025;
+    cut.effects.rateCutQuarters = 6;
+
+    let discounted = 0;
+    for (let i = 0; i < 10; i++) {
+      E.endTurn(cut);
+      E.endTurn(control);
+      if (cut.rateForQuarter < control.rateForQuarter - 1e-12) discounted++;
+    }
+    assert.strictEqual(discounted, 6, `감면이 ${discounted}분기만 적용됐다 (광고: 6분기)`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('인도 약속은 약속한 분기 수만큼만 기회를 준다', () => {
+  // 수주한 그 분기의 인도가 이미 첫 기회다. 그대로 더하면 "4분기 안에"가 다섯 번의
+  // 인도 기회를 허용해, 광고한 대가가 한 분기씩 무뎌진다.
+  const s = E.newGame(311);
+  const pledge = Data.BID_PLEDGES.priority;
+  assert.ok(pledge && pledge.dueQuarters, '최우선 인도 조건을 못 찾았다');
+
+  let order = null;
+  for (let t = 0; t < 30 && !order && !s.gameOver; t++) {
+    for (const rfp of s.rfps) {
+      const cand = E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked)[0];
+      if (!cand) continue;
+      E.setBid(s, rfp.id, cand.program.id, 0.1);
+      E.setBidTerms(s, rfp.id, { pledge: pledge.id });
+    }
+    E.endTurn(s);
+    order = s.backlog.find((o) => o.pledge === pledge.id && typeof o.dueTurn === 'number');
+  }
+  assert.ok(order, '최우선 조건으로 수주한 주문을 못 만들었다');
+  assert.strictEqual(
+    order.dueTurn - order.wonTurn + 1,
+    pledge.dueQuarters,
+    `${pledge.dueQuarters}분기를 약속했는데 인도 기회가 ${order.dueTurn - order.wonTurn + 1}번이다`,
+  );
+});
+
+test('급행 생산도 정규 생산과 같은 번호로 원가를 문다', () => {
+  const s = E.newGame(313);
+  s.cash = 8000;
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 55 }, 'RUSH-1').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.produced = 0;
+
+  s.backlog.push({
+    id: 'ord-rush',
+    airlineId: AIRLINES_ID(s),
+    airlineName: '테스트항공',
+    programId: p.id,
+    programName: p.name,
+    qty: 1,
+    remaining: 1,
+    unitPrice: p.listPrice,
+    wonTurn: s.turn,
+  });
+
+  // 1호기의 원가 — 아직 아무것도 안 만들었으므로 currentUnitCost 가 곧 그 값이다.
+  const firstUnit = E.currentUnitCost(s, p);
+  const before = s.pending.productionCost;
+
+  s.decision = {
+    id: 'delivery_slip',
+    name: '인도 지연 통보',
+    text: '테스트',
+    memo: { orderId: 'ord-rush', airline: AIRLINES_ID(s), airlineName: '테스트항공' },
+    turn: s.turn,
+    options: Dec.get('delivery_slip').options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+  assert.ok(E.decide(s, 'overtime').ok);
+
+  const charged = s.pending.productionCost - before;
+  assert.strictEqual(p.produced, 1, '급행으로 뽑은 기체가 생산 번호를 받지 않았다');
+  assert.ok(
+    Math.abs(charged - firstUnit * 1.15) < 1,
+    `1호기를 ${Math.round(charged)} 에 물었다 — 1호기 원가 × 1.15 = ${Math.round(firstUnit * 1.15)} 여야 한다`,
+  );
+});
+
+function AIRLINES_ID(s) {
+  return Object.keys(s.relations)[0];
+}
+
+test('경쟁사 인도 배분은 선언한 세그먼트 비중을 지킨다', () => {
+  // 세그먼트별 가중치를 정규화하지 않으면 그 세그먼트 몫이 "등재 기종 수 × 실력 합"에
+  // 비례해 버린다 — 1998년 카탈로그로 재면 리저널이 30% 가 아니라 11% 로 나왔다.
+  const s = E.newGame(317);
+  for (let i = 0; i < 8; i++) E.endTurn(s);
+
+  const year = E.yearOf(s.turn);
+  // 그 시점에 리저널기만 파는 제조사들 — 배분이 맞으면 이들 몫의 합이 리저널 비중이다.
+  const regionalOnly = new Set();
+  for (const m of F.MANUFACTURERS) {
+    const types = F.AIRCRAFT.filter((t) => t.maker === m.id && t.eis <= year && (t.end === null || t.end > year));
+    if (types.length && types.every((t) => t.segment === 'regional')) regionalOnly.add(m.id);
+  }
+  assert.ok(regionalOnly.size >= 2, '리저널 전업 제조사를 못 찾아 검증이 성립하지 않는다');
+
+  const rows = E.makerStandings(s).filter((r) => !r.us && r.id !== 'other');
+  const rivalTotal = rows.reduce((a, r) => a + r.delivered, 0);
+  assert.ok(rivalTotal > 50, '경쟁사 인도량이 너무 적어 비중을 잴 수 없다');
+  const regionalShare = rows.filter((r) => regionalOnly.has(r.id)).reduce((a, r) => a + r.delivered, 0) / rivalTotal;
+
+  // 리저널 전업 제조사만 세므로 선언 비중(30%)의 상한이다. 정규화 전에는 11% 대였다.
+  assert.ok(regionalShare > 0.2, `리저널 전업 제조사 몫이 ${(regionalShare * 100).toFixed(1)}% 다 — 선언 비중 30% 와 너무 멀다`);
+  assert.ok(regionalShare <= 0.32, `리저널 몫 ${(regionalShare * 100).toFixed(1)}% 가 선언 비중 30% 를 넘었다`);
+});
+
+test('반격의 주체는 보정치까지 포함한 실력으로 고른다', () => {
+  // 이벤트로 악재를 맞은 회사가 여전히 카탈로그 1위라는 이유로 반격 보너스를 받으면,
+  // 실제로 수주전을 이기고 있는 쪽 대신 엉뚱한 회사가 강해진다.
+  //
+  // 1위를 테스트에서 미리 계산하면 안 된다 — driftMarket 이 reactToRivals 앞에서
+  // 유가를 흔들어 카탈로그 순위를 뒤집으므로, 턴 시작 시점의 1위와 실제로 반격하는
+  // 회사가 다를 수 있다. 그래서 먼저 한 판 돌려 엔진이 고른 1위를 알아낸 뒤,
+  // 같은 판에서 그 회사에만 악재를 걸어 반격이 옮겨가는지 본다.
+  const sweep = (s) => {
+    const p = s.programs.find((x) => x.segment === 'narrow') || s.programs[0];
+    p.segment = 'narrow';
+    p.phase = 'production';
+    s.backlog.push({
+      id: 'ord-sweep',
+      airlineId: Object.keys(s.relations)[0],
+      airlineName: '테스트항공',
+      programId: p.id,
+      programName: p.name,
+      qty: 60,
+      remaining: 60,
+      unitPrice: p.listPrice,
+      wonTurn: s.turn,
+    });
+  };
+  const reacting = (s) => s.competitors.filter((c) => c.reaction && c.reaction.narrow > 0).map((c) => c.id);
+
+  const base = E.newGame(319);
+  sweep(base);
+  E.endTurn(base);
+  const leader = reacting(base);
+  assert.strictEqual(leader.length, 1, `반격 주체가 ${leader.length}곳이다 — 조건이 성립하지 않았다`);
+
+  // 같은 판, 그 1위에게만 큰 악재. 실력 1위는 이제 다른 회사다.
+  const hurt = E.newGame(319);
+  sweep(hurt);
+  hurt.competitors.find((c) => c.id === leader[0]).drift.narrow = -14;
+  E.endTurn(hurt);
+
+  const after = reacting(hurt);
+  assert.ok(after.length > 0, '아무도 반격하지 않았다');
+  assert.ok(
+    !after.includes(leader[0]),
+    `악재를 맞은 ${leader[0]} 가 여전히 반격 주체다 (보정치를 안 보고 있다)`,
+  );
+});
