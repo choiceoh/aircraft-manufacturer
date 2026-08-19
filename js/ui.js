@@ -207,6 +207,18 @@
         break;
       }
 
+      case 'test-aircraft': {
+        const r = E.addTestAircraft(s, btn.dataset.id);
+        if (act(r)) toast(`시험기를 한 대 더 띄웠다. 제작비 ${P.money(r.cost)}.`, 'good');
+        break;
+      }
+
+      case 'early-etops': {
+        const r = E.startEarlyEtops(s, btn.dataset.id);
+        if (act(r)) toast(`조기 ETOPS 취득에 착수했다. 비용 ${P.money(r.cost)}.`, 'good');
+        break;
+      }
+
       case 'design-seg':
         ui.spec = D.defaultSpec(btn.dataset.seg, E.yearOf(s.turn));
         render();

@@ -198,7 +198,8 @@
       return { total: 0, parts: {}, blocked: '이착륙 성능 미달', price: 0 };
     }
     // 장거리 노선은 ETOPS 인증이 없으면 취항 자체가 불가능하다.
-    if (rfp.reqEtops && !program.etops) {
+    // 설계만으로는 부족하다 — 실제로 인증을 가진 기종만 대양 노선에 들어간다.
+    if (rfp.reqEtops && !program.etopsCertified) {
       return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
     }
 

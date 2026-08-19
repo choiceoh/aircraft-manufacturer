@@ -753,9 +753,11 @@ test('개발비 총액은 착수금을 포함해 devCost를 넘지 않는다', (
   assert.notStrictEqual(p.phase, 'dev', '개발이 끝나야 한다');
 
   // 착수금(8%)을 낸 뒤 진행도에 다시 100%를 물리면 총액이 108%가 된다.
+  // 시험기 제작비는 개발비 예산과 별개의 지출이라 빼고 본다.
+  const design = p.spent - (p.testSpent || 0);
   assert.ok(
-    Math.abs(p.spent - budget) <= budget * 0.01,
-    `총 개발 지출 ${Math.round(p.spent)}이 표시된 개발비 ${budget}와 어긋난다 (품질투자 제외 기준)`,
+    Math.abs(design - budget) <= budget * 0.01,
+    `총 개발 지출 ${Math.round(design)}이 표시된 개발비 ${budget}와 어긋난다 (품질투자·시험기 제외 기준)`,
   );
 });
 
@@ -1290,46 +1292,50 @@ test('인증 지연이 생기면 기간이 늘고 비용이 리포트에 잡힌�
 
 // ────────────── 리뷰에서 잡힌 회귀 (엔진·인증·자산 평가) ──────────────
 
-test('인증 심사 지연은 광고한 분기 수만큼만 밀린다', () => {
-  // 지연 처리에서 이번 분기 감소분까지 건너뛰면 "1분기 지연"이 실제로는 2분기가 된다.
+test('인증 심사 지적은 광고한 만큼만 밀린다', () => {
+  // 지적이 나온 분기에 그 분기 시험비행까지 날아가면 "1분기 지연"이 실제로는 2분기가 된다.
   const s = E.newGame(12);
   s.cash = 60000;
   E.launchProgram(s, { segment: 'regional', seats: 90, range: 2500, tech: 95, material: 'composite' }, 'RISK');
   const p = s.programs[s.programs.length - 1];
   p.progress = 100;
   p.phase = 'cert';
+  p.testFleet = 2;
+  p.testHours = 0;
+  p.testHoursNeeded = 100000; // 이번 검증 동안 인증이 끝나 버리지 않게 넉넉히
+  p.testSpent = 0;
   p.defectRisk = 0.7;
 
   let checked = 0;
   for (let i = 0; i < 400 && checked < 6; i++) {
-    if (p.phase !== 'cert') {
-      p.phase = 'cert';
-      p.certRemaining = 4;
-    }
-    const before = p.certRemaining;
+    const needBefore = p.testHoursNeeded;
+    const hoursBefore = p.testHours;
     const logLen = s.log.length;
     const r = E.endTurn(s);
     if (!r.ok) break;
     s.cash = 60000;
 
-    let delay = 0;
+    let added = 0;
     for (let k = 0; k < s.log.length - logLen; k++) {
-      const m = /형식증명 심사에서 설계 변경 요구가 나왔다\. (\d+)분기 지연/.exec(s.log[k].text);
-      if (m) delay = Number(m[1]);
+      const m = /형식증명 심사에서 설계 변경 요구가 나왔다\. 재시험 ([\d,]+)시간/.exec(s.log[k].text);
+      if (m) added = Number(m[1].replace(/,/g, ''));
     }
-    if (!delay || p.phase !== 'cert') continue;
 
-    // 정상 분기는 -1. 지연이면 순증 delay-1 이어야 "delay 분기 지연"과 맞는다.
+    // 지적이 있든 없든 그 분기의 시험비행은 정상적으로 쌓여야 한다.
     assert.strictEqual(
-      p.certRemaining - before,
-      delay - 1,
-      `${delay}분기 지연인데 잔여가 ${before} → ${p.certRemaining} 로 변했다`,
+      p.testHours - hoursBefore,
+      p.testFleet * 350,
+      '지적이 난 분기의 시험비행 시간이 통째로 날아갔다',
     );
+    if (!added) {
+      assert.strictEqual(needBefore, p.testHoursNeeded, '지적이 없는데 요구 시간이 늘었다');
+      continue;
+    }
+    assert.strictEqual(p.testHoursNeeded - needBefore, added, '로그에 적힌 재시험 시간과 실제 증가분이 다르다');
     checked++;
   }
-  assert.ok(checked > 0, '지연 사례를 최소 하나는 관측해야 한다');
+  assert.ok(checked >= 3, `지적 표본이 ${checked}건뿐이라 검증이 성립하지 않는다`);
 });
-
 test('인증에 성공해도 신용등급이 떨어지지 않는다', () => {
   // 개발 자산을 dev/cert 에만 인정하면, 양산 전이 순간 자산이 통째로 사라져
   // 현금도 부채도 그대로인데 등급만 내려가고 이자가 오른다.
@@ -1803,10 +1809,66 @@ test('ETOPS 없이는 장거리 노선에 응찰할 수 없다', () => {
     id: 'r2', segment: p.segment, reqSeats: 280, reqRange: Data.ETOPS_RANGE_KM + 1000,
     reqField: 0, reqEtops: true, priceSensitivity: 1, prestige: 1, airlineId: 'carta', qty: 10,
   };
+  // 설계만으로는 부족하다 — 인증을 실제로 가져야 들어갈 수 있다.
   p.etops = false;
+  p.etopsCertified = false;
   assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, 'ETOPS 미인증');
   p.etops = true;
+  assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, 'ETOPS 미인증', 'ETOPS 대응 설계만으로 통과하면 안 된다');
+  p.etopsCertified = true;
   assert.strictEqual(B.scoreBid(s, rfp, p, 0.1).blocked, null);
+});
+
+test('ETOPS 는 조기 취득을 사거나 운항 실적으로 따낸다', () => {
+  const s = E.newGame(71);
+  s.cash = 40000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 12000, tech: 55, wing: 60, etops: true }, 'OCEAN').ok);
+  const p = s.programs[s.programs.length - 1];
+  assert.ok(p.etops, 'ETOPS 대응으로 설계돼야 한다');
+
+  // 개발을 끝내고 인증까지 민다 — 조기 취득을 사지 않은 경우.
+  for (let i = 0; i < 120 && p.phase !== 'production'; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.phase, 'production', '양산에 못 들어갔다');
+  assert.strictEqual(p.etopsCertified, false, '조기 취득 없이 취항과 동시에 인증이 나오면 안 된다');
+
+  // 운항 실적을 채우면 인증이 나온다.
+  for (let i = 0; i < 6 && !p.etopsCertified; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.etopsCertified, true, '운항 실적을 채웠는데 인증이 안 나왔다');
+  assert.ok(
+    s.log.some((l) => /ETOPS 인증을 받았다/.test(l.text)),
+    '인증 취득이 기록으로 남아야 한다',
+  );
+});
+
+test('조기 ETOPS 는 시험 시간을 사서 취항과 동시에 인증을 받는다', () => {
+  const s = E.newGame(73);
+  s.cash = 40000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 12000, tech: 55, wing: 60, etops: true }, 'OCEAN-E').ok);
+  const p = s.programs[s.programs.length - 1];
+
+  for (let i = 0; i < 120 && p.phase !== 'cert'; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.phase, 'cert', '심사 단계에 못 들어갔다');
+
+  const needBefore = p.testHoursNeeded;
+  const r = E.startEarlyEtops(s, p.id);
+  assert.ok(r.ok, r.error);
+  assert.ok(p.testHoursNeeded > needBefore, '조기 취득은 시험 시간을 더 요구해야 한다');
+  assert.strictEqual(E.startEarlyEtops(s, p.id).ok, false, '두 번 살 수 있으면 안 된다');
+
+  for (let i = 0; i < 120 && p.phase !== 'production'; i++) {
+    s.cash = 40000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(p.etopsCertified, true, '조기 취득을 샀으면 취항과 동시에 인증이어야 한다');
 });
 
 test('RFP 요구사양이 항공사 노선망 안에서 나온다', () => {
@@ -3982,4 +4044,54 @@ test('유가가 오르면 연비 차이가 운용 경제성에서 더 크게 벌
 
   assert.ok(gapCheap > 0, '싼 유가에서도 연비가 좋으면 유리해야 한다');
   assert.ok(gapDear > gapCheap, `유가가 비쌀수록 연비 격차가 커야 한다 (${gapCheap} → ${gapDear})`);
+});
+
+test('시험기를 늘리면 취항이 빨라지고 돈이 먼저 나간다', () => {
+  const run = (extra) => {
+    const s = E.newGame(83);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 50 }, 'T').ok);
+    const p = s.programs[s.programs.length - 1];
+    let added = false;
+    let quarters = 0;
+    for (let i = 0; i < 200 && p.phase !== 'production'; i++) {
+      if (!added && p.phase === 'cert') {
+        for (let k = 0; k < extra; k++) assert.ok(E.addTestAircraft(s, p.id).ok);
+        added = true;
+      }
+      if (p.phase === 'cert') quarters++;
+      s.cash = 60000;
+      E.endTurn(s);
+    }
+    assert.strictEqual(p.phase, 'production', '양산에 못 들어갔다');
+    return { quarters, fleet: p.testFleet, spent: p.testSpent, hours: p.testHours };
+  };
+
+  const base = run(0);
+  const rushed = run(3);
+
+  assert.strictEqual(base.fleet, 2, '기본 편대는 2대여야 한다');
+  assert.strictEqual(rushed.fleet, 5, '추가한 만큼 늘어야 한다');
+  assert.ok(rushed.quarters < base.quarters, `시험기를 늘렸는데 기간이 안 줄었다 (${base.quarters} → ${rushed.quarters})`);
+  assert.ok(rushed.spent > base.spent, '시험기를 늘렸으면 제작비가 더 나가야 한다');
+});
+
+test('인증 전 세이브도 시험비행으로 옮겨지고 취항 시점이 유지된다', () => {
+  const s = E.newGame(87);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'regional', seats: 90, range: 2500, tech: 45 }, 'OLD').ok);
+  const p = s.programs[s.programs.length - 1];
+
+  // v1 세이브 재현: 분기 카운트다운만 있고 시험비행 개념이 없다.
+  p.phase = 'cert';
+  p.progress = 100;
+  p.certRemaining = 3;
+  delete p.testHours;
+  delete p.testHoursNeeded;
+  delete p.testFleet;
+  E.ensureShape(s);
+
+  assert.strictEqual(p.testFleet, 2, '기본 편대로 옮겨야 한다');
+  assert.strictEqual(E.certQuartersLeft(p), 3, '남은 분기가 달라지면 불러온 판의 취항 시점이 바뀐다');
+  assert.strictEqual(p.testSpent, 0, '옛 세이브에 시험기 값을 소급 청구하면 안 된다');
 });

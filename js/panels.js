@@ -550,11 +550,36 @@
             </div>`;
         } else if (p.phase === 'cert') {
           // 중단 버튼이 없으면 인증 프로그램 3개가 슬롯을 물고 신규 착수가 영영 막힌다.
-          control = `<div class="devctl"><p class="cert">형식증명 심사 중 — 잔여 ${p.certRemaining}분기</p>
+          const need = p.testHoursNeeded || 0;
+          const flown = Math.min(need, p.testHours || 0);
+          const left = E.certQuartersLeft(p);
+          const nextCost = E.testAircraftCost(s, p);
+          const maxed = (p.testFleet || 0) >= 6;
+          control = `<div class="devctl">
+            <p class="cert">시험비행 <b>${num(flown)} / ${num(need)}시간</b> — 시험기 ${p.testFleet || 0}대로 남은 ${isFinite(left) ? left + '분기' : '—'}</p>
+            ${bar(need > 0 ? (flown / need) * 100 : 0)}
+            ${p.findings ? `<p class="hint">심사 지적 ${p.findings}건 — 재시험이 얹혔다.</p>` : ''}
             <div class="row">
+              <button data-action="test-aircraft" data-id="${p.id}" ${maxed ? 'disabled' : ''}>
+                시험기 추가 (${p.testFleet || 0}/6) · ${money(nextCost)}
+              </button>
               <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * CONFIG.qualityInvestRate)}</button>
+              ${
+                p.etops
+                  ? `<button data-action="early-etops" data-id="${p.id}" ${p.etopsEarly ? 'disabled' : ''}>
+                      ${p.etopsEarly ? '조기 ETOPS 진행 중' : `조기 ETOPS · ${money(p.devCost * 0.05)}`}
+                    </button>`
+                  : ''
+              }
               <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
-            </div></div>`;
+            </div>
+            ${
+              p.etops && !p.etopsEarly
+                ? '<p class="hint">ETOPS 는 취항만으로 나오지 않는다 — <b>운항 실적 4분기</b>를 채우거나, 지금 조기 취득을 사서 취항과 동시에 대양 노선에 들어가라.</p>'
+                : ''
+            }
+            <p class="hint">시험기를 늘리면 취항이 빨라진다. 대신 개발 막바지 — 현금이 가장 마른 시점 — 에 돈이 먼저 나간다. 인증 후에는 개수해 제작비의 40%를 회수한다.</p>
+          </div>`;
         } else if (p.phase === 'production') {
           const ordered = orderedBy(s, p.id);
           const lines = s.lines.filter((l) => l.programId === p.id).length;
