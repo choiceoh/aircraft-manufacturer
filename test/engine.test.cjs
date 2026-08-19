@@ -4813,6 +4813,7 @@ test('종료 시 ETOPS 못 딴 기종의 대양 주문만 위약 정산되고 �
     p.phase = 'production';
     p.etopsCertified = false;
     p.stock = 0;
+    p.delivered = 5; // 인도 실적이 있는, 능력이 증명된 기종 — 일반 주문은 지킬 수 있다
     s.turn = 79; // 마지막 분기
     s.backlog.push(
       {
@@ -4904,6 +4905,42 @@ test('계약 파기의 관계 벌점은 수주가 벌어 준 관계보다 크다
       s2.relations.carta <= 60 - WIN_GAIN,
       `취소 파기 벌점(${60 - s2.relations.carta})도 수주 이득(+${WIN_GAIN})을 지워야 한다`,
     );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('마지막 분기에 인증된 기종의 주문도 종료 정산에 걸리고 종료 백로그가 맞다', () => {
+  // resolveBids 가 advanceDevelopment 보다 먼저 돌아, 마지막 분기에 인증
+  // 직전 기종이 수주 후 같은 정산에서 양산이 된다. 라인을 세울 기회가 없었으니
+  // 그 주문은 영영 인도되지 않는다 — 인도 능력(실적·재고·라인)이 전무한
+  // 양산 기종의 주문은 종료 시 위약으로 정산돼야 한다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(547);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'LASTCERT').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production'; // 방금 인증됐다 — 실적도 재고도 라인도 없다
+    p.certTurn = 79;
+    s.turn = 79;
+    s.backlog.push({
+      id: 'ord-lastcert', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: 79, depositRate: 0.15,
+    });
+
+    E.endTurn(s);
+    assert.ok(s.gameOver, '마지막 분기 정산 후에는 게임이 끝나야 한다');
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-lastcert'), '인도 능력이 전무한 기종의 주문이 정산 없이 남았다');
+    assert.ok(s.log.some((l) => /기한 내 미인도/.test(l.text)), '정산 사유가 기록으로 남아야 한다');
+
+    // 종료 화면이 읽는 마지막 행의 백로그는 정산 후 상태여야 한다.
+    const row = s.history[s.history.length - 1];
+    assert.strictEqual(row.backlog, E.totalBacklog(s), '마지막 행 백로그가 정산 전 값을 물고 있다');
   } finally {
     Data.EVENTS.push(...savedEvents);
     Dec.DECISIONS.push(...savedDecisions);

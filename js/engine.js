@@ -1060,10 +1060,21 @@
           voidOrdersFor(s, p, '기한 내 미취항');
           continue;
         }
+        if (p.phase !== 'production') continue;
+        // 형식증명은 있어도 인도 능력이 전무한 기종 — 인도 실적도 재고도 라인도
+        // 없다 — 의 주문은 지킬 수 없던 약속이다. 마지막 분기에 인증과 수주를
+        // 동시에 챙기는 경우가 정확히 여기 걸린다: resolveBids 가 advanceDevelopment
+        // 보다 먼저 돌므로 인증 직전 기종이 수주 후 같은 정산에서 양산이 되는데,
+        // 라인을 세울 기회가 없었으니 그 주문은 영영 인도되지 않는다.
+        const bare = !(p.delivered > 0) && !(p.stock > 0) && !s.lines.some((l) => l.programId === p.id);
+        if (bare) {
+          voidOrdersFor(s, p, '기한 내 미인도');
+          continue;
+        }
         // 양산에는 갔지만 ETOPS 를 못 딴 기종의 대양 노선 주문도 같은 귀책이다 —
         // 약속한 능력(인증)이 끝내 없어서 인도 게이트에 막힌 채 판이 끝났다.
         // 같은 기종의 일반 주문은 인도 가능한 물량이므로 건드리지 않는다.
-        if (p.phase === 'production' && !p.etopsCertified) {
+        if (!p.etopsCertified) {
           const blocked = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0 && o.reqEtops);
           voidOrderList(s, p, blocked, 'ETOPS 미인증');
         }
@@ -1798,6 +1809,9 @@
     row.worth = Math.round(netWorth(s));
     row.share = Math.round(marketShare(s) * 10000) / 10000;
     row.reputation = Math.round(s.reputation);
+    // 종료 정산이 주문을 파기했을 수 있다. 마지막 행이 정산 전 백로그를 물고
+    // 있으면 종료 화면이 이미 사라진 기체를 계속 보여 준다.
+    row.backlog = totalBacklog(s);
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
   }
 
