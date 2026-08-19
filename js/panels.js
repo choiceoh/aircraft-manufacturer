@@ -834,10 +834,15 @@
     const financing = BID_FINANCING[sc.terms.financing];
     const deposit = total * CONFIG.depositRate * financing.depositMult;
     // 약속을 지키려면 분기당 몇 기를 넘겨야 하나 — 라인 여력과 바로 비교된다.
+    // 명목 최대치가 아니라 **지금 실제로 뽑히는 양**을 쓴다. 램프업 15%짜리 새 라인을
+    // 만개로 보여 주면 지킬 수 없는 약속에 초록불을 켜 주는 셈이다. 이미 다른 주문이
+    // 잡아먹고 있는 몫도 빼야 남는 여력이 된다.
     const perQuarter = Math.ceil(rfp.qty / pledge.dueQuarters);
-    const capacity = s.lines
-      .filter((l) => l.programId === p.id && !l.idle)
-      .reduce((a, l) => a + l.capacity, 0);
+    const output = E.effectiveOutput(s, p.id);
+    const committed = s.backlog
+      .filter((o) => o.programId === p.id && o.remaining > 0)
+      .reduce((a, o) => a + o.remaining, 0);
+    const capacity = Math.max(0, output - Math.min(output, Math.ceil(committed / 4)));
 
     return `<table class="spec">
         <tr><th>입찰 점수</th><td><b>${sc.total}</b> ${bar(sc.total, 'score')}${
@@ -849,7 +854,7 @@
         <tr><th>전량 수주 시</th><td>${money(total)} <span class="muted">(선수금 ${money(deposit)})</span></td></tr>
         <tr><th>인도 약속</th><td>${esc(pledge.name)}${
           pledge.penaltyRate
-            ? ` · <b>${pledge.dueQuarters}분기 안에 ${rfp.qty}기</b> = 분기당 ${perQuarter}기 <span class="${capacity >= perQuarter ? 'good' : 'bad'}">(현재 라인 여력 ${capacity}기)</span>`
+            ? ` · <b>${pledge.dueQuarters}분기 안에 ${rfp.qty}기</b> = 분기당 ${perQuarter}기 <span class="${capacity >= perQuarter ? 'good' : 'bad'}">(지금 실제 생산 ${output}기${committed ? ` · 기존 주문 몫을 빼면 ${capacity}기` : ''})</span>`
             : ' <span class="muted">· 기한 약속 없음</span>'
         }</td></tr>
         <tr><th>대금 회수</th><td>${

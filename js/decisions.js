@@ -190,7 +190,10 @@
             h.expense(cost);
             p.defectRisk = Math.round(p.defectRisk * 0.72 * 1000) / 1000;
             h.reputation(2);
-            return `${money(cost)}을 들여 조용히 개선했다. ${p.name}의 결함 위험이 ${(p.defectRisk * 100).toFixed(1)}%로 내려갔다.`;
+            // 시간도 쓴다고 광고했으면 실제로 써야 한다. 한 분기 인도를 세운다 —
+            // 돈만 내고 끝나면 안전한 선택지가 대가 없이 우월해진다.
+            h.ground(p.id, 1);
+            return `${money(cost)}을 들여 조용히 개선했다. ${p.name}의 결함 위험이 ${(p.defectRisk * 100).toFixed(1)}%로 내려갔고, 개수 작업으로 한 분기 인도가 멈춘다.`;
           },
         },
         {
@@ -362,8 +365,13 @@
       id: 'gov_grant',
       name: '정부 개발 지원 제안',
       weight: (s) => (inDevelopment(s).length ? 8 : 0),
-      text: () =>
-        '산업부가 차세대 여객기 개발 지원을 제안했다. 조건이 붙는다 — 국내 협력사 사용 의무, 그리고 성공 시 기술료 상환.',
+      text: (s, h) => {
+        // 어느 프로그램을 지원받았는지 남긴다. "아무 신형이나 양산되면 상환"으로 두면
+        // 지원 전부터 있던 기종이 인증되는 것만으로 기술료를 물게 된다.
+        const p = h.rng.pick(inDevelopment(s));
+        h.remember('program', p ? p.id : null);
+        return `산업부가 <b>${p ? p.name : '차세대 여객기'}</b> 개발 지원을 제안했다. 조건이 붙는다 — 국내 협력사 사용 의무, 그리고 그 기종이 시장에 나오면 기술료 상환.`;
+      },
       options: [
         {
           id: 'take',
@@ -377,18 +385,22 @@
           after: {
             quarters: 8,
             apply: (s, h) => {
-              const cert = s.programs.some((p) => p.phase === 'production' && !p.legacy);
-              if (!cert) {
+              const p = s.programs.find((x) => x.id === h.recall('program'));
+              // 그 기종이 죽었으면 상환할 성공이 없다.
+              if (!p || p.phase === 'cancelled' || p.phase === 'sold') {
+                return '지원받은 프로그램이 사라졌다. 산업부가 기술료를 물리지 않기로 했다.';
+              }
+              if (p.phase !== 'production') {
                 // 유예이지 면제가 아니다. 다시 예약하지 않으면 개발이 8분기보다
                 // 오래 걸리는 흔한 경우에 지원금이 통째로 공짜가 된다.
                 const waited = h.recall('grantWaited', 0) + 1;
                 h.remember('grantWaited', waited);
-                if (waited >= 6) return '지원받은 기종이 끝내 시장에 나오지 못했다. 산업부가 기술료를 면제했다.';
-                return { text: '지원받은 프로그램이 아직 시장에 없다. 기술료 상환이 4분기 유예됐다.', retryIn: 4 };
+                if (waited >= 6) return `${p.name}이 끝내 시장에 나오지 못했다. 산업부가 기술료를 면제했다.`;
+                return { text: `${p.name}이 아직 시장에 없다. 기술료 상환이 4분기 유예됐다.`, retryIn: 4 };
               }
               const fee = 1150;
               h.expense(fee);
-              return `지원받은 기종이 양산에 들어가면서 기술료 ${money(fee)}을 상환했다.`;
+              return `${p.name}이 양산에 들어가면서 기술료 ${money(fee)}을 상환했다.`;
             },
           },
         },
@@ -519,10 +531,12 @@
             if (!order || order.remaining <= 0) return `${money(cost)}을 들여 라인을 돌렸지만 그 주문은 이미 정리됐다.`;
             const p = s.programs.find((x) => x.id === order.programId);
             const rushed = Math.max(1, Math.ceil(order.remaining * 0.35));
-            if (p) p.stock += rushed;
+            // 재고만 얹으면 학습곡선도 원가도 건너뛴 공짜 기체가 된다 — 곧바로 팔면
+            // 생산 경제가 통째로 무너진다. 정규 생산과 같이 번호를 매기고 원가를 문다.
+            const buildCost = p ? h.rushProduce(p, rushed, 1.15) : 0;
             if (typeof order.dueTurn === 'number') order.dueTurn += 2;
             order.lastPenaltyTurn = undefined;
-            return `${money(cost)}을 들여 ${rushed}기를 앞당겨 뽑고 ${h.recall('airlineName', '고객사')}과 기한을 다시 맞췄다.`;
+            return `${money(cost + buildCost)}을 들여 ${rushed}기를 앞당겨 뽑고 ${h.recall('airlineName', '고객사')}과 기한을 다시 맞췄다. (생산 원가 ${money(buildCost)} 포함, 급행 할증 15%)`;
           },
         },
         {

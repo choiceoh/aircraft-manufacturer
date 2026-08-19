@@ -3036,7 +3036,9 @@ test('자체 금융은 인도 대금을 나눠 받고 총액은 이자만큼 늘
 test('경쟁사는 뺏긴 시장에 반격하고, 손을 떼면 물러난다', () => {
   const s = E.newGame(113);
   const seg = 'narrow';
-  const before = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
+  // 반격은 이벤트 보정(drift)과 다른 슬롯(reaction)을 쓴다 — 그래야 반격의 감쇠가
+  // 이벤트가 준 보정을 지우지 않는다.
+  const before = Math.max(...s.competitors.map((c) => c.reaction[seg] || 0));
 
   // 무작위 이벤트도 보정치를 움직인다(경쟁사 신형 투입 등). 여기서 재려는 것은
   // 반격 로직뿐이므로 이 시나리오 동안만 추첨 이벤트를 비운다.
@@ -3065,7 +3067,7 @@ test('경쟁사는 뺏긴 시장에 반격하고, 손을 떼면 물러난다', (
     });
     E.endTurn(s);
   }
-  const peak = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
+  const peak = Math.max(...s.competitors.map((c) => c.reaction[seg] || 0));
   assert.ok(peak > before, '시장을 계속 내주는데 경쟁사가 반응하지 않는다');
   // 반격이 시장을 통째로 닫으면 안 된다 — 이벤트 상한(14)과 다른, 훨씬 낮은 상한.
   assert.ok(peak <= 5, `반격이 과하다 (drift ${peak})`);
@@ -3076,7 +3078,7 @@ test('경쟁사는 뺏긴 시장에 반격하고, 손을 떼면 물러난다', (
     s.cash = Math.max(s.cash, 20000);
     E.endTurn(s);
   }
-  const after = Math.max(...s.competitors.map((c) => c.drift[seg] || 0));
+  const after = Math.max(...s.competitors.map((c) => c.reaction[seg] || 0));
   assert.ok(after < peak, `공세가 영원히 유지된다 (${peak} → ${after})`);
   } finally {
     Data.EVENTS.push(...savedEvents);
@@ -3439,8 +3441,11 @@ test('정부 지원금 상환 의무는 유예돼도 사라지지 않는다', ()
   const def = Dec.get('gov_grant');
   s.cash = 5000;
   E.launchProgram(s, { segment: 'wide', seats: 300, range: 12000, tech: 70, fuselage: 'composite', wingMat: 'composite' }, 'SLOW');
+  const slow = s.programs.find((p) => p.name === 'SLOW');
   s.decision = {
-    id: 'gov_grant', name: def.name, text: 'x', memo: {}, turn: s.turn,
+    id: 'gov_grant', name: def.name, text: 'x',
+    // 상환 의무는 **지원받은 그 기종**에 걸린다.
+    memo: { program: slow.id }, turn: s.turn,
     options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
   };
   E.decide(s, 'take');
@@ -3496,4 +3501,107 @@ test('회고의 최고 점유율은 승계 선단이 만든 출발점을 포함�
   assert.ok(E.marketShare(s) < opening, '이 시나리오에서는 점유율이 내려가야 한다');
   const peak = E.careerReport(s).peakShare;
   assert.ok(Math.abs(peak - opening) < 1e-6, `회고가 출발점(${(opening * 100).toFixed(1)}%)을 놓쳤다 (${(peak * 100).toFixed(1)}%)`);
+});
+
+test('반격은 이벤트 보정을 지우지도, 그 회복을 막지도 않는다', () => {
+  const s = E.newGame(401);
+  const seg = 'narrow';
+  const boeing = s.competitors.find((c) => c.id === 'boeing');
+  const airbus = s.competitors.find((c) => c.id === 'airbus');
+  // 이벤트가 준 보정: 한쪽은 호재, 한쪽은 악재.
+  boeing.drift[seg] = 5;
+  airbus.drift[seg] = -4;
+
+  const savedEvents = Data.EVENTS.slice();
+  Data.EVENTS.length = 0;
+  try {
+    for (let i = 0; i < 10 && !s.gameOver; i++) {
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+    }
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+  }
+
+  assert.strictEqual(boeing.drift[seg], 5, '반격 감쇠가 이벤트 호재를 갉아먹었다');
+  assert.strictEqual(airbus.drift[seg], -4, '이벤트 악재가 반격 로직에 지워졌다');
+});
+
+test('특별 근무로 뽑은 기체도 학습곡선과 원가를 탄다', () => {
+  const s = E.newGame(409);
+  const p = s.programs.find((x) => x.legacy);
+  p.stock = 0;
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'ord-rush', airlineId: 'hanul', airlineName: '한울항공', programId: p.id, programName: p.name,
+    qty: 20, remaining: 20, unitPrice: 60, wonTurn: s.turn, pledge: 'priority', financing: 'normal',
+    dueTurn: s.turn, depositRate: 0.15,
+  });
+  const def = Dec.get('delivery_slip');
+  s.decision = {
+    id: 'delivery_slip', name: def.name, text: 'x',
+    memo: { airline: 'hanul', airlineName: '한울항공', orderId: 'ord-rush' }, turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+
+  const producedBefore = p.produced;
+  const cashBefore = s.cash;
+  E.decide(s, 'overtime');
+
+  assert.ok(p.produced > producedBefore, '급하게 뽑은 기체가 생산 번호를 안 받았다 (학습곡선 우회)');
+  assert.strictEqual(p.produced - producedBefore, p.stock, '생산 대수와 재고가 어긋난다');
+  const spent = cashBefore - s.cash;
+  const unitCost = E.currentUnitCost(s, p);
+  assert.ok(spent > p.stock * unitCost * 0.8, `특별 근무 기체가 사실상 공짜다 (지출 ${Math.round(spent)})`);
+  assert.ok(s.pending.productionCost > 0, '생산 원가가 장부에 안 잡혔다');
+});
+
+test('종료 직전에 고른 선택도 대가를 치른다', () => {
+  const s = E.newGame(411);
+  s.turn = Data.CONFIG.totalTurns - 2;
+  s.cash = 30000;
+  // 6분기 뒤에 값을 치르는 선택 — 종료(2분기 뒤)를 넘어간다.
+  const def = Dec.DECISIONS.find((d) => d.options.some((o) => o.after && o.after.quarters >= 4));
+  const opt = def.options.find((o) => o.after && o.after.quarters >= 4);
+  s.decision = {
+    id: def.id, name: def.name, text: 'x', memo: {}, turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+  E.decide(s, opt.id);
+  assert.strictEqual(s.pendingOutcomes.length, 1);
+  assert.ok(s.pendingOutcomes[0].turn >= Data.CONFIG.totalTurns, '이 검사는 종료 이후로 예약돼야 의미가 있다');
+
+  while (!s.gameOver) E.endTurn(s);
+  assert.strictEqual(s.pendingOutcomes.length, 0, '종료로 약속이 사라졌다 — 이득만 챙기고 대가를 피한다');
+});
+
+test('종료 정산의 현금 이동이 마지막 재무 행으로 설명된다', () => {
+  const s = E.newGame(413);
+  s.turn = Data.CONFIG.totalTurns - 2;
+  s.cash = 30000;
+  // 반드시 달성되는 목표를 마지막 기한으로 심는다 → 종료 정산에서 증자 보상이 들어온다.
+  s.mandate = { id: 'delivery', name: '인도 확대', target: 1, text: '인도 1기', issuedTurn: s.turn - 18, dueTurn: Data.CONFIG.totalTurns };
+  s.stats.delivered = 500;
+
+  while (!s.gameOver) E.endTurn(s);
+  const last = s.history[s.history.length - 1];
+  assert.strictEqual(last.label, E.turnLabel(s.gameOver.lastTurn), '경영하지 않은 분기가 재무표에 생겼다');
+  assert.strictEqual(last.cash, Math.round(s.cash), '마지막 행의 현금이 실제 잔고와 다르다');
+  assert.strictEqual((s.stats.mandatesMet || 0) >= 1, true);
+});
+
+test('지연 결과로 자금이 마르면 그 분기 이벤트가 되살리지 못한다', () => {
+  const s = E.newGame(417);
+  // 지급불능 직전 상태에서 큰 지출이 예약된 상황을 만든다.
+  s.cash = 50;
+  s.debt = Data.CONFIG.maxDebt;
+  const def = Dec.get('emission_rule');
+  const opt = def.options.find((o) => o.id === 'wait');
+  s.pendingOutcomes = [{ turn: s.turn + 1, id: 'emission_rule', optionId: opt.id, memo: {} }];
+
+  E.endTurn(s);
+  if (s.cash < 0) {
+    assert.strictEqual(s.events.length, 0, '지급불능인데 이벤트가 굴러 현금이 들어올 수 있다');
+    assert.strictEqual(s.decision, null, '지급불능인데 새 사건이 떴다');
+  }
 });

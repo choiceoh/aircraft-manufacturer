@@ -106,7 +106,7 @@
         peakShare: 0,
       },
       // 분기 중 즉시 발생한 실적(재고 처분 등) — 다음 endTurn 리포트가 흡수한다.
-      pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 },
+      pending: { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 },
       events: [],
       // 이번 분기 업계 동향 (경쟁사 취항·단산). 개요 화면이 읽는다.
       news: [],
@@ -237,7 +237,11 @@
     return MANUFACTURERS.map((m) => ({
       id: m.id,
       name: m.name,
+      // drift 는 이벤트가 얹는 보정치, reaction 은 우리 성적에 대한 가격 공세다.
+      // 한 칸을 같이 쓰면 반격의 감쇠가 이벤트 보정을 지우고, 이벤트가 준 마이너스
+      // 보정은 반격 로직의 감쇠 경로에 걸리지 않아 영원히 남는다.
       drift: { regional: 0, narrow: 0, wide: 0 },
+      reaction: { regional: 0, narrow: 0, wide: 0 },
     }));
   }
 
@@ -253,8 +257,8 @@
       delete s.effects.groundedProgram;
       delete s.effects.groundedQuarters;
     }
-    if (!s.pending) s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 };
-    for (const k of ['revenue', 'delivered', 'rdCost', 'capex', 'overhead', 'ordersWon']) {
+    if (!s.pending) s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
+    for (const k of ['revenue', 'delivered', 'rdCost', 'capex', 'overhead', 'ordersWon', 'productionCost']) {
       if (typeof s.pending[k] !== 'number') s.pending[k] = 0;
     }
     if (!s.stats) s.stats = { delivered: 0, revenue: 0, rivalDelivered: 240, ordersWon: 0, bidsMade: 0 };
@@ -365,8 +369,10 @@
       s.competitors = newCompetitors();
     }
     for (const c of s.competitors) {
+      if (!c.reaction) c.reaction = {};
       for (const seg of ['regional', 'narrow', 'wide']) {
         if (typeof c.drift[seg] !== 'number') c.drift[seg] = 0;
+        if (typeof c.reaction[seg] !== 'number') c.reaction[seg] = 0;
       }
     }
     return s;
@@ -812,7 +818,7 @@
     const report = {
       label: turnLabel(s.turn),
       revenue: s.pending.revenue,
-      productionCost: 0,
+      productionCost: s.pending.productionCost || 0,
       rdCost: s.pending.rdCost,
       capex: s.pending.capex,
       overhead: s.pending.overhead,
@@ -822,7 +828,7 @@
       // 받은 분기가 "신규 수주 0기"로 기록된다.
       ordersWon: s.pending.ordersWon || 0,
     };
-    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 };
+    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
 
     resolveBids(s, rng, report);
     advanceDevelopment(s, rng, report);
@@ -872,9 +878,16 @@
     // 마지막 분기를 정산했다면 여기서 끝낸다. 존재하지 않는 다음 분기의 경쟁사 인도량이
     // 최종 점유율을 깎거나, 이벤트가 최종 현금·평판까지 바꾼다.
     if (s.turn >= CONFIG.totalTurns) {
+      // 아직 오지 않은 약속을 여기서 모두 닫는다. 그러지 않으면 종료 직전에 고른
+      // 정부 지원금·낙관적 전망 같은 선택이 이득만 챙기고 대가를 영영 피한다.
+      resolvePendingOutcomes(s, rng, { final: true });
       // 60분기에 발령된 목표는 80분기가 기한이다. 여기서 닫지 않으면 완주한 판마다
       // 마지막 5년치 성과가 보상·벌점 없이 사라진다.
       settleMandate(s, rng, { final: true });
+      // 위 둘이 만든 현금 이동은 이미 마감된 리포트에 없다. 마지막 분기 행에 얹어야
+      // 종료 화면의 현금·매출·순자산 곡선이 실제 잔고와 맞는다. 새 행을 만들면
+      // 존재하지 않는 81번째 분기가 재무표에 뜬다.
+      foldPendingIntoLastRow(s);
       finishGame(s);
       saveRng(s, rng);
       return { ok: true, report };
@@ -886,6 +899,17 @@
     reactToRivals(s);
     rollMarketNews(s);
     resolvePendingOutcomes(s, rng);
+
+    // 지연 결과가 현금을 말렸다면 여기서 멈춘다. 그대로 이벤트를 굴리면 연구지원금
+    // 같은 현금 유입이 이미 지급불능인 회사를 되살려, 정산에서 확정하려던 파산이
+    // 없던 일이 된다. (rollEvents 안에도 같은 취지의 중단이 있다.)
+    if (isInsolvent(s)) {
+      s.events = [];
+      s.decision = null;
+      saveRng(s, rng);
+      return { ok: true, report };
+    }
+
     s.events = rollEvents(s, rng);
     s.decision = rollDecision(s, rng);
     s.rfps = generateRfps(s, rng);
@@ -1189,6 +1213,23 @@
     }
   }
 
+  /**
+   * 그 기종이 **이번 분기에 실제로 뽑을 수 있는** 대수.
+   *
+   * 라인의 명목 최대치를 그대로 보여 주면, 램프업 15%짜리 새 라인이나 파업 중인
+   * 라인도 만개로 보인다 — 지킬 수 없는 인도 약속을 초록불로 안내하는 셈이다.
+   * runProduction 과 같은 계수를 쓴다.
+   */
+  function effectiveOutput(s, programId) {
+    let mult = 1;
+    if (s.effects.strikeQuarters > 0) mult *= 0.5;
+    if (s.effects.supplyQuarters > 0) mult *= 0.75;
+    if ((s.effects.grounded[programId] || 0) > 0) return 0;
+    return s.lines
+      .filter((l) => l.programId === programId && !l.idle)
+      .reduce((a, l) => a + Math.floor(l.capacity * (typeof l.ramp === 'number' ? l.ramp : 1) * mult), 0);
+  }
+
   function pledgeOf(order) {
     return BID_PLEDGES[order && order.pledge] || BID_PLEDGES.standard;
   }
@@ -1303,7 +1344,7 @@
     const p = s.pending;
     if (!p) return;
     const revenue = p.revenue;
-    const cost = p.rdCost + p.capex + p.overhead;
+    const cost = p.rdCost + p.capex + p.overhead + (p.productionCost || 0);
     s.history.push({
       turn: s.turn,
       label: turnLabel(s.turn),
@@ -1322,7 +1363,32 @@
       demand: Math.round(s.market.demandIndex * 1000) / 1000,
     });
     if (s.history.length > 120) s.history.shift();
-    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0 };
+    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
+  }
+
+  /**
+   * 종료 정산이 만든 현금 이동을 마지막 분기 행에 합친다.
+   *
+   * 새 행으로 남기면 경영하지 않은 분기(81번째)가 재무표와 곡선에 생긴다. 마지막
+   * 분기의 손익에 얹는 편이 "그 분기에 정산됐다"는 사실과도 맞다.
+   */
+  function foldPendingIntoLastRow(s) {
+    const p = s.pending;
+    if (!p) return;
+    const row = s.history[s.history.length - 1];
+    if (!row) {
+      flushTerminalQuarter(s);
+      return;
+    }
+    row.revenue += Math.round(p.revenue);
+    row.cost += Math.round(p.rdCost + p.capex + p.overhead + (p.productionCost || 0));
+    row.net = row.revenue - row.cost;
+    row.cash = Math.round(s.cash);
+    row.debt = Math.round(s.debt);
+    row.worth = Math.round(netWorth(s));
+    row.share = Math.round(marketShare(s) * 10000) / 10000;
+    row.reputation = Math.round(s.reputation);
+    s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
   }
 
   function tickEffects(s) {
@@ -1427,10 +1493,16 @@
     }
   }
 
-  /** 이벤트가 그 제조사·세그먼트에 얹어 둔 보정치. 입찰(bestOffering)이 쓰는 값과 같다. */
+  /**
+   * 그 제조사·세그먼트에 걸린 보정치 총합 — 이벤트(drift)와 가격 공세(reaction).
+   * 입찰(bestOffering)이 쓰는 값과 같은 합이어야 배분과 수주전이 같은 실력을 본다.
+   */
   function driftOf(s, makerId, segment) {
     const c = (s.competitors || []).find((x) => x.id === makerId);
-    return (c && c.drift && typeof c.drift[segment] === 'number' && c.drift[segment]) || 0;
+    if (!c) return 0;
+    const d = (c.drift && typeof c.drift[segment] === 'number' && c.drift[segment]) || 0;
+    const r = (c.reaction && typeof c.reaction[segment] === 'number' && c.reaction[segment]) || 0;
+    return d + r;
   }
 
   /** 제조사별 누적 인도 — 우리를 포함해 큰 순으로 정렬한 순위표. */
@@ -1505,9 +1577,10 @@
       const target = Math.min(REACTION_LIMIT, (wonUnits / 30) * REACTION_LIMIT);
 
       for (const c of s.competitors) {
-        const cur = c.drift[seg] || 0;
+        if (!c.reaction) c.reaction = { regional: 0, narrow: 0, wide: 0 };
+        const cur = c.reaction[seg] || 0;
         if (leader && c.id === leader.maker && target > cur) {
-          const next = Math.min(RIVAL_DRIFT_LIMIT, cur + REACTION_STEP);
+          const next = Math.min(REACTION_LIMIT, cur + REACTION_STEP);
           if (Math.floor(next) > Math.floor(cur)) {
             const maker = MANUFACTURERS.find((m) => m.id === c.id);
             pushLog(
@@ -1516,10 +1589,10 @@
               `${maker ? maker.name : c.id}이 ${SEGMENTS[seg].name} 시장에서 가격 공세를 시작했다. 이 시장 수주전이 더 어려워진다.`,
             );
           }
-          c.drift[seg] = next;
+          c.reaction[seg] = next;
         } else if (cur > 0) {
           // 공세는 비용이다. 우리가 물러나거나 목표치 아래로 내려오면 제값을 받으러 돌아간다.
-          c.drift[seg] = Math.max(leader && c.id === leader.maker ? Math.max(0, target) : 0, cur - REACTION_STEP);
+          c.reaction[seg] = Math.max(leader && c.id === leader.maker ? Math.max(0, target) : 0, cur - REACTION_STEP);
         }
       }
     }
@@ -1846,6 +1919,7 @@
       (candidates.length
         ? candidates.reduce((a, b) => ((b.drift[seg] || 0) < (a.drift[seg] || 0) ? b : a))
         : s.competitors[0]) || null;
+    // 도면 인수는 일회성 실력 상승이다 — 가격 공세(reaction)가 아니라 이벤트 보정에 얹는다.
     if (buyer) buyer.drift[seg] = Math.min(RIVAL_DRIFT_LIMIT, (buyer.drift[seg] || 0) + 2);
     const buyerName = buyer ? (MANUFACTURERS.find((m) => m.id === buyer.id) || {}).name || buyer.id : '경쟁사';
 
@@ -1896,6 +1970,28 @@
       expense: (amt) => {
         s.cash -= amt;
         s.pending.overhead += amt;
+      },
+      /**
+       * 특별 근무 같은 긴급 생산. 재고만 얹으면 학습곡선도 원가도 건너뛴 공짜 기체가
+       * 되어 곧바로 팔 수 있다 — 생산 경제 전체가 무너진다. 정규 생산과 같은 방식으로
+       * 번호를 매기고 원가를 문다(급하게 뽑는 만큼 할증까지).
+       */
+      rushProduce: (program, units, premium) => {
+        let cost = 0;
+        for (let i = 0; i < units; i++) {
+          program.produced++;
+          cost += currentUnitCost(s, program) * (premium || 1);
+        }
+        cost = Math.round(cost);
+        program.stock += units;
+        s.cash -= cost;
+        s.pending.productionCost += cost;
+        return cost;
+      },
+      /** 기종을 몇 분기 세운다 — 인도가 밀린다고 광고한 선택지가 실제로 밀리도록. */
+      ground: (programId, quarters) => {
+        if (!programId || !(quarters > 0)) return;
+        s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, quarters);
       },
       /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
       order: ({ airlineId, airlineName, program, qty, unitPrice }) => {
@@ -2003,10 +2099,13 @@
   }
 
   /** 예약된 지연 결과 중 이번 분기 몫을 정산한다. */
-  function resolvePendingOutcomes(s, rng) {
-    const due = (s.pendingOutcomes || []).filter((x) => x.turn <= s.turn);
+  function resolvePendingOutcomes(s, rng, opts) {
+    // 종료 정산에서는 기한이 남은 것까지 전부 닫는다 — 미뤄 둔 대가가 게임이
+    // 끝난다는 이유로 사라지면 종료 직전의 선택이 언제나 공짜가 된다.
+    const final = !!(opts && opts.final);
+    const due = (s.pendingOutcomes || []).filter((x) => final || x.turn <= s.turn);
     if (!due.length) return;
-    s.pendingOutcomes = s.pendingOutcomes.filter((x) => x.turn > s.turn);
+    s.pendingOutcomes = final ? [] : s.pendingOutcomes.filter((x) => x.turn > s.turn);
     for (const item of due) {
       const opt = Decisions.optionOf(item.id, item.optionId);
       const def = Decisions.get(item.id);
@@ -2016,7 +2115,8 @@
       // 결과가 { text, retryIn } 을 내면 아직 끝난 게 아니라 미뤄진 것이다.
       // 조건이 안 맞았다고 그냥 버리면 상환 의무 같은 약속이 공짜로 사라진다.
       const text = typeof out === 'string' ? out : out && out.text;
-      if (out && typeof out === 'object' && out.retryIn > 0) {
+      // 종료 정산에서는 다시 예약해 봐야 정산할 분기가 없다.
+      if (!final && out && typeof out === 'object' && out.retryIn > 0) {
         s.pendingOutcomes.push({ turn: s.turn + out.retryIn, id: item.id, optionId: item.optionId, memo });
       }
       if (text) pushLog(s, 'event', `[${def.name}] ${text}`);
@@ -2165,7 +2265,9 @@
     // 이자가 오른다. 양산 전이는 자산이 사라지는 사건이 아니므로 인도량에 따라
     // 상각한다(약 300기에 걸쳐 소멸) — 회계상 개발비 자본화와 같은 취급이다.
     const programValue = s.programs
-      .filter((p) => p.phase !== 'cancelled')
+      // 매각한 프로그램은 대금을 이미 현금으로 받았다. 자산으로도 계속 세면 같은
+      // 가치를 두 번 세어 등급이 부당하게 올라가고 이자가 싸진다.
+      .filter((p) => p.phase !== 'cancelled' && p.phase !== 'sold')
       .reduce((a, p) => {
         const amortized = p.phase === 'production' ? Math.max(0, 1 - p.delivered / 300) : 1;
         return a + p.spent * 0.6 * amortized;
@@ -2429,6 +2531,7 @@
     marketShare,
     netWorth,
     currentUnitCost,
+    effectiveOutput,
     creditRating,
     interestRate,
     quarterRate,

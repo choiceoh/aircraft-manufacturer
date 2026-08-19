@@ -277,7 +277,9 @@
 
     let best = null;
     for (const c of state.competitors) {
-      const drift = (c.drift && c.drift[segmentId]) || 0;
+      // 이벤트 보정 + 가격 공세. 둘은 슬롯이 다르다 — 반격의 감쇠가 이벤트 보정을
+      // 지우지 않도록 나눠 두고, 실제 경쟁력은 여기서 합친다.
+      const drift = ((c.drift && c.drift[segmentId]) || 0) + ((c.reaction && c.reaction[segmentId]) || 0);
       for (const type of pool) {
         if (type.maker !== c.id) continue;
         const score = Fleet.typeScore(type, state.market.fuelIndex, reqSeats, reqRange) + drift;
