@@ -309,12 +309,23 @@ test('응찰할 수 없는 공고로는 관계가 깎이지 않는다', () => {
   let unbiddable = 0;
   let biddableSkipped = 0;
 
-  for (let i = 0; i < 20; i++) {
-    for (const rfp of s.rfps) {
-      if (E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked).length) biddableSkipped++;
-      else unbiddable++;
+  // 결정 사건의 무대응 효과도 관계를 깎는다(인도 지연 통보 −8 등). 여기서 재려는 건
+  // 입찰 포기 감점뿐이라, 다른 관계 변동원을 빼고 본다.
+  const savedDecisions = Dec.DECISIONS.slice();
+  const savedEvents = Data.EVENTS.slice();
+  Dec.DECISIONS.length = 0;
+  Data.EVENTS.length = 0;
+  try {
+    for (let i = 0; i < 20; i++) {
+      for (const rfp of s.rfps) {
+        if (E.eligiblePrograms(s, rfp).filter((x) => !x.score.blocked).length) biddableSkipped++;
+        else unbiddable++;
+      }
+      E.endTurn(s); // 아무 입찰도 하지 않는다
     }
-    E.endTurn(s); // 아무 입찰도 하지 않는다
+  } finally {
+    Dec.DECISIONS.push(...savedDecisions);
+    Data.EVENTS.push(...savedEvents);
   }
   assert.ok(unbiddable > 0, '응찰 불가 공고 표본이 있어야 한다');
 
@@ -3595,8 +3606,18 @@ test('회고의 최고 점유율은 승계 선단이 만든 출발점을 포함�
     E.endTurn(s);
   }
   assert.ok(E.marketShare(s) < opening, '이 시나리오에서는 점유율이 내려가야 한다');
+
+  // 최고 점유율은 "출발점과 분기말 이력 중 최댓값"이어야 한다.
+  // 출발점만 확인하면 첫 분기에 승계 잔고가 인도돼 살짝 오르는 판에서 깨지고,
+  // 이력만 확인하면 출발점을 통째로 빠뜨린 회귀를 못 잡는다.
   const peak = E.careerReport(s).peakShare;
-  assert.ok(Math.abs(peak - opening) < 1e-6, `회고가 출발점(${(opening * 100).toFixed(1)}%)을 놓쳤다 (${(peak * 100).toFixed(1)}%)`);
+  const bestRow = s.history.reduce((a, h) => Math.max(a, h.share || 0), 0);
+  const expected = Math.max(opening, bestRow);
+  assert.ok(
+    Math.abs(peak - expected) < 1e-3,
+    `최고 점유율 ${(peak * 100).toFixed(1)}% 가 출발점 ${(opening * 100).toFixed(1)}% · 이력 최고 ${(bestRow * 100).toFixed(1)}% 와 안 맞는다`,
+  );
+  assert.ok(peak >= opening - 1e-9, '출발점이 최고 점유율에서 빠졌다');
 });
 
 test('반격은 이벤트 보정을 지우지도, 그 회복을 막지도 않는다', () => {
@@ -4094,4 +4115,67 @@ test('인증 전 세이브도 시험비행으로 옮겨지고 취항 시점이 �
   assert.strictEqual(p.testFleet, 2, '기본 편대로 옮겨야 한다');
   assert.strictEqual(E.certQuartersLeft(p), 3, '남은 분기가 달라지면 불러온 판의 취항 시점이 바뀐다');
   assert.strictEqual(p.testSpent, 0, '옛 세이브에 시험기 값을 소급 청구하면 안 된다');
+});
+
+test('항공사는 필요분을 쌓아 발주하고, 발주 뒤에는 조용해진다', () => {
+  const s = E.newGame(211);
+  const seen = {};
+  for (let i = 0; i < 60 && !s.gameOver; i++) {
+    for (const rfp of s.rfps) {
+      (seen[rfp.airlineId] = seen[rfp.airlineId] || []).push({ turn: s.turn, qty: rfp.qty });
+    }
+    s.cash = Math.max(s.cash, 20000);
+    E.endTurn(s);
+  }
+
+  assert.ok(s.airlinePlans, '선단 계획이 상태에 남아야 한다');
+  const busiest = Object.keys(seen).sort((a, b) => seen[b].length - seen[a].length)[0];
+  assert.ok(seen[busiest].length >= 3, '표본이 적어 간격을 볼 수 없다');
+
+  // 같은 항공사가 연달아 부르지 않아야 한다 — 방금 채운 선단을 또 채울 리 없다.
+  for (const list of Object.values(seen)) {
+    for (let i = 1; i < list.length; i++) {
+      assert.ok(list[i].turn - list[i - 1].turn >= 2, `같은 항공사가 ${list[i].turn - list[i - 1].turn}분기 만에 다시 발주했다`);
+    }
+  }
+  // 규모가 난수가 아니라 쌓인 양이므로, 간격이 길수록 대체로 크다.
+  const all = Object.values(seen).flat();
+  assert.ok(all.every((o) => o.qty >= 3), '발주 규모가 0 이하로 나왔다');
+});
+
+test('불황에는 발주를 미루고 회복하면 미뤄 둔 물량이 나온다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  Data.EVENTS.length = 0; // 수요를 직접 통제한다
+  try {
+    const s = E.newGame(223);
+    // 깊은 불황을 길게 유지한다.
+    let slumpRfps = 0;
+    for (let i = 0; i < 24 && !s.gameOver; i++) {
+      s.market.demandIndex = 0.6;
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+      slumpRfps += s.rfps.length;
+    }
+    // 이연이 실제로 쌓였는지 계획에서 확인한다.
+    const deferred = Object.values(s.airlinePlans).reduce((a, p) => a + p.deferred, 0);
+    assert.ok(deferred > 0, '불황인데 아무도 발주를 미루지 않았다');
+
+    // 회복시키면 미뤄 둔 물량이 나온다.
+    let recoveryRfps = 0;
+    let sawDeferred = false;
+    for (let i = 0; i < 12 && !s.gameOver; i++) {
+      s.market.demandIndex = 1.3;
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+      recoveryRfps += s.rfps.length;
+      if (s.rfps.some((r) => r.deferredQuarters > 0)) sawDeferred = true;
+    }
+    assert.ok(sawDeferred, '회복기에 미뤄 둔 발주가 표시되지 않았다');
+    assert.ok(
+      recoveryRfps / 12 > slumpRfps / 24,
+      `회복기 공고(${(recoveryRfps / 12).toFixed(2)}/분기)가 불황(${(slumpRfps / 24).toFixed(2)}/분기)보다 많아야 한다`,
+    );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+  }
 });

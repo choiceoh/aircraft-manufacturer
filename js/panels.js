@@ -775,6 +775,11 @@
           </div>
           <table class="spec">
             <tr><th>요구 기종</th><td>${rfp.segmentName} · ${rfp.reqSeats}석급 · ${num(rfp.reqRange)}km</td></tr>
+            <tr><th>발주 배경</th><td>${
+              rfp.deferredQuarters
+                ? `<b class="warn">미뤄 둔 교체 ${rfp.deferredQuarters}분기치</b> — 불황에 묶였던 물량이 한꺼번에 나왔다`
+                : '노후기 교체 · 노선 확장'
+            }</td></tr>
             <tr><th>노선 성격</th><td>${esc(rfp.route || '—')}${
               rfp.reqField ? ` · <b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'} (이착륙 ${rfp.reqField} 이상)</b>` : ''
             }${rfp.reqEtops ? ' · <b class="warn">ETOPS 필수</b>' : ''}</td></tr>

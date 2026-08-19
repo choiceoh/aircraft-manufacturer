@@ -34,23 +34,105 @@
   const COMMONALITY_BONUS = 6;
 
   /** 해당 분기에 새로 뜨는 RFP 목록을 만든다. */
+  /**
+   * 항공사 선단 계획.
+   *
+   * 예전에는 매 분기 항공사를 무작위로 뽑아 무작위 규모의 공고를 냈다. 그래서 공고가
+   * 서로 아무 관계가 없었고 — 같은 항공사가 두 분기 연속 같은 급을 부르거나, 20년
+   * 내내 한 번도 안 부르거나 — 시장이 배경 소음이었다.
+   *
+   * 이제 항공사마다 **필요분이 쌓인다**. 노후기가 매 분기 퇴역하고(교체 수요),
+   * 수요지수에 따라 노선이 늘거나 준다(성장 수요). 쌓인 필요분이 발주 단위를 넘으면
+   * 그때 공고가 나오고 필요분은 0 으로 돌아간다. 그래서:
+   *
+   *   - 공고 규모가 난수가 아니라 "그동안 쌓인 만큼"이다
+   *   - 방금 대량 발주한 항공사는 한동안 조용하다
+   *   - 불황에는 발주를 미루고, 회복하면 미뤄 둔 필요분이 한꺼번에 터진다
+   *
+   * 마지막 성질이 실제 항공업의 사이클이다 — 2001·2008 이후 발주가 얼어붙었다가
+   * 회복기에 몰린 것이 그거다.
+   */
+  const FLEET_PLAN = {
+    /** 세그먼트별 분기 신규 수요 (대). 수요지수가 곱해진다. */
+    perQuarter: { regional: 3.0, narrow: 4.0, wide: 2.0 },
+    /** 이만큼 쌓이면 발주한다 — 곧 공고 규모이기도 하다. */
+    lot: { regional: 18, narrow: 26, wide: 10 },
+    /** 이 정도 쌓이면 발주 가능성이 생기고, ripeSpan 만큼 더 쌓이면 거의 확실해진다. */
+    ripeFrom: 0.55,
+    ripeSpan: 0.9,
+    /** 수요지수가 이보다 낮으면 발주를 미룬다. 필요분은 계속 쌓인다. */
+    deferBelow: 0.82,
+    /** 다만 이 배수를 넘게 쌓이면 더는 못 미룬다 — 기체가 정말 낡았다. */
+    deferCap: 2.2,
+  };
+
+  /**
+   * 항공사별 계획을 확보한다. 옛 세이브는 빈 상태에서 시작한다.
+   *
+   * 첫 적립분을 흩뜨리는 게 중요하다. 전부 0 에서 같은 속도로 쌓으면 같은 급의
+   * 항공사들이 **동기화돼** 한 분기에 몰려 나오고 그 사이는 통째로 빈다 —
+   * 공고 수는 그대로인데 할 일 없는 분기만 늘어난다. 실제 항공사의 교체 주기가
+   * 서로 맞을 이유도 없다.
+   */
+  function planFor(state, airline, rng) {
+    if (!state.airlinePlans) state.airlinePlans = {};
+    if (!state.airlinePlans[airline.id]) {
+      const lot = FLEET_PLAN.lot[airline.bias] || FLEET_PLAN.lot.narrow;
+      state.airlinePlans[airline.id] = {
+        need: rng ? rng.next() * lot : 0,
+        deferred: 0,
+        lastOrderTurn: -99,
+      };
+    }
+    return state.airlinePlans[airline.id];
+  }
+
+  /**
+   * 이번 분기 공고. 항공사마다 필요분을 적립하고, 발주 단위를 넘긴 곳이 공고를 낸다.
+   *
+   * 난수는 규모의 흔들림에만 쓴다 — 어느 항공사가 언제 부를지는 계획이 정한다.
+   * 그래야 "저 항공사는 슬슬 교체할 때가 됐다"가 읽히는 정보가 된다.
+   */
   function generateRfps(state, rng) {
     const rfps = [];
-    const demand = state.market.demandIndex;
-    // 수요지수가 낮으면 입찰 자체가 줄어든다.
-    let count = 0;
-    if (rng.next() < clamp(demand * 0.85, 0.1, 0.95)) count++;
-    if (rng.next() < clamp(demand * 0.55, 0.05, 0.85)) count++;
-    if (rng.next() < clamp(demand * 0.22, 0.02, 0.5)) count++;
+    const demand = clamp(state.market.demandIndex, 0.3, 2.0);
 
-    for (let i = 0; i < count; i++) {
-      rfps.push(makeRfp(state, rng));
+    for (const airline of AIRLINES) {
+      const plan = planFor(state, airline, rng);
+      const seg = airline.bias;
+      // 교체 수요는 경기와 무관하게 쌓이고(기체는 계속 낡는다), 성장 수요만 경기를 탄다.
+      const replace = FLEET_PLAN.perQuarter[seg] * 0.55;
+      const grow = FLEET_PLAN.perQuarter[seg] * 0.45 * demand;
+      plan.need += replace + grow;
+
+      const lot = FLEET_PLAN.lot[seg];
+      // 발주 시점은 문턱이 아니라 확률로 푼다. 딱 떨어지는 문턱을 쓰면 같은 급의
+      // 항공사들이 같은 속도로 쌓다가 한 분기에 몰려 나오고 — 이연이 그 동기화를
+      // 매번 되살린다 — 공고 수는 맞는데 빈 분기만 늘어난다.
+      // 많이 쌓일수록 확률이 오르므로 "슬슬 교체할 때가 됐다"는 성질은 그대로다.
+      const ripeness = plan.need / lot;
+      const chance = clamp((ripeness - FLEET_PLAN.ripeFrom) / FLEET_PLAN.ripeSpan, 0, 0.9);
+      if (!rng.chance(chance)) continue;
+
+      // 불황에는 미룬다. 다만 너무 낡으면 더는 못 미룬다.
+      if (demand < FLEET_PLAN.deferBelow && ripeness < FLEET_PLAN.deferCap) {
+        plan.deferred++;
+        continue;
+      }
+
+      // 규모는 쌓인 만큼 ±15%. 미뤘던 필요분이 한꺼번에 나오면 대형 발주가 된다.
+      const qty = Math.max(3, Math.round(plan.need * rng.range(0.85, 1.15)));
+      rfps.push(makeRfp(state, rng, { airline, qty, deferred: plan.deferred }));
+      plan.need = 0;
+      plan.deferred = 0;
+      plan.lastOrderTurn = state.turn;
     }
     return rfps;
   }
 
-  function makeRfp(state, rng) {
-    const airline = rng.pick(AIRLINES);
+  function makeRfp(state, rng, plan) {
+    // 계획이 있으면 그 항공사·규모로 낸다. 없으면(테스트·옛 호출) 예전처럼 무작위.
+    const airline = (plan && plan.airline) || rng.pick(AIRLINES);
     // 대부분은 자기 노선망 안에서 발주하고, 가끔 인접 세그먼트로 넘어간다.
     // 노선망 밖 발주는 **반드시 다른 세그먼트**여야 한다 — 자기 급을 뽑아 놓고
     // 대역·활주로 제약만 일반값으로 덮으면, 산악 공항 항공사가 이착륙 요건 0인
@@ -83,9 +165,14 @@
     // 활주로"라고 적힌 광동체 공고가 요구 이착륙 성능 0으로 나가 서로 모순된다.
     const route = onProfile ? airline.route || '' : `${seg.name} 신규 진출 (노선망 밖)`;
 
-    // 발주 규모: 세그먼트가 작을수록 대량. 수요지수가 곱해진다.
-    const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
-    const qty = Math.max(3, Math.round(baseQty * clamp(state.market.demandIndex, 0.4, 1.8)));
+    // 발주 규모: 선단 계획이 쌓아 온 필요분이다. 계획 없이 부르면 예전 방식으로 뽑는다.
+    let qty;
+    if (plan && plan.qty > 0) {
+      qty = plan.qty;
+    } else {
+      const baseQty = segmentId === 'regional' ? rng.int(8, 45) : segmentId === 'narrow' ? rng.int(10, 70) : rng.int(4, 26);
+      qty = Math.max(3, Math.round(baseQty * clamp(state.market.demandIndex, 0.4, 1.8)));
+    }
 
     const relation = state.relations[airline.id] ?? 40;
 
@@ -104,6 +191,9 @@
       reqEtops,
       route,
       qty,
+      // 왜 지금 이 공고가 나왔는가 — 화면이 읽는다.
+      reason: plan && plan.deferred > 0 ? 'deferred' : 'plan',
+      deferredQuarters: (plan && plan.deferred) || 0,
       priceSensitivity: airline.priceSensitivity,
       prestige: airline.prestige,
       relation,
