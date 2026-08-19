@@ -4857,3 +4857,55 @@ test('ETOPS 게이트에 막힌 주문은 인도 지연 사건의 후보가 아�
   p.etopsCertified = true;
   assert.ok(slip.weight(s) > 0, '게이트가 풀리면 사건 후보로 돌아와야 한다');
 });
+
+test('계약 파기의 관계 벌점은 수주가 벌어 준 관계보다 크다', () => {
+  // 응찰 +2 · 수주 +10 = +12 를 벌점이 못 지우면 "수주 → 파기" 반복이
+  // 위약금으로 관계를 사는 농사가 된다. 관계는 입찰 점수로 돌아오는 자산이다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const WIN_GAIN = 12;
+
+    // 정체 만료 경로
+    const s = E.newGame(523);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'REL').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    p.share = 0;
+    p.lastProgressTurn = s.turn - 6;
+    s.backlog.push({
+      id: 'ord-rel', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn - 6, depositRate: 0.15, pledge: 'standard',
+    });
+    s.relations.carta = 60;
+    E.endTurn(s);
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-rel'), '정체 주문이 무르지 않았다');
+    assert.ok(
+      s.relations.carta <= 60 - WIN_GAIN,
+      `만료 벌점(${60 - s.relations.carta})이 수주 이득(+${WIN_GAIN})보다 작으면 파기 농사가 관계를 산다`,
+    );
+
+    // 취소 파기 경로도 같은 원칙이다
+    const s2 = E.newGame(541);
+    s2.cash = 60000;
+    assert.ok(E.launchProgram(s2, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'REL2').ok);
+    const p2 = s2.programs[s2.programs.length - 1];
+    p2.progress = 45;
+    s2.backlog.push({
+      id: 'ord-rel2', airlineId: 'carta', airlineName: '카르타', programId: p2.id, programName: p2.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s2.turn, depositRate: 0.15,
+    });
+    s2.relations.carta = 60;
+    assert.ok(E.cancelProgram(s2, p2.id).ok);
+    assert.ok(
+      s2.relations.carta <= 60 - WIN_GAIN,
+      `취소 파기 벌점(${60 - s2.relations.carta})도 수주 이득(+${WIN_GAIN})을 지워야 한다`,
+    );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

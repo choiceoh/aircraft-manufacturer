@@ -628,6 +628,14 @@
   const ORDER_VOID_REFUND_MULT = 1.5;
 
   /**
+   * 깨진 계약의 관계 벌점 — 그 수주가 벌어 준 관계(응찰 +2 · 수주 +10)를 지우고도
+   * 흉이 남아야 한다. 수주 이득보다 작으면 "수주 → 파기" 반복이 위약금을 내면서
+   * 관계를 사는 농사가 된다: 관계는 입찰 점수로 돌아오는 자산이라, 돈으로 사게
+   * 두면 안 된다.
+   */
+  const ORDER_BREACH_RELATION_PENALTY = 14;
+
+  /**
    * 미인도 주문을 파기할 때 나갈 돈. UI 확인창이 이 값을 미리 보여 준다 —
    * 위약이 수십억일 수 있는데 확인창이 매몰비용만 말하면 동의가 아니라 함정이다.
    */
@@ -654,7 +662,7 @@
     let refund = 0;
     for (const o of dead) {
       refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
-      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 10, 0, 100);
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - ORDER_BREACH_RELATION_PENALTY, 0, 100);
     }
     refund = Math.round(refund);
     s.cash -= refund;
@@ -699,7 +707,7 @@
       // 리포트를 만들며 pending 을 이미 비웠으므로, pending 에 넣으면 현금은 지금
       // 나가고 비용은 다음 분기 장부에 적힌다 — 이 위약으로 파산하면 아예 증발한다.
       report.overhead += refund;
-      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 8, 0, 100);
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - ORDER_BREACH_RELATION_PENALTY, 0, 100);
       adjustReputation(s, -2);
       o.remaining = 0;
       expired.add(o.id);
