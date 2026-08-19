@@ -476,19 +476,53 @@ test('동시 개발 프로그램은 3개로 제한된다', () => {
   assert.match(fourth.error, /3개/);
 });
 
-test('입찰 점수: 요구 스펙 미달이면 실격 처리된다', () => {
+test('스펙이 모자라면 실격이 아니라 점수로 진다', () => {
+  // 항속·좌석은 하드 실격이 아니다. 모자란 기체도 응찰은 하되, 감톤 운항으로
+  // 채울 수 있는 좌석이 줄어 적합도에서 밀린다. 세그먼트만 애초에 후보가 아니다.
   const s = E.newGame(5);
   const rfp = {
     id: 'r1', airlineId: 'hanul', airlineName: '한울항공', segment: 'narrow',
     reqSeats: 180, reqRange: 6000, qty: 20, priceSensitivity: 1, prestige: 1,
   };
-  const shortRange = { segment: 'narrow', seats: 180, range: 4000, listPrice: 90, efficiency: 60, comfort: 50 };
-  const shortSeats = { segment: 'narrow', seats: 130, range: 6500, listPrice: 90, efficiency: 60, comfort: 50 };
-  const wrongSeg = { segment: 'wide', seats: 300, range: 12000, listPrice: 250, efficiency: 60, comfort: 50 };
+  const base = { listPrice: 90, efficiency: 60, comfort: 50, wing: 45 };
+  const match = { segment: 'narrow', seats: 180, range: 6200, ...base };
+  const shortRange = { segment: 'narrow', seats: 180, range: 4000, ...base };
+  const shortSeats = { segment: 'narrow', seats: 130, range: 6500, ...base };
+  const wrongSeg = { segment: 'wide', seats: 300, range: 12000, ...base, listPrice: 250 };
 
-  assert.match(globalThis.AirlinerBidding.scoreBid(s, rfp, shortRange, 0).blocked, /항속/);
-  assert.match(globalThis.AirlinerBidding.scoreBid(s, rfp, shortSeats, 0).blocked, /좌석/);
-  assert.match(globalThis.AirlinerBidding.scoreBid(s, rfp, wrongSeg, 0).blocked, /세그먼트/);
+  const B2 = globalThis.AirlinerBidding;
+  const mScore = B2.scoreBid(s, rfp, match, 0);
+  const rScore = B2.scoreBid(s, rfp, shortRange, 0);
+  const sScore = B2.scoreBid(s, rfp, shortSeats, 0);
+
+  assert.strictEqual(rScore.blocked, null, '항속이 모자라다고 실격시키면 안 된다');
+  assert.strictEqual(sScore.blocked, null, '좌석이 모자라다고 실격시키면 안 된다');
+  assert.match(B2.scoreBid(s, rfp, wrongSeg, 0).blocked, /세그먼트/);
+
+  assert.ok(rScore.total < mScore.total, '항속이 모자라면 점수가 낮아야 한다');
+  assert.ok(sScore.total < mScore.total, '좌석이 모자라면 점수가 낮아야 한다');
+  // 2,000km 나 모자란 기체가 딱 맞는 기체와 붙을 만하면 설계가 의미를 잃는다.
+  assert.ok(rScore.total < mScore.total * 0.75, `항속 부족 감점이 너무 약하다 (${rScore.total} vs ${mScore.total})`);
+});
+
+test('연료 여유는 노선 폭을 사고 상시 효율로 값을 치른다', () => {
+  const tight = D.evaluate({ segment: 'wide', seats: 300, range: 11000, tech: 55, fuelMargin: 0, year: 2005 });
+  const loose = D.evaluate({ segment: 'wide', seats: 300, range: 11000, tech: 55, fuelMargin: 100, year: 2005 });
+
+  assert.ok(loose.payloadRange.light > tight.payloadRange.light, '여유를 두면 감톤 항속이 늘어야 한다');
+  assert.ok(loose.efficiency < tight.efficiency, '여유는 상시 중량이라 연비를 깎아야 한다');
+  assert.ok(loose.unitCostBase > tight.unitCostBase, '여유는 원가를 올려야 한다');
+  assert.ok(loose.devCost > tight.devCost, '여유는 개발비를 올려야 한다');
+  assert.ok(loose.fieldPerf < tight.fieldPerf, '최대이륙중량이 높으면 활주로를 길게 써야 한다');
+
+  // 설계 항속 안에서는 둘 다 만석이다 — 여유는 그 밖에서만 값을 한다.
+  const F = globalThis.AirlinerAirframe;
+  assert.strictEqual(F.seatFactorAt(tight.payloadRange, 10000), 1);
+  assert.strictEqual(F.seatFactorAt(loose.payloadRange, 10000), 1);
+  assert.ok(
+    F.seatFactorAt(loose.payloadRange, 13000) > F.seatFactorAt(tight.payloadRange, 13000),
+    '설계 항속 밖에서는 여유를 둔 쪽이 더 많이 태워야 한다',
+  );
 });
 
 test('입찰 점수: 할인이 커지면 점수가 오른다', () => {
@@ -3867,4 +3901,85 @@ test('반격의 주체는 보정치까지 포함한 실력으로 고른다', () 
     !after.includes(leader[0]),
     `악재를 맞은 ${leader[0]} 가 여전히 반격 주체다 (보정치를 안 보고 있다)`,
   );
+});
+
+test('탑재-항속 개념이 없던 세이브도 감톤 능력을 유지한다', () => {
+  const s = E.newGame(63);
+  s.cash = 9000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 300, range: 11000, tech: 55, wing: 60 }, 'W-OLD').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+
+  // v1 세이브 재현: 곡선도 여유값도 통째로 없다.
+  delete p.payloadRange;
+  delete p.fuelMargin;
+  E.ensureShape(s);
+
+  assert.ok(p.payloadRange && p.payloadRange.light > p.payloadRange.full, '곡선이 복구되지 않았다');
+  assert.strictEqual(typeof p.fuelMargin, 'number');
+
+  // 설계 항속을 넘는 공고에서 실격되지 않고 점수가 잡혀야 한다.
+  const rfp = {
+    id: 'r', airlineId: 'carta', airlineName: '카르타', segment: 'wide',
+    reqSeats: 280, reqRange: 12000, reqField: 0, reqEtops: false,
+    qty: 10, priceSensitivity: 1, prestige: 1,
+  };
+  const score = B.scoreBid(s, rfp, p, 0.1);
+  assert.strictEqual(score.blocked, null, '옛 세이브 기종이 장거리 공고에서 실격됐다');
+  assert.ok(score.total > 0, '점수가 0이면 사실상 실격이다');
+});
+
+test('노선 성격이 기체의 우열을 뒤집는다', () => {
+  // 운용 경제성의 핵심 — 같은 두 기체가 노선 모양에 따라 순서가 바뀌어야 한다.
+  // 얇은 장거리는 편당 원가가, 굵은 중거리는 좌석마일 원가가 승부를 가른다.
+  const s = E.newGame(11);
+  const mk = (o) => {
+    const e = D.evaluate({ tech: 55, year: 2005, ...o });
+    return { ...e, id: 'p-' + o.seats, name: o.seats + '석' };
+  };
+  const small = mk({ segment: 'wide', seats: 250, range: 12000, abreast: 8, wing: 60 });
+  const big = mk({ segment: 'wide', seats: 380, range: 12000, abreast: 9, wing: 60 });
+  const rfp = (seats, range, qty) => ({
+    id: 'r', airlineId: 'carta', airlineName: 'T', segment: 'wide',
+    reqSeats: seats, reqRange: range, reqField: 0, reqEtops: false,
+    qty, priceSensitivity: 1, prestige: 1,
+  });
+
+  const thin = rfp(240, 13000, 8);
+  const dense = rfp(360, 7000, 25);
+
+  const smallThin = B.scoreBid(s, thin, small, 0.12);
+  const bigThin = B.scoreBid(s, thin, big, 0.12);
+  const smallDense = B.scoreBid(s, dense, small, 0.12);
+  const bigDense = B.scoreBid(s, dense, big, 0.12);
+
+  assert.ok(smallThin.total > bigThin.total, '얇은 장거리는 작은 기체가 이겨야 한다');
+  assert.ok(bigDense.total > smallDense.total, '굵은 중거리는 큰 기체가 이겨야 한다');
+
+  // 근거도 방향이 맞아야 한다 — 우연히 총점만 맞은 게 아니어야 한다.
+  assert.ok(smallThin.economics.trip > bigThin.economics.trip, '얇은 노선에서 큰 기체는 편당 원가로 져야 한다');
+  assert.ok(bigDense.economics.casm > smallDense.economics.casm, '굵은 노선에서 큰 기체는 좌석마일로 이겨야 한다');
+  // 노선이 굵을수록 좌석마일 가중이 커야 한다.
+  assert.ok(bigDense.economics.casmWeight > bigThin.economics.casmWeight, '노선 밀도가 가중치를 못 움직이고 있다');
+});
+
+test('유가가 오르면 연비 차이가 운용 경제성에서 더 크게 벌어진다', () => {
+  const cheap = E.newGame(17);
+  const dear = E.newGame(17);
+  cheap.market.fuelIndex = 0.6;
+  dear.market.fuelIndex = 2.0;
+
+  const rfp = {
+    id: 'r', airlineId: 'hanul', airlineName: 'T', segment: 'narrow',
+    reqSeats: 180, reqRange: 5500, reqField: 0, reqEtops: false,
+    qty: 30, priceSensitivity: 1, prestige: 1,
+  };
+  const thirsty = { segment: 'narrow', seats: 180, range: 5500, listPrice: 110, efficiency: 45, comfort: 55, wing: 45 };
+  const frugal = { segment: 'narrow', seats: 180, range: 5500, listPrice: 110, efficiency: 75, comfort: 55, wing: 45 };
+
+  const gapCheap = B.scoreBid(cheap, rfp, frugal, 0.1).parts.op - B.scoreBid(cheap, rfp, thirsty, 0.1).parts.op;
+  const gapDear = B.scoreBid(dear, rfp, frugal, 0.1).parts.op - B.scoreBid(dear, rfp, thirsty, 0.1).parts.op;
+
+  assert.ok(gapCheap > 0, '싼 유가에서도 연비가 좋으면 유리해야 한다');
+  assert.ok(gapDear > gapCheap, `유가가 비쌀수록 연비 격차가 커야 한다 (${gapCheap} → ${gapDear})`);
 });

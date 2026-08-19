@@ -356,6 +356,8 @@
           <p class="hint">기술 투자를 올리면 연비·정가가 오르지만 개발비·기간·결함 위험이 함께 오른다.</p>
           ${slider('wing', '날개 (단거리형 ↔ 장거리형)', spec.wing === undefined ? 45 : spec.wing, 0, 100, 1, '')}
           <p class="hint">오른쪽으로 갈수록 순항 연비가 좋아지고 <b>이착륙 성능이 나빠진다</b>. 짧은 활주로·고온고지 노선은 왼쪽 설계가 아니면 응찰 자체가 막힌다.</p>
+          ${slider('fuelMargin', '연료 여유 (임무 최적 ↔ 노선 확장)', spec.fuelMargin === undefined ? 35 : spec.fuelMargin, 0, 100, 1, '')}
+          <p class="hint">설계 항속보다 <b>먼 노선도 승객을 덜 태우면 뛸 수 있다</b>. 오른쪽으로 갈수록 그 폭이 넓어지지만, 탱크와 보강 구조를 짧은 노선에서도 지고 다녀 연비·원가·이착륙이 상시로 나빠진다.</p>
           <h3 style="margin-top:18px">동체 단면</h3>
           <div class="mats">${sections}</div>
           <p class="hint">좁게 많이 태우면 좌석당 연비·원가가 좋아지고 객실 점수가 떨어진다. 단면을 바꾸면 형식증명을 물려받을 수 없다 — 파생형의 뿌리가 되는 결정이다.</p>
@@ -453,7 +455,7 @@
         <tr><th>필요 인력</th><td>${num(ev.engineersNeeded)}명 <span class="muted">(보유 ${num(s.engineers)}명)</span></td></tr>
         <tr><th>연비 지수</th><td>${ev.efficiency} ${bar(ev.efficiency, 'eff')}</td></tr>
         <tr><th>이착륙 성능</th><td>${ev.fieldPerf} ${bar(ev.fieldPerf, 'eff')}</td></tr>
-        <tr><th>항속 (만석 / 감톤)</th><td>${num(ev.payloadRange.full)}km / ${num(ev.payloadRange.light)}km</td></tr>
+        <tr><th>항속 (만석 / 감톤 20%)</th><td>${num(ev.payloadRange.full)}km / ${num(ev.payloadRange.light)}km</td></tr>
         <tr><th>단면 적합도</th><td class="${ev.sectionFit < 80 ? 'bad' : ''}">${ev.sectionFit}% <span class="muted">${esc(ev.sectionName)}</span></td></tr>
         <tr><th>객실 쾌적성</th><td>${ev.comfort} ${bar(ev.comfort, 'comfort')}</td></tr>
         <tr><th>표준 생산원가</th><td>${money(ev.unitCostBase)}</td></tr>
@@ -871,7 +873,7 @@
         }</td></tr>
       </table>
       <div class="parts">
-        ${part('제원 적합', sc.parts.spec)}${part('가격', sc.parts.price)}${part('연비', sc.parts.eff)}
+        ${part('제원 적합', sc.parts.spec)}${part('가격', sc.parts.price)}${part('운용 경제성', sc.parts.op)}
         ${part('객실', sc.parts.comfort)}${part('평판', sc.parts.rep)}${part('관계', sc.parts.rel)}
         ${part('선단 공통성', sc.parts.common)}
       </div>

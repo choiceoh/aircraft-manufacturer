@@ -71,6 +71,9 @@
     const sec = Airframe.section(seg.id, spec.abreast);
     const secFit = Airframe.sectionFit(sec, seats);
     const wing = clamp(spec.wing === undefined ? 45 : spec.wing, 0, 100);
+    // 연료 여유 — 설계 항속 밖 노선을 감톤으로 뛸 수 있는 폭을 산다.
+    const fuelMargin = clamp(spec.fuelMargin === undefined ? Airframe.DEFAULT_FUEL_MARGIN : spec.fuelMargin, 0, 100);
+    const fm = fuelMargin / 100;
 
     const seatRatio = seats / seg.seats.ref;
     const rangeRatio = range / seg.range.ref;
@@ -86,7 +89,8 @@
       wmat.devCostMult *
       eng.devMult *
       sec.devMult *
-      wingP.devMult;
+      wingP.devMult *
+      (1 + (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 0.16);
 
     let devQuarters =
       seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * fus.devTimeMult * wmat.devTimeMult * eng.timeMult;
@@ -132,8 +136,17 @@
 
     // 연비 지수(0~100). 기술 투자 + 소재가 좌우하고, 과도한 항속은 구조중량으로 깎인다.
     const rangePenalty = Math.max(0, rangeRatio - 1) * 9;
+    // 연료 여유는 공짜가 아니다. 탱크와 보강 구조를 짧은 노선에서도 지고 다닌다 —
+    // 이 상시 손해가 "노선 폭"의 값이다.
+    //
+    // 기준은 0 이 아니라 **기본 여유**다. 0 을 기준으로 잡으면 기본값 설계가 전부
+    // 조용히 연비를 잃어, 이 축을 건드리지 않은 플레이어까지 일괄로 약해진다.
+    // 기본보다 줄이면 이득, 늘리면 손해 — 그래야 양방향 축이 된다.
+    const marginPenalty = (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 8;
     const efficiency = clamp(
-      (22 + tech * 0.62 + fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff - rangePenalty) * sec.effPerSeat * (0.72 + secFit * 0.28) +
+      (22 + tech * 0.62 + fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff - rangePenalty - marginPenalty) *
+        sec.effPerSeat *
+        (0.72 + secFit * 0.28) +
         wingP.cruiseGain,
       5,
       99,
@@ -152,7 +165,8 @@
       wmat.unitCostMult *
       eng.costMult *
       sec.costPerSeat *
-      wingP.costMult;
+      wingP.costMult *
+      (1 + (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 0.1);
 
     // 정가: 원가가 아니라 "시장이 값을 쳐주는 가치" 기준으로 만든다.
     const listPrice =
@@ -188,8 +202,9 @@
       sectionName: sec.name,
       sectionFit: Math.round(secFit * 100),
       wing: Math.round(wing),
-      fieldPerf: wingP.field,
-      payloadRange: Airframe.payloadRange(range, wing),
+      fieldPerf: Math.max(5, Math.round(wingP.field - (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 13)),
+      fuelMargin: Math.round(fuelMargin),
+      payloadRange: Airframe.payloadRange(range, wing, fuelMargin),
       // 성숙도 위험이 남아 있으면 UI가 경고할 수 있게 노출한다.
       engineImmature: Math.round((engMaturity - 1) * 100) / 100,
       devCost: Math.round(devCost),
@@ -239,6 +254,7 @@
       wingMat: 'aluminum',
       abreast: Airframe.DEFAULT_ABREAST[segmentId],
       wing: 45,
+      fuelMargin: Airframe.DEFAULT_FUEL_MARGIN,
       engine: eng ? eng.id : undefined,
       year: y,
     };

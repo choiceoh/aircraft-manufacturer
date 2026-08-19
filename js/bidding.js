@@ -7,10 +7,11 @@
 (function (root) {
   'use strict';
 
-  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, RANGE_TOLERANCE, UPGAUGE_PER_YEAR, BID_PLEDGES, BID_FINANCING } =
+  const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, UPGAUGE_PER_YEAR, BID_PLEDGES, BID_FINANCING } =
     root.AirlinerData;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
+  const Airframe = root.AirlinerAirframe;
 
   const SEGMENT_IDS = Object.keys(SEGMENTS);
 
@@ -134,6 +135,48 @@
    * 우리 기체 한 종의 입찰 점수를 계산한다.
    * @returns {{total:number, parts:object, blocked:string|null, price:number}}
    */
+  /**
+   * 그 노선에 이 기체를 넣었을 때의 편당 운용원가 (지수).
+   *
+   * 항공사는 기체 가격만 보지 않는다. 20년을 굴리면 자본비보다 운용비가 크고,
+   * 그래서 실제 기종 선정은 **편당 원가**와 **좌석마일 원가** 두 숫자로 한다.
+   *
+   *   연료 — 크기·거리에 비례하고 연비에 반비례한다. 유가가 비쌀수록 이 항이 지배한다
+   *   고정 — 승무·정비·착륙료. 거리에 덜 민감하고 편당으로 붙는다
+   *
+   * 감톤 운항이 여기서 제값을 한다: 연료는 기체 크기대로 태우는데 태울 수 있는
+   * 승객은 줄어드니, 좌석마일 원가가 그만큼 나빠진다.
+   */
+  function tripCostOf(seats, distance, efficiency, fuelIndex) {
+    const eff = clamp(efficiency, 5, 99);
+    const fuel = Math.pow(seats, 0.9) * distance * (60 / eff) * clamp(fuelIndex, 0.4, 2.4);
+    const fixed = Math.pow(seats, 0.7) * (900 + distance * 0.22);
+    return fuel + fixed;
+  }
+
+  /** 비교 기준이 되는 "그 공고에 딱 맞는 평범한 기체"의 연비 지수. */
+  const REF_EFFICIENCY = 58;
+
+  /**
+   * 가격 점수의 절편 — 좌석당 기준가와 같으면 (절편 − 1) 점이 된다.
+   *
+   * 좌석당으로 견주기 전에는 기체당으로 쟀는데, 그때는 **요구보다 작은 기체를 넣으면
+   * 싸 보여서 가산점**을 받았다(185석 기체가 225석 공고에서 가격 54점). 업게이지로
+   * 공고가 커지는 후반에 그 보너스가 점수의 큰 몫이었고, 좌석당으로 고치면서 통째로
+   * 사라졌다 — 그만큼 눈금을 올려 수주량을 예전 수준으로 되돌린다.
+   * 값을 만지면 수주량이 급하게 움직인다: 1.6 → 10.6천기, 1.75 → 18.0천기 (20판 합).
+   */
+  const PRICE_INTERCEPT = 1.69;
+
+  /**
+   * 그 기종의 payload-range 곡선. 옛 세이브에는 없으므로 설계 항속에서 되만든다.
+   * 없다고 만석 항속만 보면, 마이그레이션된 기체가 감톤 능력을 통째로 잃는다.
+   */
+  function payloadRangeOf(program) {
+    if (program.payloadRange && program.payloadRange.full > 0) return program.payloadRange;
+    return Airframe.payloadRange(program.range, program.wing === undefined ? 45 : program.wing, program.fuelMargin);
+  }
+
   /** 입찰 조건을 정규화한다. 옛 세이브·기본 호출은 표준 조건으로 본다. */
   function normalizeTerms(terms) {
     const t = terms || {};
@@ -150,14 +193,6 @@
     if (program.segment !== rfp.segment) {
       return { total: 0, parts: {}, blocked: '세그먼트 불일치', price: 0 };
     }
-    // 요구 항속의 일정 비율에 못 미치면 노선 자체를 못 뛴다 — 실격.
-    if (program.range < rfp.reqRange * RANGE_TOLERANCE) {
-      return { total: 0, parts: {}, blocked: '항속거리 부족', price: 0 };
-    }
-    // 좌석이 요구의 80% 미만이면 수송력 미달 — 실격.
-    if (program.seats < rfp.reqSeats * 0.8) {
-      return { total: 0, parts: {}, blocked: '좌석수 부족', price: 0 };
-    }
     // 짧은 활주로·고온고지 노선은 이착륙 성능이 모자라면 애초에 못 뛴다.
     if (rfp.reqField && (program.fieldPerf ?? 100) < rfp.reqField) {
       return { total: 0, parts: {}, blocked: '이착륙 성능 미달', price: 0 };
@@ -167,23 +202,58 @@
       return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
     }
 
+    // ── 탑재-항속 ──
+    // 설계 항속보다 먼 노선이라고 실격은 아니다. 연료를 더 싣고 승객을 내리면 뛴다.
+    // 그래서 "몇 석짜리 기체인가"가 아니라 **이 노선에서 몇 석을 채울 수 있는가**로 잰다.
+    const pr = payloadRangeOf(program);
+    const seatFactor = Airframe.seatFactorAt(pr, rfp.reqRange);
+    const usableSeats = program.seats * seatFactor;
+
     // 좌석 적합도: 모자라도, 지나치게 커도 감점(공석은 곧 비용).
-    const seatDelta = (program.seats - rfp.reqSeats) / rfp.reqSeats;
+    // 분자가 실좌석이라, 항속이 모자란 기체는 여기서 자연히 수송력 미달로 잡힌다.
+    const seatDelta = (usableSeats - rfp.reqSeats) / rfp.reqSeats;
     const seatFit = seatDelta >= 0 ? clamp(1 - seatDelta * 1.35, 0, 1) : clamp(1 + seatDelta * 2.2, 0, 1);
 
-    // 항속 적합도: 여유는 조금 좋지만 과하면 중량 낭비.
+    // 항속 적합도: 이제 부족분은 좌석 쪽에서 값을 치르므로 여기서는 **과한 항속만**
+    // 본다 — 안 쓸 연료탱크와 구조를 지고 다니는 낭비다.
     const rangeDelta = (program.range - rfp.reqRange) / rfp.reqRange;
-    const rangeFit = rangeDelta >= 0 ? clamp(1 - Math.max(0, rangeDelta - 0.1) * 0.9, 0, 1) : clamp(1 + rangeDelta * 4, 0, 1);
+    const rangeFit = clamp(1 - Math.max(0, rangeDelta - 0.1) * 0.9, 0, 1);
 
-    const specFit = seatFit * 0.62 + rangeFit * 0.38;
+    // 감톤 운항 자체의 부담 — 역풍·고온에 날마다 여유가 없고, 화물을 못 싣는다.
+    // 좌석 수로 이미 값을 치른 위에 얹는 별도 감점이라 작게 잡는다.
+    const restricted = 1 - clamp(seatFactor, 0, 1);
 
-    // 가격: 동급 기준가 대비 실효가격.
+    const specFit = clamp(seatFit * 0.62 + rangeFit * 0.38 - restricted * 0.15, 0, 1);
+
+    // 가격: 동급 기준가 대비 실효가격 — 단, **좌석당**으로 견준다.
+    // 기체당으로 재면 요구보다 작고 싼 기체가 어느 노선에서나 가격 점수를 쓸어간다.
+    // 항공사가 사는 건 기체가 아니라 수송력이라, 같은 임무를 작은 기체로 하려면
+    // 더 많이 사거나 더 자주 띄워야 한다. 감톤으로 못 채우는 좌석은 여기서도 안 쳐준다.
     const refPrice = seg.listPriceBase * Math.pow(rfp.reqSeats / seg.seats.ref, 0.95);
     const effPrice = program.listPrice * (1 - discount);
-    const priceScore = clamp(1.6 - effPrice / refPrice, 0, 1);
+    const pricePerSeat = effPrice / Math.max(1, usableSeats);
+    const refPerSeat = refPrice / Math.max(1, rfp.reqSeats);
+    const priceScore = clamp(PRICE_INTERCEPT - pricePerSeat / refPerSeat, 0, 1);
 
-    // 연비: 연료지수가 높을수록 이 항목의 가중치가 커진다.
-    const effScore = clamp(program.efficiency / 100, 0, 1);
+    // ── 운용 경제성 ──
+    // 편당 원가와 좌석마일 원가를 따로 잰다. 어느 쪽이 중요한지는 노선이 정한다.
+    const fuelIndex = state.market.fuelIndex;
+    const tripCost = tripCostOf(program.seats, rfp.reqRange, program.efficiency, fuelIndex);
+    const refTrip = tripCostOf(rfp.reqSeats, rfp.reqRange, REF_EFFICIENCY, fuelIndex);
+    const tripScore = clamp(1.6 - tripCost / refTrip, 0, 1);
+
+    // 좌석마일은 **채울 수 있는** 좌석으로 나눈다 — 감톤 운항의 대가가 여기서 드러난다.
+    const casm = tripCost / Math.max(1, usableSeats);
+    const refCasm = refTrip / Math.max(1, rfp.reqSeats);
+    const casmScore = clamp(1.6 - casm / refCasm, 0, 1);
+
+    // 노선 밀도: 좌석이 크고 거리가 짧을수록 굵은 노선이다.
+    // 굵은 노선은 좌석마일로 싸움이 나고(빈 자리가 안 생긴다), 얇은 장거리 노선은
+    // 편당 원가가 결정한다(못 채울 걸 아니까 큰 기체를 띄우는 것 자체가 손해다).
+    const density = (rfp.reqSeats / seg.seats.ref) / clamp(rfp.reqRange / seg.range.ref, 0.35, 3);
+    const casmWeight = clamp(0.28 + density * 0.34, 0.22, 0.78);
+    const opScore = casmScore * casmWeight + tripScore * (1 - casmWeight);
+
     const comfortScore = clamp(program.comfort / 100, 0, 1);
     const repScore = clamp(state.reputation / 100, 0, 1);
     const relScore = clamp((state.relations[rfp.airlineId] ?? 40) / 100, 0, 1);
@@ -214,7 +284,8 @@
     const w = {
       spec: 0.3,
       price: 0.27 * rfp.priceSensitivity,
-      eff: 0.17 * clamp(state.market.fuelIndex, 0.4, 2.2),
+      // 유가 민감도는 편당 원가 안으로 들어갔다 — 여기서 또 곱하면 이중 계상이다.
+      op: 0.2,
       comfort: 0.07 * rfp.prestige,
       rep: 0.12,
       rel: 0.09,
@@ -225,7 +296,7 @@
       (100 *
         (specFit * w.spec +
           priceScore * w.price +
-          effScore * w.eff +
+          opScore * w.op +
           comfortScore * w.comfort +
           repScore * w.rep +
           relScore * w.rel)) /
@@ -251,11 +322,19 @@
       parts: {
         spec: Math.round(specFit * 100),
         price: Math.round(priceScore * 100),
-        eff: Math.round(effScore * 100),
+        op: Math.round(opScore * 100),
         comfort: Math.round(comfortScore * 100),
         rep: Math.round(repScore * 100),
         rel: Math.round(relScore * 100),
         common: Math.round(commonality * 100),
+      },
+      // 왜 그 점수가 나왔는지 화면이 풀어 쓸 수 있게 근거를 함께 싣는다.
+      economics: {
+        seatFactor: Math.round(seatFactor * 1000) / 1000,
+        usableSeats: Math.round(usableSeats),
+        trip: Math.round(tripScore * 100),
+        casm: Math.round(casmScore * 100),
+        casmWeight: Math.round(casmWeight * 100),
       },
       terms: t,
       termBonus: Math.round(termBonus * 10) / 10,

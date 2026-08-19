@@ -331,6 +331,16 @@
       }
     }
 
+    // 탑재-항속 개념이 없던 세이브의 기종에 곡선을 채운다. 비워 두면 입찰이
+    // 만석 항속만 보고 감톤 능력을 통째로 잃어, 이미 완성된 기체가 갑자기
+    // 장거리 공고에서 밀린다.
+    for (const p of s.programs) {
+      if (p.fuelMargin === undefined) p.fuelMargin = root.AirlinerAirframe.DEFAULT_FUEL_MARGIN;
+      if (!p.payloadRange || !(p.payloadRange.full > 0)) {
+        p.payloadRange = root.AirlinerAirframe.payloadRange(p.range, p.wing === undefined ? 45 : p.wing, p.fuelMargin);
+      }
+    }
+
     // ETOPS 개념이 없던 세이브의 장거리 기종에 자격을 준다. 그러지 않으면 이미
     // 완성된 광동체가 9,000km 이상 노선에서 전부 실격되는데, 소급 취득 수단이 없다.
     // 기준은 요구 항속이 아니라 **닿을 수 있는 노선**이다 — 응찰은 요구의
@@ -511,6 +521,7 @@
       engine: base.engine,
       abreast: base.abreast,
       wing: base.wing,
+      fuelMargin: base.fuelMargin,
       etops: base.etops,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
