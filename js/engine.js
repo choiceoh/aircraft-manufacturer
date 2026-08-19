@@ -643,6 +643,46 @@
     pushLog(s, 'bad', `${why}으로 ${p.name} 주문 ${dead.length}건이 파기됐다. 선수금 반환과 위약금으로 ${fmtMoney(refund)}이 나갔다.`);
   }
 
+  /**
+   * 선주문 이탈 — 개발이 **멈춘 지** 이만큼 지나면 항공사가 계약을 깬다.
+   *
+   * 이게 없으면 개발을 40%에서 동결한 채 표준 조건(위약금 없음)으로 선수금만
+   * 무한히 걷는 종이 비행기 농사가 성립한다. 고객 이탈은 실제로도 그랬다 —
+   * 787 지연에 항공사들이 주문을 물렀다. 위약 배수가 걸리므로 농사는 손해다.
+   *
+   * 기준은 경과 시간이 아니라 **정체**다. "수주 후 n분기"로 자르면 인력이 얇아
+   * 느리게 가는 성실한 개발이 같이 걸린다(40% 시점 선주문 → 취항까지 ~15분기가
+   * 정상 범위다). 진행 중인 프로그램은 lastProgressTurn 이 매 분기 갱신되므로
+   * 여기 걸리는 건 실제로 손을 놓은 프로그램뿐이다.
+   */
+  const PREORDER_STALL_QUARTERS = 6;
+
+  function expirePreorders(s) {
+    const expired = new Set();
+    for (const o of s.backlog) {
+      if (o.remaining <= 0) continue;
+      const p = s.programs.find((x) => x.id === o.programId);
+      if (!p || p.phase === 'production') continue;
+      const lastMoved = typeof p.lastProgressTurn === 'number' ? p.lastProgressTurn : o.wonTurn;
+      if (s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
+      const refund = Math.round(o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT);
+      s.cash -= refund;
+      s.pending.overhead += refund;
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - 8, 0, 100);
+      adjustReputation(s, -2);
+      o.remaining = 0;
+      expired.add(o.id);
+      pushLog(
+        s,
+        'bad',
+        `${o.airlineName}이 ${p.name} 선주문 ${o.qty}기를 물렀다 — 개발이 ${PREORDER_STALL_QUARTERS}분기째 멈춰 있다. 선수금 반환과 위약금으로 ${fmtMoney(refund)}이 나갔다.`,
+      );
+    }
+    // 물러난 주문만 지운다. remaining 0 전체를 지우면 인도 완료 주문의 역사까지
+    // 사라져, 최근 수주를 백로그에서 읽는 경쟁사 반격이 눈을 잃는다.
+    if (expired.size) s.backlog = s.backlog.filter((o) => !expired.has(o.id));
+  }
+
   /** 조립 라인 신설 — 인증 완료 기종만 가능. */
   function buildLine(s, programId, gradeId) {
     const p = s.programs.find((x) => x.id === programId);
@@ -920,6 +960,7 @@
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
     runDeliveries(s, report);
+    expirePreorders(s);
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
@@ -1116,6 +1157,9 @@
         // 약속과 조건은 주문에 붙어 다닌다 — 인도 순서, 위약금, 대금 회수가 여기서 갈린다.
         pledge: pledge.id,
         financing: financing.id,
+        // 대양 노선 주문은 인증 없이 인도할 수 없다 — 선주문으로 이긴 뒤 인증을
+        // 건너뛰고 배송하는 구멍을 막으려면 요구가 주문에 붙어 다녀야 한다.
+        reqEtops: !!rfp.reqEtops,
         // 수주한 이 분기의 인도가 이미 첫 번째 기회다. 그대로 더하면 "4분기 안에"가
         // 다섯 번의 인도를 허용해, 광고한 대가가 한 분기씩 무뎌진다.
         dueTurn: s.turn + pledge.dueQuarters - 1,
@@ -1331,6 +1375,7 @@
 
       const before = p.progress;
       p.progress = Math.min(100, p.progress + gain);
+      if (p.progress > before) p.lastProgressTurn = s.turn;
       // 착수금으로 이미 낸 몫을 빼고 남은 개발비만 진행도에 비례해 집행한다.
       // (전액을 다시 배분하면 실제 지출이 표시된 총 개발비의 108%가 된다.)
       const spend = p.devCost * (1 - CONFIG.launchUpfrontRate) * ((p.progress - before) / 100);
@@ -1366,6 +1411,7 @@
       }
 
       p.testHours = (p.testHours || 0) + testHoursPerQuarter(p);
+      if (testHoursPerQuarter(p) > 0) p.lastProgressTurn = s.turn;
       p.certRemaining = certQuartersLeft(p);
       if (p.testHours >= p.testHoursNeeded) {
         p.phase = 'production';
@@ -1468,6 +1514,10 @@
       const p = s.programs.find((x) => x.id === o.programId);
       if (!p || p.stock <= 0) continue;
       if ((s.effects.grounded[p.id] || 0) > 0) continue;
+      // 대양 노선 주문은 ETOPS 인증이 나와야 인도된다. 조기 취득을 건너뛰었으면
+      // 운항 실적 4분기 동안 이 주문들이 기다린다 — 조기 인도 약속을 걸어 뒀다면
+      // 그 지연의 위약금이 정확히 "1년을 기다리는" 선택의 값이다.
+      if (o.reqEtops && !p.etopsCertified) continue;
 
       const n = Math.min(o.remaining, p.stock);
       // 선수금을 이미 받은 만큼을 뺀 잔금이 인도 대금이다.

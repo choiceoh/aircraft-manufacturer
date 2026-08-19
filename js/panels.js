@@ -796,7 +796,7 @@
           </table>
           ${
             !candidates.length
-              ? '<p class="muted">이 세그먼트에 양산·인증 중인 기종이 없다. 인증 단계부터는 선주문으로 응찰할 수 있다.</p>'
+              ? '<p class="muted">이 세그먼트에 응찰 가능한 기종이 없다. <b>개발 40%</b>부터는 선주문으로 응찰할 수 있다 — 미인증 감점을 받지만 선수금이 개발을 먹인다.</p>'
               : !anyBiddable
                 ? `<div class="cands" id="cands-${rfp.id}">${options}</div>
                    <p class="warn-box">보유 기종 중 이 공고의 요구를 만족하는 기체가 없다. 후속기 개발이 급하다.</p>`

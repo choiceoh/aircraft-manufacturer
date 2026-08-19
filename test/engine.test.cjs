@@ -4520,3 +4520,68 @@ test('옛 세이브에서 곧바로 취소해도 위약 정산이 온전히 적�
   assert.ok(!s.backlog.some((o) => o.programId === p.id), '주문이 남았다');
   assert.ok(s.pending && typeof s.pending.overhead === 'number' && !Number.isNaN(s.pending.overhead), 'pending 이 복구되고 오염되지 않아야 한다');
 });
+
+test('대양 노선 선주문은 ETOPS 인증이 나와야 인도된다', () => {
+  const s = E.newGame(457);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'GATE').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.etopsCertified = false;
+  p.stock = 6;
+  s.backlog.push({
+    id: 'ord-etops', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+  });
+
+  E.endTurn(s);
+  const o = s.backlog.find((x) => x.id === 'ord-etops');
+  assert.ok(o && o.remaining === 6, '인증 없이 대양 노선 주문이 인도됐다 — 조기 취득 비용을 우회한다');
+
+  p.etopsCertified = true;
+  p.stock = 6;
+  E.endTurn(s);
+  const after = s.backlog.find((x) => x.id === 'ord-etops');
+  assert.ok(!after || after.remaining < 6, '인증이 나왔는데도 인도되지 않는다');
+});
+
+test('개발을 동결한 종이 비행기의 선수금 농사는 손해다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(461);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'FARM').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    p.share = 0; // 동결 — 진행되지 않는다
+
+    s.backlog.push({
+      id: 'ord-farm', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, pledge: 'standard',
+    });
+    const deposit = 10 * 250 * 0.15;
+    s.cash += deposit; // 수주 시점에 받았을 선수금을 재현
+
+    const cashAfterDeposit = s.cash;
+    for (let i = 0; i < 20 && !s.gameOver; i++) {
+      s.cash = Math.max(s.cash, 8000);
+      E.endTurn(s);
+    }
+    assert.ok(
+      s.log.some((l) => /물렀다/.test(l.text)),
+      '인내심이 다한 항공사가 계약을 깨지 않았다',
+    );
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-farm'), '무른 주문이 백로그에 남았다');
+    // 위약 배수(1.5) 때문에 농사의 순수익은 음수여야 한다: 반환액 > 선수금.
+    assert.ok(
+      s.log.some((l) => /물렀다/.test(l.text) && /위약금/.test(l.text)),
+      '위약 없이 돌려주면 농사가 본전이 된다',
+    );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
