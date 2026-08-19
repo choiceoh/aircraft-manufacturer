@@ -284,7 +284,12 @@
 
       case 'cancel-prog': {
         const p = s.programs.find((x) => x.id === btn.dataset.id);
-        if (p && confirm(`${p.name} 개발을 중단하시겠습니까?\n투입된 ${money(p.spent)}는 회수되지 않고 평판도 떨어집니다.`)) {
+        if (!p) break;
+        // 선주문이 걸려 있으면 매몰비용보다 위약이 훨씬 클 수 있다. 확인창이
+        // 그 돈을 말하지 않으면 "손절"인 줄 알고 누른 버튼이 파산 버튼이 된다.
+        const voidCost = E.voidRefundFor ? E.voidRefundFor(s, p) : 0;
+        const voidLine = voidCost > 0 ? `\n미인도 주문 파기로 선수금 반환·위약금 ${money(voidCost)}이 즉시 나갑니다.` : '';
+        if (confirm(`${p.name} 개발을 중단하시겠습니까?\n투입된 ${money(p.spent)}는 회수되지 않고 평판도 떨어집니다.${voidLine}`)) {
           act(E.cancelProgram(s, btn.dataset.id));
         }
         break;
@@ -360,7 +365,9 @@
 
       case 'sell-program': {
         const p = s.programs.find((x) => x.id === btn.dataset.id);
-        if (p && !confirm(`${p.name} 프로그램을 매각합니다. 되돌릴 수 없고 도면이 경쟁사로 넘어갑니다. 진행할까요?`)) break;
+        const sellVoid = p && E.voidRefundFor ? E.voidRefundFor(s, p) : 0;
+        const sellVoidLine = sellVoid > 0 ? `\n미인도 주문 파기로 선수금 반환·위약금 ${money(sellVoid)}이 매각 대금에서 즉시 나갑니다.` : '';
+        if (p && !confirm(`${p.name} 프로그램을 매각합니다. 되돌릴 수 없고 도면이 경쟁사로 넘어갑니다.${sellVoidLine} 진행할까요?`)) break;
         const r = E.sellProgram(s, btn.dataset.id);
         act(r, r.ok ? `${p ? p.name : '프로그램'}을 매각했다.` : null);
         break;

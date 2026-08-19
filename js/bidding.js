@@ -33,6 +33,22 @@
   /** 선단 공통성이 줄 수 있는 최대 가산점 (입찰 점수 0~100 척도). */
   const COMMONALITY_BONUS = 6;
 
+  /** 미인증 기체 선주문의 기본 신뢰 감점. 결함 위험에 비례해 커진다. */
+  const PREORDER_PENALTY = 9;
+
+  /**
+   * 플래그십 후광 — 광동체를 인증까지 만들어 본 제조사는 모든 수주전에서 신뢰를
+   * 더 받는다. 777 이 737 을 팔았다는 말이 이것이다. 광동체가 직접 마진으로는
+   * 늦게 시작해 회수가 빠듯하므로, 사다리의 값 절반은 이 후광으로 돌아온다.
+   */
+  const FLAGSHIP_BONUS = 2.5;
+
+  function flagshipBonus(state) {
+    return state.programs.some((p) => p.segment === 'wide' && p.phase === 'production' && !p.legacy)
+      ? FLAGSHIP_BONUS
+      : 0;
+  }
+
   /** 해당 분기에 새로 뜨는 RFP 목록을 만든다. */
   /**
    * 항공사 선단 계획.
@@ -319,7 +335,10 @@
     }
     // 장거리 노선은 ETOPS 인증이 없으면 취항 자체가 불가능하다.
     // 설계만으로는 부족하다 — 실제로 인증을 가진 기종만 대양 노선에 들어간다.
-    if (rfp.reqEtops && !program.etopsCertified) {
+    // 선주문(인증 심사 중)은 예외다: 항공사는 "취항 시점에 인증이 있을 것"을 믿고
+    // 미리 계약한다. 못 지키면 인도 지연 위약금이 그 믿음의 값을 청구한다.
+    const preorder = program.phase !== 'production';
+    if (rfp.reqEtops && !program.etopsCertified && !(preorder && program.etops)) {
       return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
     }
 
@@ -441,9 +460,24 @@
     const financing = BID_FINANCING[t.financing];
     const termBonus = pledge.bonus + financing.bonus;
 
+    // 선주문 감점 — 아직 하늘에 없는 기체다. 항공사는 종이 비행기를 믿는 대신
+    // 값을 깎아 위험을 산다(런치 커스터머가 실제로 받는 게 그 할인이다).
+    // 결함 위험이 높은 설계일수록 신뢰 격차가 크다.
+    // 기본 감점: 시제기(인증)는 상수, 종이(개발)는 진행도가 낮을수록 크다.
+    // 그 위에 결함 위험 배수가 **두 단계 모두에** 곱해진다 — 중첩 삼항에 배수를
+    // 붙여 두니 리뷰 봇이 "cert 는 위험 무관"으로 잘못 읽었다. 사람도 그럴 것이다.
+    let preorderPenalty = 0;
+    if (preorder) {
+      const base =
+        program.phase === 'cert'
+          ? PREORDER_PENALTY
+          : PREORDER_PENALTY + 3 + 8 * (1 - clamp((program.progress || 0) / 100, 0, 1));
+      preorderPenalty = base * (1 + (program.defectRisk || 0));
+    }
+
     // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
     // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
-    const bounded = clamp(total + termBonus, 0, 100);
+    const bounded = clamp(total + termBonus + flagshipBonus(state) - preorderPenalty, 0, 100);
 
     return {
       total: Math.round(bounded * 10) / 10,
@@ -464,6 +498,7 @@
         casm: Math.round(casmScore * 100),
         casmWeight: Math.round(casmWeight * 100),
       },
+      preorder,
       terms: t,
       termBonus: Math.round(termBonus * 10) / 10,
       blocked: null,

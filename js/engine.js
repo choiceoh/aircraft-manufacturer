@@ -25,6 +25,7 @@
     BID_PLEDGES,
     BID_FINANCING,
     AFTERMARKET_PER_UNIT,
+    AFTERMARKET_PER_UNIT_BY_SEG,
     AFTERMARKET_TIERS,
     FREIGHTER,
     RIVAL_DRIFT_LIMIT,
@@ -469,9 +470,31 @@
 
   // ─────────────────────────────── 플레이어 행동 ───────────────────────────────
 
+  /** 세그먼트별 완성 경험치 — 큰 기체일수록 조직이 배우는 게 많다. */
+  const EXPERIENCE_POINTS = { regional: 1, narrow: 2, wide: 3 };
+
+  /**
+   * 조직 경험 — 형식증명까지 가 본 프로그램의 합.
+   *
+   * 저장하지 않고 매번 계산한다(certTurn 에서 유도되므로 옛 세이브도 그대로 된다).
+   * 승계 기종은 뺀다 — 그 경험은 이미 기준 밸런스에 들어 있고, 포함하면 모든 판이
+   * 2점을 들고 시작해 기준 일정이 통째로 움직인다. 매각한 프로그램은 남는다:
+   * 도면은 넘겨도 그걸 만들어 본 사람들은 회사에 있다.
+   * 파생형은 절반 — 새로 배우는 것이 훨씬 적다.
+   */
+  function companyExperience(s) {
+    let xp = 0;
+    for (const p of s.programs) {
+      if (p.legacy || p.certTurn === null || p.certTurn === undefined) continue;
+      const pts = EXPERIENCE_POINTS[p.segment] || 1;
+      xp += p.derivedFrom ? pts * 0.5 : pts;
+    }
+    return xp;
+  }
+
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn) });
+    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -581,6 +604,9 @@
 
   /** 개발 취소 — 투입 비용은 돌아오지 않는다. */
   function cancelProgram(s, programId) {
+    // voidOrdersFor 가 pending·relations 를 만진다 — 옛 세이브를 불러온 직후라면
+    // 그 칸들이 없어 절반만 적용된 채 예외가 날 수 있다.
+    ensureShape(s);
     const p = s.programs.find((x) => x.id === programId);
     if (!p || p.phase === 'production' || p.phase === 'cancelled') {
       return { ok: false, error: '취소할 수 없는 프로그램입니다.' };
@@ -588,7 +614,112 @@
     p.phase = 'cancelled';
     adjustReputation(s, -4);
     pushLog(s, 'bad', `${p.name} 개발 중단. 매몰비용 ${fmtMoney(p.spent)}, 업계 신뢰가 흔들린다.`);
+    voidOrdersFor(s, p, '개발 중단');
     return { ok: true };
+  }
+
+  /**
+   * 죽은 프로그램의 미인도 주문을 정리한다 — 선수금을 위약 배수로 물어 준다.
+   *
+   * 선주문이 생기면서 필요해졌다: 종이 비행기를 팔아 선수금을 챙기고 개발을
+   * 접으면, 이 정리가 없을 때 그 돈이 통째로 공짜가 된다. 실제 계약도 제조사
+   * 귀책 취소에는 선수금 반환 + 위약이 붙는다.
+   */
+  const ORDER_VOID_REFUND_MULT = 1.5;
+
+  /**
+   * 깨진 계약의 관계 벌점 — 그 수주가 벌어 준 관계(응찰 +2 · 수주 +10)를 지우고도
+   * 흉이 남아야 한다. 수주 이득보다 작으면 "수주 → 파기" 반복이 위약금을 내면서
+   * 관계를 사는 농사가 된다: 관계는 입찰 점수로 돌아오는 자산이라, 돈으로 사게
+   * 두면 안 된다.
+   */
+  const ORDER_BREACH_RELATION_PENALTY = 14;
+
+  /**
+   * 미인도 주문을 파기할 때 나갈 돈. UI 확인창이 이 값을 미리 보여 준다 —
+   * 위약이 수십억일 수 있는데 확인창이 매몰비용만 말하면 동의가 아니라 함정이다.
+   */
+  function voidRefundFor(s, p) {
+    let refund = 0;
+    for (const o of s.backlog || []) {
+      if (o.programId !== p.id || o.remaining <= 0) continue;
+      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+    }
+    return Math.round(refund);
+  }
+
+  function voidOrdersFor(s, p, why) {
+    voidOrderList(s, p, s.backlog.filter((o) => o.programId === p.id && o.remaining > 0), why);
+  }
+
+  /**
+   * 주어진 주문들만 골라 파기한다. 프로그램 전체가 아니라 일부 주문만 죽는
+   * 경우(종료 시점의 ETOPS 미인증 주문 — 같은 기종의 일반 주문은 멀쩡하다)가
+   * 있어 프로그램 단위 파기와 분리했다.
+   */
+  function voidOrderList(s, p, dead, why) {
+    if (!dead.length) return;
+    let refund = 0;
+    for (const o of dead) {
+      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - ORDER_BREACH_RELATION_PENALTY, 0, 100);
+    }
+    refund = Math.round(refund);
+    s.cash -= refund;
+    s.pending.overhead += refund;
+    const ids = new Set(dead.map((o) => o.id));
+    s.backlog = s.backlog.filter((o) => !ids.has(o.id));
+    adjustReputation(s, -Math.min(6, dead.length * 2));
+    pushLog(s, 'bad', `${why}으로 ${p.name} 주문 ${dead.length}건이 파기됐다. 선수금 반환과 위약금으로 ${fmtMoney(refund)}이 나갔다.`);
+  }
+
+  /**
+   * 선주문 이탈 — 개발이 **멈춘 지** 이만큼 지나면 항공사가 계약을 깬다.
+   *
+   * 이게 없으면 개발을 40%에서 동결한 채 표준 조건(위약금 없음)으로 선수금만
+   * 무한히 걷는 종이 비행기 농사가 성립한다. 고객 이탈은 실제로도 그랬다 —
+   * 787 지연에 항공사들이 주문을 물렀다. 위약 배수가 걸리므로 농사는 손해다.
+   *
+   * 기준은 경과 시간이 아니라 **정체**다. "수주 후 n분기"로 자르면 인력이 얇아
+   * 느리게 가는 성실한 개발이 같이 걸린다(40% 시점 선주문 → 취항까지 ~15분기가
+   * 정상 범위다). 진행 중인 프로그램은 lastProgressTurn 이 매 분기 갱신되므로
+   * 여기 걸리는 건 실제로 손을 놓은 프로그램뿐이다.
+   */
+  const PREORDER_STALL_QUARTERS = 6;
+
+  function expirePreorders(s, report) {
+    const expired = new Set();
+    for (const o of s.backlog) {
+      if (o.remaining <= 0) continue;
+      const p = s.programs.find((x) => x.id === o.programId);
+      if (!p || p.phase === 'production') continue;
+      // 시계는 주문마다 따로 간다 — 수주 시점과 마지막 진척 중 **늦은 쪽**부터.
+      // 프로그램의 정체 시점만 보면 이미 6분기 멈춘 기종의 새 수주가 같은 분기에
+      // 즉시 무른다: 선수금을 받자마자 1.5배로 물어 주는 함정이 된다. 항공사의
+      // 인내심은 자기가 계약한 날부터 세는 게 맞다.
+      const won = typeof o.wonTurn === 'number' ? o.wonTurn : -Infinity;
+      const moved = typeof p.lastProgressTurn === 'number' ? p.lastProgressTurn : -Infinity;
+      const lastMoved = Math.max(won, moved);
+      if (!Number.isFinite(lastMoved) || s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
+      const refund = Math.round(o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT);
+      s.cash -= refund;
+      // 이 분기 리포트에 직접 적는다(chargeLatePenalties 와 같은 이유). endTurn 은
+      // 리포트를 만들며 pending 을 이미 비웠으므로, pending 에 넣으면 현금은 지금
+      // 나가고 비용은 다음 분기 장부에 적힌다 — 이 위약으로 파산하면 아예 증발한다.
+      report.overhead += refund;
+      s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - ORDER_BREACH_RELATION_PENALTY, 0, 100);
+      adjustReputation(s, -2);
+      o.remaining = 0;
+      expired.add(o.id);
+      pushLog(
+        s,
+        'bad',
+        `${o.airlineName}이 ${p.name} 선주문 ${o.qty}기를 물렀다 — 개발이 ${PREORDER_STALL_QUARTERS}분기째 멈춰 있다. 선수금 반환과 위약금으로 ${fmtMoney(refund)}이 나갔다.`,
+      );
+    }
+    // 물러난 주문만 지운다. remaining 0 전체를 지우면 인도 완료 주문의 역사까지
+    // 사라져, 최근 수주를 백로그에서 읽는 경쟁사 반격이 눈을 잃는다.
+    if (expired.size) s.backlog = s.backlog.filter((o) => !expired.has(o.id));
   }
 
   /** 조립 라인 신설 — 인증 완료 기종만 가능. */
@@ -868,6 +999,7 @@
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
     runDeliveries(s, report);
+    expirePreorders(s, report);
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
@@ -916,10 +1048,42 @@
       // 아직 오지 않은 약속을 여기서 모두 닫는다. 그러지 않으면 종료 직전에 고른
       // 정부 지원금·낙관적 전망 같은 선택이 이득만 챙기고 대가를 영영 피한다.
       resolvePendingOutcomes(s, rng, { final: true });
+      // 못 지킨 선주문도 여기서 정산한다. 마지막 6분기 안에 딴 선주문은 정체
+      // 만료가 오기 전에 판이 끝나므로, 이 정산이 없으면 종료 직전 종이 비행기
+      // 응찰이 선수금과 평판만 챙기고 최종 점수를 부풀린다. 인증까지 못 간
+      // 기종의 계약은 실제로도 제조사 귀책이다 — 위약 배수 그대로 문다.
+      //
+      // 이사회 목표(settleMandate)보다 **먼저** 문다 — 순자산 목표를 위약 정산
+      // 전 장부로 채점하면, 실제로는 미달인 회사가 달성 보상금으로 위약을 메우는
+      // 순서 역전이 생긴다. 이사회는 다 갚고 남은 잔고를 본다.
+      for (const p of s.programs) {
+        if (p.phase === 'dev' || p.phase === 'cert') {
+          voidOrdersFor(s, p, '기한 내 미취항');
+          continue;
+        }
+        if (p.phase !== 'production') continue;
+        // 형식증명은 있어도 인도 능력이 전무한 기종 — 인도 실적도 재고도 라인도
+        // 없다 — 의 주문은 지킬 수 없던 약속이다. 마지막 분기에 인증과 수주를
+        // 동시에 챙기는 경우가 정확히 여기 걸린다: resolveBids 가 advanceDevelopment
+        // 보다 먼저 돌므로 인증 직전 기종이 수주 후 같은 정산에서 양산이 되는데,
+        // 라인을 세울 기회가 없었으니 그 주문은 영영 인도되지 않는다.
+        const bare = !(p.delivered > 0) && !(p.stock > 0) && !s.lines.some((l) => l.programId === p.id);
+        if (bare) {
+          voidOrdersFor(s, p, '기한 내 미인도');
+          continue;
+        }
+        // 양산에는 갔지만 ETOPS 를 못 딴 기종의 대양 노선 주문도 같은 귀책이다 —
+        // 약속한 능력(인증)이 끝내 없어서 인도 게이트에 막힌 채 판이 끝났다.
+        // 같은 기종의 일반 주문은 인도 가능한 물량이므로 건드리지 않는다.
+        if (!p.etopsCertified) {
+          const blocked = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0 && o.reqEtops);
+          voidOrderList(s, p, blocked, 'ETOPS 미인증');
+        }
+      }
       // 60분기에 발령된 목표는 80분기가 기한이다. 여기서 닫지 않으면 완주한 판마다
       // 마지막 5년치 성과가 보상·벌점 없이 사라진다.
       settleMandate(s, rng, { final: true });
-      // 위 둘이 만든 현금 이동은 이미 마감된 리포트에 없다. 마지막 분기 행에 얹어야
+      // 위 정산들이 만든 현금 이동은 이미 마감된 리포트에 없다. 마지막 분기 행에 얹어야
       // 종료 화면의 현금·매출·순자산 곡선이 실제 잔고와 맞는다. 새 행을 만들면
       // 존재하지 않는 81번째 분기가 재무표에 뜬다.
       foldPendingIntoLastRow(s);
@@ -1014,7 +1178,7 @@
         continue;
       }
       const program = s.programs.find((p) => p.id === bid.programId);
-      if (!program || program.phase !== 'production') continue;
+      if (!program || !biddablePhase(program)) continue;
 
       const score = scoreBid(s, rfp, program, bid.discount, bid.terms);
       if (score.blocked) continue;
@@ -1064,6 +1228,9 @@
         // 약속과 조건은 주문에 붙어 다닌다 — 인도 순서, 위약금, 대금 회수가 여기서 갈린다.
         pledge: pledge.id,
         financing: financing.id,
+        // 대양 노선 주문은 인증 없이 인도할 수 없다 — 선주문으로 이긴 뒤 인증을
+        // 건너뛰고 배송하는 구멍을 막으려면 요구가 주문에 붙어 다녀야 한다.
+        reqEtops: !!rfp.reqEtops,
         // 수주한 이 분기의 인도가 이미 첫 번째 기회다. 그대로 더하면 "4분기 안에"가
         // 다섯 번의 인도를 허용해, 광고한 대가가 한 분기씩 무뎌진다.
         dueTurn: s.turn + pledge.dueQuarters - 1,
@@ -1207,12 +1374,20 @@
    * 취항 후 운항 실적으로 ETOPS 를 따는 경로. 매 분기 정산에서 부른다.
    *
    * 양산 단계라는 것만으로는 안 된다 — 규제 당국이 보는 건 **실제로 굴러다닌 기록**이다.
-   * 라인도 인도분도 없는 기종이 네 분기를 세는 건 실적이 아니라 달력이다.
+   * 기체가 한 대도 없는 기종이 네 분기를 세는 건 실적이 아니라 달력이다.
+   *
+   * 재고도 실적으로 친다: 인도분만 세면 백로그가 전부 ETOPS 필수 주문인 기종이
+   * 영구 교착에 빠진다 — 인도 게이트(runDeliveries)가 인도를 막고, 인도가 없어
+   * 실적이 안 쌓이고, 실적이 없어 게이트가 안 열린다. 완성돼 놀고 있는 기체로
+   * 노선 실증을 도는 건 실제 관행이기도 하다(787 route proving).
    */
   function tickEtopsService(s) {
     for (const p of s.programs) {
       if (p.phase !== 'production' || !p.etops || p.etopsCertified) continue;
-      if (!(p.delivered > 0)) continue;
+      if (!(p.delivered > 0 || p.stock > 0)) continue;
+      // 운항 정지 중에는 실적이 쌓이지 않는다 — 한 대도 못 뜨는 분기를
+      // 실적으로 세면 결함으로 세워 둔 기간이 인증 심사에 그대로 들어간다.
+      if ((s.effects.grounded[p.id] || 0) > 0) continue;
       p.etopsService = (p.etopsService || 0) + 1;
       if (p.etopsService >= ETOPS_SERVICE_QUARTERS) {
         p.etopsCertified = true;
@@ -1279,6 +1454,7 @@
 
       const before = p.progress;
       p.progress = Math.min(100, p.progress + gain);
+      if (p.progress > before) p.lastProgressTurn = s.turn;
       // 착수금으로 이미 낸 몫을 빼고 남은 개발비만 진행도에 비례해 집행한다.
       // (전액을 다시 배분하면 실제 지출이 표시된 총 개발비의 108%가 된다.)
       const spend = p.devCost * (1 - CONFIG.launchUpfrontRate) * ((p.progress - before) / 100);
@@ -1314,6 +1490,7 @@
       }
 
       p.testHours = (p.testHours || 0) + testHoursPerQuarter(p);
+      if (testHoursPerQuarter(p) > 0) p.lastProgressTurn = s.turn;
       p.certRemaining = certQuartersLeft(p);
       if (p.testHours >= p.testHoursNeeded) {
         p.phase = 'production';
@@ -1329,6 +1506,14 @@
         if (salvage > 0) {
           s.cash += salvage;
           report.revenue += salvage;
+        }
+        if (!p.legacy) {
+          const gained = (EXPERIENCE_POINTS[p.segment] || 1) * (p.derivedFrom ? 0.5 : 1);
+          pushLog(
+            s,
+            'program',
+            `${p.name}을 끝까지 만들어 본 경험이 조직에 남았다 (+${gained}). 다음 신규 설계의 기간과 필요 인력이 줄어든다.`,
+          );
         }
         pushLog(
           s,
@@ -1407,7 +1592,15 @@
     for (const o of orders) {
       const p = s.programs.find((x) => x.id === o.programId);
       if (!p || p.stock <= 0) continue;
+      // 형식증명 없는 기체는 어떤 경로로 재고가 생겼든 인도할 수 없다 — 시뮬레이션의
+      // 불변식이다. 특별 근무 같은 사건이 미인증 기종을 뽑는 걸 막더라도, 여기서
+      // 한 번 더 지키지 않으면 새 재고 경로가 생길 때마다 같은 구멍이 다시 열린다.
+      if (p.phase !== 'production') continue;
       if ((s.effects.grounded[p.id] || 0) > 0) continue;
+      // 대양 노선 주문은 ETOPS 인증이 나와야 인도된다. 조기 취득을 건너뛰었으면
+      // 운항 실적 4분기 동안 이 주문들이 기다린다 — 조기 인도 약속을 걸어 뒀다면
+      // 그 지연의 위약금이 정확히 "1년을 기다리는" 선택의 값이다.
+      if (o.reqEtops && !p.etopsCertified) continue;
 
       const n = Math.min(o.remaining, p.stock);
       // 선수금을 이미 받은 만큼을 뺀 잔금이 인도 대금이다.
@@ -1623,6 +1816,9 @@
     row.worth = Math.round(netWorth(s));
     row.share = Math.round(marketShare(s) * 10000) / 10000;
     row.reputation = Math.round(s.reputation);
+    // 종료 정산이 주문을 파기했을 수 있다. 마지막 행이 정산 전 백로그를 물고
+    // 있으면 종료 화면이 이미 사라진 기체를 계속 보여 준다.
+    row.backlog = totalBacklog(s);
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
   }
 
@@ -1942,8 +2138,7 @@
    */
   function runServices(s, report) {
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
-    const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
-    const after = fleet * AFTERMARKET_PER_UNIT * tier.mult;
+    const after = aftermarketBase(s) * tier.mult;
 
     let freight = 0;
     for (const p of s.programs) {
@@ -1965,11 +2160,19 @@
     report.services = total;
   }
 
+  /** 급별 단가로 계산한 선단의 분기 기본 서비스 수익 (투자 배수 적용 전). */
+  function aftermarketBase(s) {
+    return s.programs.reduce(
+      (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT),
+      0,
+    );
+  }
+
   /** 화면이 읽는 서비스 수익 내역. */
   function serviceIncome(s) {
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
     const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
-    const after = fleet * AFTERMARKET_PER_UNIT * tier.mult;
+    const after = aftermarketBase(s) * tier.mult;
     let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
     return { fleet, aftermarket: after, freight, total: after + freight, tier };
@@ -2159,6 +2362,7 @@
    */
   function sellProgram(s, programId) {
     if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
     const p = s.programs.find((x) => x.id === programId);
     if (!p) return { ok: false, error: '없는 프로그램입니다.' };
     if (p.phase !== 'dev' && p.phase !== 'cert') {
@@ -2171,6 +2375,7 @@
     s.pending.revenue += value;
     p.phase = 'sold';
     adjustReputation(s, -5);
+    voidOrdersFor(s, p, '프로그램 매각');
 
     // 사는 쪽은 그 시장에 이미 들어와 있는 제조사다 — 남의 도면을 살 이유가 있는 곳.
     // 그 시장에서 가장 약한 축이 따라잡으려 산다고 보는 편이 자연스럽다.
@@ -2243,6 +2448,10 @@
        * 번호를 매기고 원가를 문다(급하게 뽑는 만큼 할증까지).
        */
       rushProduce: (program, units, premium) => {
+        // 인증 전 기체는 특별 근무로도 못 뽑는다 — 선주문이 생기면서 백로그에
+        // 개발·인증 중 기종의 주문이 섞이므로, 여기서 거르지 않으면 사건 하나가
+        // 형식증명을 우회해 종이 비행기를 실물로 만든다.
+        if (!program || program.phase !== 'production') return 0;
         let cost = 0;
         for (let i = 0; i < units; i++) {
           // currentUnitCost 는 "다음에 만들 1기"(produced+1 번째)의 원가다. 번호를
@@ -2619,6 +2828,17 @@
     return s.cash + assetValue + receivable - s.debt;
   }
 
+  /**
+   * 인도 점수의 급별 가중 — 리저널기와 광동체가 같은 1기일 수는 없다.
+   * 협동체가 종전 계수(1.2) 그대로라, 협동체 중심의 기존 판 점수·등급 문턱은
+   * 움직이지 않는다. 광동체 가중은 사다리를 오른 값의 마지막 몫이다.
+   */
+  const DELIVERED_SCORE_WEIGHT = { regional: 0.7, narrow: 1.2, wide: 3.2 };
+
+  function deliveredScore(s) {
+    return s.programs.reduce((a, p) => a + (p.delivered || 0) * (DELIVERED_SCORE_WEIGHT[p.segment] ?? 1.2), 0);
+  }
+
   function finalScore(s, bankrupt) {
     const share = marketShare(s);
     const worth = netWorth(s);
@@ -2626,7 +2846,7 @@
     // "위험해지면 찍어낸다"가 언제나 정답이 된다.
     const ownership = 1 - (s.equityDilution || 0);
     const score = Math.round(
-      (s.stats.delivered * 1.2 + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership,
+      (deliveredScore(s) + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership,
     );
     // 파산은 아무리 많이 팔았어도 실패다 — 등급으로 성적을 덮지 않는다.
     // 문턱은 시뮬레이션으로 잡는다. 회생 수단이 생기기 전에는 파산 아니면 A·S 뿐이라
@@ -2649,7 +2869,7 @@
     const worth = netWorth(s);
     const own = 1 - (s.equityDilution || 0);
     const rows = [
-      { label: '누적 인도', detail: `${s.stats.delivered}기 × 1.2`, points: Math.round(s.stats.delivered * 1.2) },
+      { label: '누적 인도', detail: `${s.stats.delivered}기 (급별 가중 — 광동체 ×3.2)`, points: Math.round(deliveredScore(s)) },
       { label: '시장 점유율', detail: `${(share * 100).toFixed(1)}% × 4,000`, points: Math.round(share * 4000) },
       { label: '순자산', detail: `${fmtMoney(Math.max(0, worth))} × 0.08`, points: Math.round(Math.max(0, worth) * 0.08) },
       { label: '평판', detail: `${Math.round(s.reputation)} × 12`, points: Math.round(s.reputation * 12) },
@@ -2750,9 +2970,23 @@
   }
 
   /** 현재 열린 RFP에 대해 입찰 가능한 기종 목록 */
+  /**
+   * 응찰 가능 단계 — 양산 중이거나 **인증 심사 중**(설계 동결, 시제기 비행 중).
+   *
+   * 선주문은 실제 항공업의 자금 구조다: 787 은 초도비행 전에 800대를 팔았고
+   * 그 선수금이 인증을 먹여 살렸다. 게임에서도 광동체 개발 막바지 — 부채 한도에
+   * 목이 졸리는 바로 그 구간 — 을 선수금으로 버티는 게 사다리의 마지막 칸이다.
+   * 미인증 기체는 입찰 점수에서 신뢰 감점을 받는다(bidding.js).
+   */
+  function biddablePhase(p) {
+    // 개발 40%부터 — 설계가 잡히고 항공사에 팔 수 있는 구체적 제원이 나온 시점.
+    // A350 XWB 가 실물 없이 팔린 게 이 단계다. 멀수록 감점이 크다(bidding.js).
+    return p.phase === 'production' || p.phase === 'cert' || (p.phase === 'dev' && p.progress >= 40);
+  }
+
   function eligiblePrograms(s, rfp) {
     return s.programs
-      .filter((p) => p.phase === 'production' && p.segment === rfp.segment)
+      .filter((p) => biddablePhase(p) && p.segment === rfp.segment)
       .map((p) => ({ program: p, score: scoreBid(s, rfp, p, s.bids[rfp.id]?.discount ?? 0) }));
   }
 
@@ -2762,6 +2996,9 @@
    * 여기 한 곳에만 둔다. 둘이 갈라지면 대응 불가능한 공고로 사용자를 괴롭히게 된다.
    */
   function canBid(s, rfp) {
+    // 감점·확인창의 기준은 **양산 기종**이다. 선주문(개발·인증 중)은 응찰할 수 있는
+    // 선택지일 뿐 의무가 아니다 — 종이 비행기를 안 팔았다고 관계가 깎이면, 개발이
+    // 40%를 넘는 순간부터 모든 해당 세그먼트 공고가 벌금 고지서가 된다.
     return s.programs.some(
       (p) => p.phase === 'production' && p.segment === rfp.segment && !scoreBid(s, rfp, p, 0).blocked,
     );
@@ -2770,6 +3007,7 @@
   root.AirlinerEngine = {
     newGame,
     launchProgram,
+    companyExperience,
     derivativeSpec,
     investQuality,
     addTestAircraft,
@@ -2778,6 +3016,7 @@
     testAircraftCost,
     certQuartersLeft,
     cancelProgram,
+    voidRefundFor,
     buildLine,
     retoolLine,
     retoolCompatibility,

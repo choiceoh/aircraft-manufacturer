@@ -89,9 +89,13 @@
       desc: '장거리 간판. 개발비가 회사를 삼킬 수 있지만 평판이 크게 오른다.',
       seats: { min: 230, max: 480, ref: 320 },
       range: { min: 6500, max: 16500, ref: 12000 },
-      devBase: 11000,
-      devQuarters: 19,
-      engineersNeeded: 6000,
+      // 한때 11000/6000 이었다 — 그 값은 게임 경제와 비례가 안 맞았다. 판당 누적
+      // 매출이 ~48B 인데 실비용(배수 포함)이 15~22B 로 평생 매출의 30%가 넘어,
+      // 광동체 시장을 절반 먹어도 회수가 불가능했다(측정: 계획적 사다리 전략도
+      // 파산 17/20). 경험 이월·선주문과 함께 이 값이라야 "사다리를 오르면 닿는다".
+      devBase: 8200,
+      devQuarters: 18,
+      engineersNeeded: 5200,
       unitCostBase: 162,
       listPriceBase: 258,
       lineCost: 1580,
@@ -270,6 +274,13 @@
   // 잡았던 0.085/900/2400 조합은 투자 회수에 67분기가 걸려, 고를 이유가 없는
   // 함정 선택지였다. 지금은 선단 400기 기준 약 20분기에 회수된다.
   const AFTERMARKET_PER_UNIT = 0.1;
+  /**
+   * 기체 급별 애프터마켓 단가 — 광동체 한 대의 부품·정비 수익은 리저널의 몇 배다.
+   * (엔진 정비 계약 하나가 기체값 수준인 사업이다.) 협동체는 기준 단가와 같아
+   * 기존 밸런스·회수 기간 테스트가 그대로 성립한다. 광동체 선단은 인도가 끝난
+   * 뒤에도 오래 버는 사업이 된다 — 사다리를 오른 값의 절반이 여기서 나온다.
+   */
+  const AFTERMARKET_PER_UNIT_BY_SEG = { regional: 0.06, narrow: AFTERMARKET_PER_UNIT, wide: 0.3 };
 
   const AFTERMARKET_TIERS = {
     none: {
@@ -858,6 +869,7 @@
     RANGE_TOLERANCE,
     ETOPS_USEFUL_RANGE,
     AFTERMARKET_PER_UNIT,
+    AFTERMARKET_PER_UNIT_BY_SEG,
     AFTERMARKET_TIERS,
     AFTERMARKET_ORDER,
     FREIGHTER,

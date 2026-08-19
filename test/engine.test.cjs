@@ -4296,3 +4296,741 @@ test('할인은 어느 선을 넘으면 점수로 덜 쳐준다', () => {
   // 계약가는 체감 없이 그대로 깎여야 한다 — 체감하는 건 점수뿐, 실제 매출이 아니다.
   assert.ok(Math.abs(at(0.35).price - 110 * 0.65) < 0.01, '실효 계약가가 체감의 영향을 받았다');
 });
+
+test('완성 경험은 인증까지 간 프로그램에서만 쌓인다', () => {
+  const s = E.newGame(401);
+  assert.strictEqual(E.companyExperience(s), 0, '승계 기종의 경험은 기준 밸런스에 이미 들어 있다 — 0에서 시작해야 한다');
+
+  s.cash = 30000;
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 50 }, 'XP-1').ok);
+  const p = s.programs[s.programs.length - 1];
+  assert.strictEqual(E.companyExperience(s), 0, '착수만으로 경험이 쌓이면 안 된다');
+
+  p.phase = 'production';
+  p.certTurn = s.turn;
+  assert.strictEqual(E.companyExperience(s), 2, '협동체 완성은 2점이어야 한다');
+
+  // 파생형은 절반 — 새로 배우는 게 훨씬 적다.
+  assert.ok(E.launchProgram(s, E.derivativeSpec(p, 30), 'XP-1S').ok);
+  const d = s.programs[s.programs.length - 1];
+  d.phase = 'production';
+  d.certTurn = s.turn;
+  assert.strictEqual(E.companyExperience(s), 3, '파생형 완성은 절반(1점)이어야 한다');
+
+  // 매각해도 경험은 남는다 — 도면은 넘겨도 만들어 본 사람들은 회사에 있다.
+  p.phase = 'sold';
+  assert.strictEqual(E.companyExperience(s), 3, '매각으로 경험이 사라지면 안 된다');
+});
+
+test('경험은 다음 개발의 기간·인력·비용·위험을 줄이고 바닥이 있다', () => {
+  const spec = { segment: 'wide', seats: 320, range: 12000, tech: 55, wing: 60, year: 2005 };
+  const cold = D.evaluate({ ...spec, experience: 0 });
+  const warm = D.evaluate({ ...spec, experience: 2 });
+  const vet = D.evaluate({ ...spec, experience: 50 });
+
+  assert.ok(warm.devQuarters < cold.devQuarters, '경험이 기간을 줄여야 한다');
+  assert.ok(warm.engineersNeeded < cold.engineersNeeded, '경험이 필요 인력을 줄여야 한다');
+  assert.ok(warm.devCost < cold.devCost, '경험이 개발비를 줄여야 한다');
+  assert.ok(warm.defectRisk <= cold.defectRisk, '경험이 결함 위험을 늘리면 안 된다');
+
+  // 바닥: 무한히 싸지면 후반 개발이 공짜가 된다.
+  assert.ok(vet.devCost >= cold.devCost * 0.5, '비용 바닥이 뚫렸다');
+  assert.ok(vet.engineersNeeded >= cold.engineersNeeded * 0.45, '인력 바닥이 뚫렸다');
+  assert.ok(vet.devQuarters >= cold.devQuarters * 0.5, '기간 바닥이 뚫렸다');
+});
+
+test('파생형은 인증도 짧다 (개정 형식증명)', () => {
+  const s = E.newGame(409);
+  s.cash = 30000;
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5200, tech: 50 }, 'BASE').ok);
+  const base = s.programs[s.programs.length - 1];
+  base.phase = 'production';
+  base.certTurn = s.turn;
+
+  const fresh = D.evaluate({ segment: 'narrow', seats: 210, range: 5200, tech: 50, year: E.yearOf(s.turn) });
+  const deriv = D.evaluate({ ...E.derivativeSpec(base, 30), year: E.yearOf(s.turn) });
+  assert.ok(deriv.derivative, '파생형 판정이 성립해야 한다');
+  assert.ok(deriv.certQuarters < fresh.certQuarters, `파생형 인증(${deriv.certQuarters})이 신규(${fresh.certQuarters})보다 짧아야 한다`);
+});
+
+test('선주문: 개발 40%부터 응찰하되 미인증 감점을 받는다', () => {
+  const s = E.newGame(419);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'PAPER').ok);
+  const p = s.programs[s.programs.length - 1];
+  const rfp = {
+    id: 'r', airlineId: 'carta', airlineName: 'T', segment: 'wide',
+    reqSeats: 300, reqRange: 12500, reqField: 0, reqEtops: true,
+    qty: 12, priceSensitivity: 0.6, prestige: 1.2,
+  };
+
+  // 설계가 잡히기 전(40% 미만)에는 팔 물건이 없다.
+  p.progress = 20;
+  assert.strictEqual(E.eligiblePrograms(s, rfp).length, 0, '개발 초반 종이 비행기가 응찰하면 안 된다');
+
+  p.progress = 60;
+  const dev = E.eligiblePrograms(s, rfp)[0];
+  assert.ok(dev, '개발 40% 이상이면 선주문 응찰이 가능해야 한다');
+  assert.strictEqual(dev.score.blocked, null, 'ETOPS 대응 설계의 선주문이 ETOPS 게이트에 막히면 안 된다');
+  assert.ok(dev.score.preorder, '선주문 표시가 있어야 한다');
+
+  // 감점의 순서: 종이(개발) < 시제기(인증) < 취항(양산).
+  const devScore = dev.score.total;
+  p.phase = 'cert';
+  const certScore = E.eligiblePrograms(s, rfp)[0].score.total;
+  p.phase = 'production';
+  p.etopsCertified = true;
+  const prodScore = E.eligiblePrograms(s, rfp)[0].score.total;
+  assert.ok(devScore < certScore, `개발(${devScore})이 인증(${certScore})보다 낮아야 한다`);
+  assert.ok(certScore < prodScore, `인증(${certScore})이 양산(${prodScore})보다 낮아야 한다`);
+
+  // 다만 선주문을 안 했다고 관계가 깎이면 안 된다 — canBid 는 양산 기준.
+  p.phase = 'dev';
+  p.progress = 60;
+  assert.strictEqual(E.canBid(s, rfp), false, '선주문만 가능한 공고는 무응찰 감점 대상이 아니다');
+});
+
+test('선주문 수주는 선수금을 내고, 개발을 접으면 위약으로 물어 준다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(421);
+    s.cash = 50000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'PRE').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 70;
+
+    // 공고를 직접 심고 선주문으로 응찰한다.
+    const rfp = B.makeRfp(s, R.createRng(7), {
+      airline: Data.AIRLINES.find((a) => a.bias === 'wide'),
+      segment: 'wide',
+      qty: 14,
+    });
+    s.rfps = [rfp];
+    E.setBid(s, rfp.id, p.id, 0.3);
+
+    const cashBefore = s.cash;
+    E.endTurn(s);
+
+    const order = s.backlog.find((o) => o.programId === p.id);
+    if (order) {
+      assert.ok(s.cash > cashBefore - 2500, '선수금이 들어왔다면 현금이 통째로 빠지지만 않아야 한다');
+      // 개발을 접으면 선수금보다 큰 위약이 나간다 — 종이 비행기 장사 방지.
+      const relBefore = s.relations[order.airlineId];
+      const cashBeforeCancel = s.cash;
+      assert.ok(E.cancelProgram(s, p.id).ok);
+      const refund = cashBeforeCancel - s.cash;
+      const deposit = order.qty * order.unitPrice * order.depositRate;
+      assert.ok(refund > deposit, `위약 반환(${Math.round(refund)})이 받은 선수금(${Math.round(deposit)})보다 커야 한다`);
+      assert.ok(s.relations[order.airlineId] < relBefore, '주문을 파기당한 항공사와의 관계가 깎여야 한다');
+      assert.ok(!s.backlog.some((o) => o.programId === p.id), '죽은 프로그램의 주문이 백로그에 남으면 안 된다');
+    } else {
+      // 선주문이 감점 때문에 진 판 — 응찰 자체는 판정에 들어갔어야 한다.
+      assert.ok(s.stats.bidsMade > 0, '선주문 응찰이 판정에서 조용히 버려졌다');
+    }
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('사다리: 협동체를 완성하면 광동체 착수 조건이 실제로 가벼워진다', () => {
+  const cold = E.newGame(431);
+  cold.cash = 60000;
+  const coldWide = E.launchProgram(cold, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'COLD');
+  assert.ok(coldWide.ok);
+
+  const warm = E.newGame(431);
+  warm.cash = 60000;
+  assert.ok(E.launchProgram(warm, { segment: 'narrow', seats: 180, range: 5200, tech: 50 }, 'N').ok);
+  const n = warm.programs[warm.programs.length - 1];
+  n.phase = 'production';
+  n.certTurn = warm.turn;
+  const warmWide = E.launchProgram(warm, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'WARM');
+  assert.ok(warmWide.ok);
+
+  assert.ok(warmWide.program.devCost < coldWide.program.devCost * 0.85, '경험이 개발비를 체감할 만큼 줄여야 한다');
+  assert.ok(warmWide.program.engineersNeeded < coldWide.program.engineersNeeded * 0.85, '경험이 필요 인력을 체감할 만큼 줄여야 한다');
+  assert.ok(warmWide.program.devQuarters < coldWide.program.devQuarters, '경험이 기간을 줄여야 한다');
+});
+
+test('사다리의 보상 — 후광·급별 서비스 단가·급별 인도 점수', () => {
+  // 플래그십 후광: 광동체를 인증까지 만든 제조사는 모든 수주전에서 신뢰를 더 받는다.
+  const s = E.newGame(433);
+  s.cash = 60000;
+  const rfp = {
+    id: 'r', airlineId: 'hanul', airlineName: 'T', segment: 'narrow',
+    reqSeats: 180, reqRange: 5500, reqField: 0, reqEtops: false,
+    qty: 20, priceSensitivity: 1, prestige: 1,
+  };
+  const narrow = { segment: 'narrow', seats: 180, range: 5800, listPrice: 110, efficiency: 60, comfort: 55, wing: 45, phase: 'production' };
+  const before = B.scoreBid(s, rfp, narrow, 0.1).total;
+
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'FLAG').ok);
+  const w = s.programs[s.programs.length - 1];
+  assert.strictEqual(B.scoreBid(s, rfp, narrow, 0.1).total, before, '개발 중인 광동체가 후광을 주면 안 된다');
+  w.phase = 'production';
+  const after = B.scoreBid(s, rfp, narrow, 0.1).total;
+  assert.ok(after > before, `광동체 양산사가 협동체 수주전에서 후광을 받아야 한다 (${before} → ${after})`);
+
+  // 급별 서비스 단가: 같은 대수라도 광동체 선단이 더 번다.
+  const nFleet = E.newGame(439);
+  const wFleet = E.newGame(439);
+  nFleet.programs.push({ id: 'pn', segment: 'narrow', phase: 'production', delivered: 100, name: 'N', stock: 0, unitCostBase: 0, spent: 0 });
+  wFleet.programs.push({ id: 'pw', segment: 'wide', phase: 'production', delivered: 100, name: 'W', stock: 0, unitCostBase: 0, spent: 0 });
+  assert.ok(
+    E.serviceIncome(wFleet).aftermarket > E.serviceIncome(nFleet).aftermarket,
+    '광동체 100기의 애프터마켓이 협동체 100기보다 커야 한다',
+  );
+
+  // 급별 인도 점수: 협동체는 종전 계수 그대로, 광동체는 그보다 무겁다.
+  const sc = E.newGame(443);
+  const legacyDelivered = sc.stats.delivered;
+  const base = E.finalScore(sc, false).score;
+  // 순자산 계산이 stock·spent 를 읽으므로 0으로 채워야 NaN 이 점수를 오염시키지 않는다.
+  const fake = (id, segment) => ({ id, segment, phase: 'production', delivered: 50, name: id, stock: 0, unitCostBase: 0, spent: 0 });
+  sc.programs.push(fake('px', 'wide'));
+  sc.stats.delivered += 50;
+  const withWide = E.finalScore(sc, false).score;
+  sc.programs.pop();
+  sc.programs.push(fake('py', 'narrow'));
+  const withNarrow = E.finalScore(sc, false).score;
+  assert.ok(withWide - base > withNarrow - base, '광동체 50기가 협동체 50기보다 점수가 커야 한다');
+  assert.ok(legacyDelivered > 0, '승계 인도분이 있어야 기준 점수 검증이 성립한다');
+});
+
+test('옛 세이브에서 곧바로 취소해도 위약 정산이 온전히 적용된다', () => {
+  const s = E.newGame(449);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'OLD-W').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 60;
+  s.backlog.push({
+    id: 'ord-old', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+  });
+
+  // v1 세이브 재현: pending 이 통째로 없다 — ensureShape 없이 만지면 여기서 터진다.
+  delete s.pending;
+  const cashBefore = s.cash;
+  assert.ok(E.cancelProgram(s, p.id).ok, '옛 세이브에서 취소가 실패했다');
+  assert.ok(cashBefore - s.cash > 0, '위약 반환이 나가야 한다');
+  assert.ok(!s.backlog.some((o) => o.programId === p.id), '주문이 남았다');
+  assert.ok(s.pending && typeof s.pending.overhead === 'number' && !Number.isNaN(s.pending.overhead), 'pending 이 복구되고 오염되지 않아야 한다');
+});
+
+test('대양 노선 선주문은 ETOPS 인증이 나와야 인도된다', () => {
+  const s = E.newGame(457);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'GATE').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.etopsCertified = false;
+  p.stock = 6;
+  s.backlog.push({
+    id: 'ord-etops', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+  });
+
+  E.endTurn(s);
+  const o = s.backlog.find((x) => x.id === 'ord-etops');
+  assert.ok(o && o.remaining === 6, '인증 없이 대양 노선 주문이 인도됐다 — 조기 취득 비용을 우회한다');
+
+  p.etopsCertified = true;
+  p.stock = 6;
+  E.endTurn(s);
+  const after = s.backlog.find((x) => x.id === 'ord-etops');
+  assert.ok(!after || after.remaining < 6, '인증이 나왔는데도 인도되지 않는다');
+});
+
+test('개발을 동결한 종이 비행기의 선수금 농사는 손해다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(461);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'FARM').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    p.share = 0; // 동결 — 진행되지 않는다
+
+    s.backlog.push({
+      id: 'ord-farm', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, pledge: 'standard',
+    });
+    const deposit = 10 * 250 * 0.15;
+    s.cash += deposit; // 수주 시점에 받았을 선수금을 재현
+
+    const cashAfterDeposit = s.cash;
+    for (let i = 0; i < 20 && !s.gameOver; i++) {
+      s.cash = Math.max(s.cash, 8000);
+      E.endTurn(s);
+    }
+    assert.ok(
+      s.log.some((l) => /물렀다/.test(l.text)),
+      '인내심이 다한 항공사가 계약을 깨지 않았다',
+    );
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-farm'), '무른 주문이 백로그에 남았다');
+    // 위약 배수(1.5) 때문에 농사의 순수익은 음수여야 한다: 반환액 > 선수금.
+    assert.ok(
+      s.log.some((l) => /물렀다/.test(l.text) && /위약금/.test(l.text)),
+      '위약 없이 돌려주면 농사가 본전이 된다',
+    );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('ETOPS 필수 주문만 있어도 재고 기체의 실증 비행으로 교착이 풀린다', () => {
+  // 인도 게이트가 인도를 막고, 인도가 없어 실적이 안 쌓이고, 실적이 없어
+  // 게이트가 안 열리는 순환 — 재고 기체를 실적으로 치지 않으면 영구 교착이다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(467);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'LOCK').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.etopsCertified = false;
+    p.etopsService = 0;
+    p.stock = 6;
+    s.backlog.push({
+      id: 'ord-lock', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+    });
+
+    for (let i = 0; i < 8 && !s.gameOver; i++) {
+      s.cash = Math.max(s.cash, 20000);
+      E.endTurn(s);
+    }
+    assert.strictEqual(p.etopsCertified, true, '재고 기체가 있는데 ETOPS 실적이 안 쌓인다 — 교착이 그대로다');
+    assert.ok(p.delivered > 0, '인증이 나왔는데 밀린 ETOPS 주문이 인도되지 않는다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('무른 선주문의 위약은 이번 분기 장부에 적힌다', () => {
+  // endTurn 은 리포트를 만들며 pending 을 비운다. 위약을 pending 에 넣으면 현금은
+  // 지금 나가고 비용은 다음 분기 행에 적힌다 — 같은 분기에 파산하면 증발한다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const make = (withOrder) => {
+      const s = E.newGame(479);
+      s.cash = 60000;
+      assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'BOOK').ok);
+      const p = s.programs[s.programs.length - 1];
+      p.progress = 45;
+      p.share = 0;
+      p.lastProgressTurn = s.turn - 6; // 이미 6분기째 정체 — 이번 정산에서 무른다
+      if (withOrder) {
+        s.backlog.push({
+          id: 'ord-book', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+          qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn - 6, depositRate: 0.15, pledge: 'standard',
+        });
+      }
+      return s;
+    };
+
+    const ctrl = make(false);
+    const s = make(true);
+    E.endTurn(ctrl);
+    E.endTurn(s);
+    assert.ok(s.log.some((l) => /물렀다/.test(l.text)), '정체 6분기인데 주문이 무르지 않았다');
+
+    const refund = Math.round(10 * 250 * 0.15 * 1.5);
+    const row = s.history[s.history.length - 1];
+    const ctrlRow = ctrl.history[ctrl.history.length - 1];
+    assert.strictEqual(row.cost - ctrlRow.cost, refund, '위약이 이번 분기 행에 정확히 적혀야 한다');
+    assert.strictEqual(s.pending.overhead, 0, '위약이 다음 분기 장부로 밀렸다 — 현금 이동과 비용 계상이 한 분기 어긋난다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('취소 확인창이 보여 줄 위약 예상액이 실제 지출과 일치한다', () => {
+  const s = E.newGame(487);
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'WARN').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 60;
+  s.backlog.push({
+    id: 'ord-warn', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+  });
+
+  const quoted = E.voidRefundFor(s, p);
+  assert.ok(quoted > 0, '미인도 주문이 있는데 위약 예상액이 0이다');
+  const cashBefore = s.cash;
+  assert.ok(E.cancelProgram(s, p.id).ok);
+  assert.strictEqual(cashBefore - s.cash, quoted, '확인창이 보여 준 위약과 실제 지출이 다르면 안내가 거짓이 된다');
+});
+
+test('정체된 프로그램의 새 수주에도 6분기 유예가 통째로 주어진다', () => {
+  // 프로그램이 이미 6분기 멈춰 있어도 방금 딴 주문이 같은 분기에 무르면 안 된다 —
+  // 선수금을 받자마자 1.5배로 물어 주는 함정이 된다. 시계는 주문마다 따로 간다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(491);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'CLOCK').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    p.share = 0;
+    p.lastProgressTurn = s.turn - 6; // 프로그램은 이미 오래 정체
+
+    s.backlog.push({
+      id: 'ord-clock', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, pledge: 'standard',
+    });
+
+    E.endTurn(s);
+    const o = s.backlog.find((x) => x.id === 'ord-clock');
+    assert.ok(o && o.remaining === 10, '방금 딴 주문이 수주 당일 무르면 유예가 광고와 다르다');
+
+    // 계속 정체하면 수주 후 6분기째부터는 무른다.
+    for (let i = 0; i < 7 && s.backlog.some((x) => x.id === 'ord-clock'); i++) {
+      s.cash = Math.max(s.cash, 8000);
+      E.endTurn(s);
+    }
+    assert.ok(!s.backlog.some((x) => x.id === 'ord-clock'), '수주 후에도 계속 멈춘 주문은 무르러야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('파생형은 경험 할인을 받지 않는다 — 파생 배율과 겹치면 이중 할인', () => {
+  const D2 = globalThis.AirlinerDesign;
+  const base = {
+    id: 'base-x', segment: 'narrow', seats: 180, range: 5800, tech: 40,
+    fuselage: 'aluminum', wingMat: 'aluminum', engine: undefined, family: false,
+  };
+  const spec = {
+    segment: 'narrow', seats: 200, range: 5800, tech: 40,
+    fuselage: 'aluminum', wingMat: 'aluminum',
+    derivedFrom: base,
+  };
+  const noXp = D2.evaluate({ ...spec, experience: 0 });
+  const withXp = D2.evaluate({ ...spec, experience: 4 });
+  assert.ok(noXp.derivative, '파생형 판정이 성립해야 검증이 의미 있다');
+  assert.strictEqual(withXp.devCost, noXp.devCost, '파생형 개발비에 경험 할인이 겹치면 안 된다');
+  assert.strictEqual(withXp.devQuarters, noXp.devQuarters, '파생형 기간에 경험 할인이 겹치면 안 된다');
+  assert.strictEqual(withXp.engineersNeeded, noXp.engineersNeeded, '파생형 필요 인력에 경험 할인이 겹치면 안 된다');
+
+  // 신규 설계는 경험 할인을 받아야 한다 — 파생형만 제외됐는지 대조.
+  const freshNo = D2.evaluate({ segment: 'narrow', seats: 200, range: 5800, tech: 40, experience: 0 });
+  const freshXp = D2.evaluate({ segment: 'narrow', seats: 200, range: 5800, tech: 40, experience: 4 });
+  assert.ok(freshXp.devCost < freshNo.devCost, '신규 설계의 경험 할인까지 사라지면 안 된다');
+});
+
+test('인증 전 기체는 사건으로도 만들지도 인도하지도 못한다', () => {
+  // delivery_slip 사건이 백로그의 선주문을 집어 특별 근무로 기체를 뽑으면
+  // 형식증명을 우회한 실물이 생긴다. 사건 후보에서 거르고, 인도에서도 막는다.
+  const s = E.newGame(499);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'PAPER').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.progress = 45;
+  s.backlog.length = 0; // 승계 물량을 치우고 선주문만 남긴다
+  s.backlog.push({
+    id: 'ord-paper', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+  });
+
+  const slip = Dec.DECISIONS.find((d) => d.id === 'delivery_slip');
+  assert.ok(slip, 'delivery_slip 결정이 있어야 한다');
+  assert.strictEqual(slip.weight(s), 0, '선주문만 있는 백로그에서 인도 지연 사건이 나오면 안 된다');
+
+  // 어떤 경로로든 미인증 기종에 재고가 생겨도 인도되면 안 된다 — 불변식.
+  p.stock = 5;
+  E.endTurn(s);
+  const o = s.backlog.find((x) => x.id === 'ord-paper');
+  assert.ok(o && o.remaining === 10, '형식증명 없는 기체가 인도됐다');
+});
+
+test('게임 종료 시 미인증 기종의 선주문은 위약으로 정산된다', () => {
+  // 마지막 6분기 안에 딴 선주문은 정체 만료 전에 판이 끝난다. 종료 정산이
+  // 없으면 막판 종이 비행기 응찰이 선수금·평판만 챙기고 점수를 부풀린다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(503);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'LASTQ').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    s.turn = 79; // 마지막 분기 — 이번 정산으로 판이 끝난다
+    s.backlog.push({
+      id: 'ord-lastq', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+    });
+
+    const refund = Math.round(10 * 250 * 0.15 * 1.5);
+    const cashBefore = s.cash;
+    E.endTurn(s);
+    assert.ok(s.gameOver, '마지막 분기 정산 후에는 게임이 끝나야 한다');
+    assert.ok(!s.backlog.some((x) => x.id === 'ord-lastq' && x.remaining > 0), '못 지킨 선주문이 정산 없이 남았다');
+    assert.ok(
+      s.log.some((l) => /기한 내 미취항/.test(l.text)),
+      '종료 정산이 기록으로 남아야 한다',
+    );
+    assert.ok(cashBefore - s.cash >= refund, `위약 반환이 현금에서 나가야 한다 (변화 ${cashBefore - s.cash}, 기대 ≥ ${refund})`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('종료 시 ETOPS 못 딴 기종의 대양 주문만 위약 정산되고 일반 주문은 산다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(509);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'ENDGATE').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.etopsCertified = false;
+    p.stock = 0;
+    p.delivered = 5; // 인도 실적이 있는, 능력이 증명된 기종 — 일반 주문은 지킬 수 있다
+    s.turn = 79; // 마지막 분기
+    s.backlog.push(
+      {
+        id: 'ord-endgate-e', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+        qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+      },
+      {
+        id: 'ord-endgate-n', airlineId: 'hanul', airlineName: '한울', programId: p.id, programName: p.name,
+        qty: 4, remaining: 4, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+      },
+    );
+
+    E.endTurn(s);
+    assert.ok(s.gameOver, '마지막 분기 정산 후에는 게임이 끝나야 한다');
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-endgate-e'), 'ETOPS 게이트에 막힌 채 끝난 주문이 정산 없이 남았다');
+    assert.ok(s.backlog.some((o) => o.id === 'ord-endgate-n'), '같은 기종의 일반 주문까지 파기되면 안 된다');
+    assert.ok(s.log.some((l) => /ETOPS 미인증/.test(l.text)), '정산 사유가 기록으로 남아야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('ETOPS 게이트에 막힌 주문은 인도 지연 사건의 후보가 아니다', () => {
+  // 특별 근무로 기체를 뽑아도 인도가 안 되는 주문에 사건이 붙으면
+  // 돈만 쓰는 거짓 선택지가 된다.
+  const s = E.newGame(521);
+  s.cash = 60000;
+  assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'SLIPGATE').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.etopsCertified = false;
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'ord-slipgate', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+    qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+  });
+
+  const slip = Dec.DECISIONS.find((d) => d.id === 'delivery_slip');
+  assert.strictEqual(slip.weight(s), 0, 'ETOPS 대기 주문만 있는데 인도 지연 사건이 나왔다');
+
+  p.etopsCertified = true;
+  assert.ok(slip.weight(s) > 0, '게이트가 풀리면 사건 후보로 돌아와야 한다');
+});
+
+test('계약 파기의 관계 벌점은 수주가 벌어 준 관계보다 크다', () => {
+  // 응찰 +2 · 수주 +10 = +12 를 벌점이 못 지우면 "수주 → 파기" 반복이
+  // 위약금으로 관계를 사는 농사가 된다. 관계는 입찰 점수로 돌아오는 자산이다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const WIN_GAIN = 12;
+
+    // 정체 만료 경로
+    const s = E.newGame(523);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'REL').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.progress = 45;
+    p.share = 0;
+    p.lastProgressTurn = s.turn - 6;
+    s.backlog.push({
+      id: 'ord-rel', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s.turn - 6, depositRate: 0.15, pledge: 'standard',
+    });
+    s.relations.carta = 60;
+    E.endTurn(s);
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-rel'), '정체 주문이 무르지 않았다');
+    assert.ok(
+      s.relations.carta <= 60 - WIN_GAIN,
+      `만료 벌점(${60 - s.relations.carta})이 수주 이득(+${WIN_GAIN})보다 작으면 파기 농사가 관계를 산다`,
+    );
+
+    // 취소 파기 경로도 같은 원칙이다
+    const s2 = E.newGame(541);
+    s2.cash = 60000;
+    assert.ok(E.launchProgram(s2, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'REL2').ok);
+    const p2 = s2.programs[s2.programs.length - 1];
+    p2.progress = 45;
+    s2.backlog.push({
+      id: 'ord-rel2', airlineId: 'carta', airlineName: '카르타', programId: p2.id, programName: p2.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: s2.turn, depositRate: 0.15,
+    });
+    s2.relations.carta = 60;
+    assert.ok(E.cancelProgram(s2, p2.id).ok);
+    assert.ok(
+      s2.relations.carta <= 60 - WIN_GAIN,
+      `취소 파기 벌점(${60 - s2.relations.carta})도 수주 이득(+${WIN_GAIN})을 지워야 한다`,
+    );
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('마지막 분기에 인증된 기종의 주문도 종료 정산에 걸리고 종료 백로그가 맞다', () => {
+  // resolveBids 가 advanceDevelopment 보다 먼저 돌아, 마지막 분기에 인증
+  // 직전 기종이 수주 후 같은 정산에서 양산이 된다. 라인을 세울 기회가 없었으니
+  // 그 주문은 영영 인도되지 않는다 — 인도 능력(실적·재고·라인)이 전무한
+  // 양산 기종의 주문은 종료 시 위약으로 정산돼야 한다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(547);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'LASTCERT').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production'; // 방금 인증됐다 — 실적도 재고도 라인도 없다
+    p.certTurn = 79;
+    s.turn = 79;
+    s.backlog.push({
+      id: 'ord-lastcert', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 10, remaining: 10, unitPrice: 250, wonTurn: 79, depositRate: 0.15,
+    });
+
+    E.endTurn(s);
+    assert.ok(s.gameOver, '마지막 분기 정산 후에는 게임이 끝나야 한다');
+    assert.ok(!s.backlog.some((o) => o.id === 'ord-lastcert'), '인도 능력이 전무한 기종의 주문이 정산 없이 남았다');
+    assert.ok(s.log.some((l) => /기한 내 미인도/.test(l.text)), '정산 사유가 기록으로 남아야 한다');
+
+    // 종료 화면이 읽는 마지막 행의 백로그는 정산 후 상태여야 한다.
+    const row = s.history[s.history.length - 1];
+    assert.strictEqual(row.backlog, E.totalBacklog(s), '마지막 행 백로그가 정산 전 값을 물고 있다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('운항 정지 중에는 ETOPS 실적이 쌓이지 않고 사건 후보에서도 빠진다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(557);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'GROUND').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.etopsCertified = false;
+    p.etopsService = 0;
+    p.delivered = 12;
+    s.effects.grounded[p.id] = 2;
+
+    s.cash = 60000;
+    E.endTurn(s);
+    assert.ok(!(p.etopsService > 0), '세워 둔 분기가 ETOPS 실적으로 세어졌다');
+
+    // 정지가 풀리면 다시 쌓인다.
+    s.effects.grounded[p.id] = 0;
+    s.cash = 60000;
+    E.endTurn(s);
+    assert.ok(p.etopsService > 0, '정지가 풀렸는데 실적이 안 쌓인다');
+
+    // 정지 중인 기종의 주문은 인도 지연 사건 후보가 아니다.
+    s.backlog.length = 0;
+    s.backlog.push({
+      id: 'ord-ground', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+    });
+    p.etopsCertified = true;
+    const slip = savedDecisions.find((d) => d.id === 'delivery_slip');
+    s.effects.grounded[p.id] = 2;
+    assert.strictEqual(slip.weight(s), 0, '운항 정지 중인 주문에 특별 근무를 팔면 안 된다');
+    s.effects.grounded[p.id] = 0;
+    assert.ok(slip.weight(s) > 0, '정지가 풀리면 사건 후보로 돌아와야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('순자산 목표는 선주문 위약을 다 갚은 잔고로 채점된다', () => {
+  // 위약 정산이 목표 채점 뒤에 돌면, 실제로는 미달인 회사가 달성 보상금으로
+  // 위약을 메우는 순서 역전이 생긴다. 이사회는 다 갚고 남은 잔고를 본다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const build = () => {
+      const s = E.newGame(563);
+      s.cash = 60000;
+      assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'BOARD').ok);
+      const p = s.programs[s.programs.length - 1];
+      p.progress = 45;
+      s.turn = 79;
+      s.backlog.push({
+        id: 'ord-board', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+        qty: 100, remaining: 100, unitPrice: 250, wonTurn: 79, depositRate: 0.15,
+      });
+      return s;
+    };
+    const refund = Math.round(100 * 250 * 0.15 * 1.5);
+
+    // 같은 상태를 목표 없이 돌려 "위약까지 다 갚은 종료 순자산"을 먼저 잰다.
+    const probe = build();
+    E.endTurn(probe);
+    assert.ok(probe.log.some((l) => /기한 내 미취항/.test(l.text)), '표본 판에서 위약 정산이 안 일어났다');
+    const settledWorth = E.netWorth(probe);
+
+    // 목표를 "정산 전엔 달성, 정산 후엔 미달"인 값에 놓는다.
+    const s = build();
+    s.mandate = {
+      id: 'worth', name: '자산 성장', target: Math.round(settledWorth + refund / 2),
+      text: '순자산 목표', issuedTurn: 59, dueTurn: 79,
+    };
+    E.endTurn(s);
+    assert.ok(s.log.some((l) => /이사회 목표 미달/.test(l.text)), '위약을 갚기 전 장부로 목표가 달성 처리됐다');
+    assert.ok(!s.log.some((l) => /이사회 목표 달성/.test(l.text)), '달성과 미달이 동시에 기록됐다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

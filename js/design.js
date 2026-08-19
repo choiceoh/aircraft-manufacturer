@@ -62,6 +62,27 @@
     const range = clamp(spec.range, seg.range.min, seg.range.max);
     const tech = clamp(spec.tech, 0, 100);
 
+    // 파생형 판정을 경험 할인보다 먼저 한다 — 파생형은 경험 할인을 받지 않는다.
+    // 파생 배율(derivRates)이 "원형의 설계·인증을 물려받는 값"을 이미 전부 담고
+    // 있는데, 원형을 완성했다는 사실이 경험으로도 잡히므로 겹치면 이중 할인이다.
+    // 광고된 파생 비율보다 훨씬 싸지고, 싼 파생형이 경험을 또 낳는 복리가 돈다.
+    const derivative = isCompatibleDerivative(spec, range, tech);
+
+    // 조직 경험 — 완성해 본 프로그램이 많을수록 다음 **신규** 개발이 빠르고 작은
+    // 팀으로 된다. 767→777→787 이 그 계보다: 같은 회사가 다음 기체를 만들 때는
+    // 지난 개발의 베테랑들이 조직을 이끈다. 인력이 가장 큰 병목(광동체 7,300명 vs
+    // 시작 3,400명)이라 필요 인력 감소 폭을 기간보다 크게 잡았다 — 사다리를 오르는
+    // 회사가 채용만으로는 못 넘던 벽을 넘게 하는 것이 이 축의 존재 이유다.
+    const xp = derivative ? 0 : Math.max(0, spec.experience || 0);
+    const expEng = Math.max(0.5, Math.pow(0.86, xp));
+    const expTime = Math.max(0.55, Math.pow(0.9, xp));
+    // 비용 절감이 가장 가파르다. 개발비를 터뜨리는 건 재작업이고(787 이 그랬다),
+    // 재작업을 피하는 게 정확히 경험의 값이다. 광동체(실비용 ~22B)가 조달 가능
+    // 총액(부채+증자 ~17B)을 넘는 게 사다리의 마지막 벽이라, 여기가 세야
+    // "경험을 쌓고 도전하면 닿는다"가 실제로 성립한다.
+    const expCost = Math.max(0.55, Math.pow(0.88, xp));
+    const expRisk = Math.max(0.8, Math.pow(0.96, xp));
+
     // 엔진은 설계의 두 번째 축이다. spec.year(소수 연도)가 있으면 그 시점에 실제로
     // 살 수 있는 엔진으로 좁히고, 갓 나온 엔진이면 성숙도 위험이 얹힌다.
     const eng = Engines.resolve(seg.id, spec.engine, spec.year);
@@ -90,18 +111,24 @@
       eng.devMult *
       sec.devMult *
       wingP.devMult *
-      (1 + (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 0.16);
+      (1 + (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 0.16) *
+      expCost;
 
     let devQuarters =
-      seg.devQuarters * (1 + (tech / 100) * 0.35) * Math.pow(rangeRatio, 0.12) * fus.devTimeMult * wmat.devTimeMult * eng.timeMult;
+      seg.devQuarters *
+      (1 + (tech / 100) * 0.35) *
+      Math.pow(rangeRatio, 0.12) *
+      fus.devTimeMult *
+      wmat.devTimeMult *
+      eng.timeMult *
+      expTime;
 
-    let engineersNeeded = seg.engineersNeeded * Math.pow(seatRatio, 0.5) * (1 + (tech / 100) * 0.4);
+    let engineersNeeded = seg.engineersNeeded * Math.pow(seatRatio, 0.5) * (1 + (tech / 100) * 0.4) * expEng;
 
-    // 파생형: 기존 형식증명을 물려받아 개발비·기간이 크게 준다.
+    // 파생형: 기존 형식증명을 물려받아 개발비·기간이 크게 준다 (판정은 위에서).
     // 단, 원형의 형식증명을 실제로 재사용할 수 있는 변경일 때만 인정한다.
     // 딱지만 붙인 채 소재·기술·항속을 갈아엎으면 신규 설계를 34% 가격에 사는 셈이라
     // 개발비 제약 자체가 무너진다 (동일 설계 기준 $18.6B → $6.3B).
-    const derivative = isCompatibleDerivative(spec, range, tech);
     // 엔진을 갈아 끼운 파생형(재장착)은 형식증명은 물려받지만 개발비가 훨씬 크다.
     // A320neo·737 MAX 가 정확히 이 경우다 — 순수 동체 연장과 같은 값을 매기면 안 된다.
     // 원형 엔진을 알 수 없으면(엔진 개념이 없던 옛 설계안) 보수적으로 재장착으로 본다.
@@ -179,7 +206,7 @@
     // 개발 리스크: 기술을 밀어붙이고 복합재를 쓸수록 결함 확률이 오른다.
     // 엔진 신뢰성과 성숙도가 곱으로 얹힌다 — 신형 엔진 초도 채택이 실제로 위험한 이유.
     const defectRisk = clamp(
-      (0.05 + (tech / 100) * 0.22 + fus.riskBonus + wmat.riskBonus) * eng.riskMult * engMaturity,
+      (0.05 + (tech / 100) * 0.22 + fus.riskBonus + wmat.riskBonus) * eng.riskMult * engMaturity * expRisk,
       0.03,
       CONFIG.defectRiskMax,
     );
@@ -205,6 +232,10 @@
       // 위아래 모두 조인다. wingProfile 이 이미 5~99 로 자른 값에 보정을 더하는 구조라,
       // 상한을 안 걸면 그 계약이 우연한 여유(현재 98.55)로만 유지된다.
       fieldPerf: clamp(Math.round(wingP.field - (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 13), 5, 99),
+      // 화면이 "경험 덕에 얼마나 줄었나"를 보여줄 수 있게 적용치를 노출한다.
+      experience: Math.round(xp * 10) / 10,
+      expTimeCut: Math.round((1 - expTime) * 100),
+      expEngCut: Math.round((1 - expEng) * 100),
       fuelMargin: Math.round(fuelMargin),
       payloadRange: Airframe.payloadRange(range, wing, fuelMargin),
       // 성숙도 위험이 남아 있으면 UI가 경고할 수 있게 노출한다.
@@ -217,7 +248,11 @@
       unitCostBase: Math.round(unitCostBase * 10) / 10,
       listPrice: Math.round(listPrice * 10) / 10,
       defectRisk: Math.round(defectRisk * 1000) / 1000,
-      certQuarters: seg.certQuarters + (etops ? CONFIG.etopsCertQuarters : 0),
+      // 파생형은 개정 형식증명이라 심사도 짧다 — 737-300→800 이 다 그랬다.
+      // 신규와 같은 시간을 물리면 "패밀리로 빨리 늘린다"는 전략의 절반이 죽는다.
+      certQuarters:
+        Math.max(1, Math.round(seg.certQuarters * (derivative ? CONFIG.derivRates[reEngined ? (inFamily ? 'familyReEngined' : 'reEngined') : inFamily ? 'family' : 'plain'].time : 1))) +
+        (etops ? CONFIG.etopsCertQuarters : 0),
       family,
       etops,
       etopsUsable,
