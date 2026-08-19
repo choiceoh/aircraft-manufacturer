@@ -1048,13 +1048,14 @@
       // 아직 오지 않은 약속을 여기서 모두 닫는다. 그러지 않으면 종료 직전에 고른
       // 정부 지원금·낙관적 전망 같은 선택이 이득만 챙기고 대가를 영영 피한다.
       resolvePendingOutcomes(s, rng, { final: true });
-      // 60분기에 발령된 목표는 80분기가 기한이다. 여기서 닫지 않으면 완주한 판마다
-      // 마지막 5년치 성과가 보상·벌점 없이 사라진다.
-      settleMandate(s, rng, { final: true });
       // 못 지킨 선주문도 여기서 정산한다. 마지막 6분기 안에 딴 선주문은 정체
       // 만료가 오기 전에 판이 끝나므로, 이 정산이 없으면 종료 직전 종이 비행기
       // 응찰이 선수금과 평판만 챙기고 최종 점수를 부풀린다. 인증까지 못 간
       // 기종의 계약은 실제로도 제조사 귀책이다 — 위약 배수 그대로 문다.
+      //
+      // 이사회 목표(settleMandate)보다 **먼저** 문다 — 순자산 목표를 위약 정산
+      // 전 장부로 채점하면, 실제로는 미달인 회사가 달성 보상금으로 위약을 메우는
+      // 순서 역전이 생긴다. 이사회는 다 갚고 남은 잔고를 본다.
       for (const p of s.programs) {
         if (p.phase === 'dev' || p.phase === 'cert') {
           voidOrdersFor(s, p, '기한 내 미취항');
@@ -1079,7 +1080,10 @@
           voidOrderList(s, p, blocked, 'ETOPS 미인증');
         }
       }
-      // 위 둘이 만든 현금 이동은 이미 마감된 리포트에 없다. 마지막 분기 행에 얹어야
+      // 60분기에 발령된 목표는 80분기가 기한이다. 여기서 닫지 않으면 완주한 판마다
+      // 마지막 5년치 성과가 보상·벌점 없이 사라진다.
+      settleMandate(s, rng, { final: true });
+      // 위 정산들이 만든 현금 이동은 이미 마감된 리포트에 없다. 마지막 분기 행에 얹어야
       // 종료 화면의 현금·매출·순자산 곡선이 실제 잔고와 맞는다. 새 행을 만들면
       // 존재하지 않는 81번째 분기가 재무표에 뜬다.
       foldPendingIntoLastRow(s);
@@ -1381,6 +1385,9 @@
     for (const p of s.programs) {
       if (p.phase !== 'production' || !p.etops || p.etopsCertified) continue;
       if (!(p.delivered > 0 || p.stock > 0)) continue;
+      // 운항 정지 중에는 실적이 쌓이지 않는다 — 한 대도 못 뜨는 분기를
+      // 실적으로 세면 결함으로 세워 둔 기간이 인증 심사에 그대로 들어간다.
+      if ((s.effects.grounded[p.id] || 0) > 0) continue;
       p.etopsService = (p.etopsService || 0) + 1;
       if (p.etopsService >= ETOPS_SERVICE_QUARTERS) {
         p.etopsCertified = true;

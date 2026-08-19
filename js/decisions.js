@@ -62,6 +62,9 @@
     const p = s.programs.find((x) => x.id === order.programId);
     if (!p || p.phase !== 'production') return false;
     if (order.reqEtops && !p.etopsCertified) return false;
+    // 운항 정지 중인 기종도 마찬가지다 — 인도 게이트(runDeliveries)에 막혀 있는
+    // 주문에 특별 근무를 팔면 돈만 쓰는 거짓 선택지가 된다.
+    if (((s.effects && s.effects.grounded) || {})[p.id] > 0) return false;
     return true;
   }
 

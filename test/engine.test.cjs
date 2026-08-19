@@ -4946,3 +4946,91 @@ test('마지막 분기에 인증된 기종의 주문도 종료 정산에 걸리�
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+test('운항 정지 중에는 ETOPS 실적이 쌓이지 않고 사건 후보에서도 빠진다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(557);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60, etops: true }, 'GROUND').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.etopsCertified = false;
+    p.etopsService = 0;
+    p.delivered = 12;
+    s.effects.grounded[p.id] = 2;
+
+    s.cash = 60000;
+    E.endTurn(s);
+    assert.ok(!(p.etopsService > 0), '세워 둔 분기가 ETOPS 실적으로 세어졌다');
+
+    // 정지가 풀리면 다시 쌓인다.
+    s.effects.grounded[p.id] = 0;
+    s.cash = 60000;
+    E.endTurn(s);
+    assert.ok(p.etopsService > 0, '정지가 풀렸는데 실적이 안 쌓인다');
+
+    // 정지 중인 기종의 주문은 인도 지연 사건 후보가 아니다.
+    s.backlog.length = 0;
+    s.backlog.push({
+      id: 'ord-ground', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 6, remaining: 6, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+    });
+    p.etopsCertified = true;
+    const slip = savedDecisions.find((d) => d.id === 'delivery_slip');
+    s.effects.grounded[p.id] = 2;
+    assert.strictEqual(slip.weight(s), 0, '운항 정지 중인 주문에 특별 근무를 팔면 안 된다');
+    s.effects.grounded[p.id] = 0;
+    assert.ok(slip.weight(s) > 0, '정지가 풀리면 사건 후보로 돌아와야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('순자산 목표는 선주문 위약을 다 갚은 잔고로 채점된다', () => {
+  // 위약 정산이 목표 채점 뒤에 돌면, 실제로는 미달인 회사가 달성 보상금으로
+  // 위약을 메우는 순서 역전이 생긴다. 이사회는 다 갚고 남은 잔고를 본다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const build = () => {
+      const s = E.newGame(563);
+      s.cash = 60000;
+      assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'BOARD').ok);
+      const p = s.programs[s.programs.length - 1];
+      p.progress = 45;
+      s.turn = 79;
+      s.backlog.push({
+        id: 'ord-board', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+        qty: 100, remaining: 100, unitPrice: 250, wonTurn: 79, depositRate: 0.15,
+      });
+      return s;
+    };
+    const refund = Math.round(100 * 250 * 0.15 * 1.5);
+
+    // 같은 상태를 목표 없이 돌려 "위약까지 다 갚은 종료 순자산"을 먼저 잰다.
+    const probe = build();
+    E.endTurn(probe);
+    assert.ok(probe.log.some((l) => /기한 내 미취항/.test(l.text)), '표본 판에서 위약 정산이 안 일어났다');
+    const settledWorth = E.netWorth(probe);
+
+    // 목표를 "정산 전엔 달성, 정산 후엔 미달"인 값에 놓는다.
+    const s = build();
+    s.mandate = {
+      id: 'worth', name: '자산 성장', target: Math.round(settledWorth + refund / 2),
+      text: '순자산 목표', issuedTurn: 59, dueTurn: 79,
+    };
+    E.endTurn(s);
+    assert.ok(s.log.some((l) => /이사회 목표 미달/.test(l.text)), '위약을 갚기 전 장부로 목표가 달성 처리됐다');
+    assert.ok(!s.log.some((l) => /이사회 목표 달성/.test(l.text)), '달성과 미달이 동시에 기록됐다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
