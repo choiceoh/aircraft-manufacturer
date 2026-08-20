@@ -36,26 +36,34 @@
    * 핵심 고객(누적 60기+) 중 우리 양산 기종이 자기 대역에 맞는 항공사 — 수의계약
    * 사건의 전제다. 엔진의 loyaltyTier 와 같은 문턱을 쓴다(로드 순서상 여기서 직접 센다).
    */
+  /**
+   * 수의계약의 임무 적합 — 입찰(RFP)과 같은 기준. 제안 시점과 **수락 시점** 둘 다
+   * 이 함수를 지난다: 제안만 걸러 두면 이 검사가 없던 시절의 세이브에 열려 있는
+   * 사건이 검사 없이 수락되고, 제안과 수락 사이에 사정이 바뀌어도(운항 정지 등)
+   * 옛 조건으로 서명된다.
+   */
+  function loyalDealFit(a, p) {
+    if (!a || !p || p.phase !== 'production') return null;
+    const needEtops = a.rangeBand[0] >= ETOPS_RANGE_KM;
+    const ok =
+      p.segment === a.bias &&
+      p.seats >= a.seatBand[0] * 0.85 &&
+      p.seats <= a.seatBand[1] * 1.15 &&
+      p.range >= a.rangeBand[0] * 0.9 &&
+      (p.fieldPerf || 0) >= (FIELD_REQUIREMENT[a.field] || 0) &&
+      (!needEtops || p.etopsCertified);
+    return ok ? { needEtops } : null;
+  }
+
   function pickLoyalDeal(s) {
     for (const a of AIRLINES) {
       const fleet = (s.fleets && s.fleets[a.id]) || {};
       const units = Object.values(fleet).reduce((x, y) => x + y, 0);
       if (units < 60) continue;
-      // 수의계약도 그 항공사의 노선을 날 기체라야 한다 — 입찰(RFP)과 같은 임무
-      // 적합 기준을 쓴다. 이걸 빼면 카르타(초장거리·ETOPS)가 단거리 미인증
-      // 기체를 전화로 주문하는, 입찰로는 막혀 있는 뒷문이 열린다.
-      const needEtops = a.rangeBand[0] >= ETOPS_RANGE_KM;
-      const p = s.programs.find(
-        (x) =>
-          x.phase === 'production' &&
-          x.segment === a.bias &&
-          x.seats >= a.seatBand[0] * 0.85 &&
-          x.seats <= a.seatBand[1] * 1.15 &&
-          x.range >= a.rangeBand[0] * 0.9 &&
-          (x.fieldPerf || 0) >= (FIELD_REQUIREMENT[a.field] || 0) &&
-          (!needEtops || x.etopsCertified),
-      );
-      if (p) return { airline: a, program: p, needEtops };
+      // 수의계약도 그 항공사의 노선을 날 기체라야 한다 — 이걸 빼면 카르타(초장거리·
+      // ETOPS)가 단거리 미인증 기체를 전화로 주문하는, 입찰로는 막힌 뒷문이 열린다.
+      const p = s.programs.find((x) => loyalDealFit(a, x));
+      if (p) return { airline: a, program: p, needEtops: loyalDealFit(a, p).needEtops };
     }
     return null;
   }
@@ -311,7 +319,6 @@
         h.remember('airline', deal.airline.id);
         h.remember('airlineName', deal.airline.name);
         h.remember('program', deal.program.id);
-        h.remember('reqEtops', deal.needEtops);
         h.remember('qty', h.rng.int(6, 12));
         return `${deal.airline.name}이 입찰 없이 ${deal.program.name} ${h.recall('qty')}기 추가 도입을 타진해 왔다 — 오래 거래한 사이라 조건만 맞으면 바로 계약하겠다고 한다. 대신 단골값을 기대한다.`;
       },
@@ -323,10 +330,14 @@
           apply: (s, h) => {
             s.lastLoyalDealTurn = s.turn;
             const p = s.programs.find((x) => x.id === h.recall('program'));
-            if (!p || p.phase !== 'production') return '그 기종은 더 이상 계약할 수 없는 상태다.';
+            const a = AIRLINES.find((x) => x.id === h.recall('airline'));
+            // memo 를 믿지 않고 수락 시점에 다시 재검한다 — 검사가 없던 시절의
+            // 세이브에 열려 있던 사건이 옛 조건으로 서명되는 걸 막는다.
+            const fit = loyalDealFit(a, p);
+            if (!fit) return '그 기종은 이 항공사의 노선에 맞지 않아 계약이 무산됐다.';
             const qty = h.recall('qty', 8);
             const unitPrice = Math.round(p.listPrice * 0.92);
-            h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice, reqEtops: h.recall('reqEtops', false) });
+            h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice, reqEtops: fit.needEtops });
             h.relation(h.recall('airline'), 4);
             return `${h.recall('airlineName')}과 ${qty}기 수의계약 (대당 ${money(unitPrice)}). 오래된 거래가 또 한 장 쌓였다.`;
           },
@@ -338,11 +349,13 @@
           apply: (s, h) => {
             s.lastLoyalDealTurn = s.turn;
             const p = s.programs.find((x) => x.id === h.recall('program'));
-            if (!p || p.phase !== 'production') return '그 기종은 더 이상 계약할 수 없는 상태다.';
+            const a = AIRLINES.find((x) => x.id === h.recall('airline'));
+            const fit = loyalDealFit(a, p);
+            if (!fit) return '그 기종은 이 항공사의 노선에 맞지 않아 계약이 무산됐다.';
             if (h.rng.chance(0.55)) {
               const qty = h.recall('qty', 8);
               const unitPrice = p.listPrice;
-              h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice, reqEtops: h.recall('reqEtops', false) });
+              h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice, reqEtops: fit.needEtops });
               return `${h.recall('airlineName')}이 결국 정가에 서명했다 (대당 ${money(unitPrice)}).`;
             }
             h.relation(h.recall('airline'), -3);

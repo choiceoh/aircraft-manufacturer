@@ -5287,3 +5287,63 @@ test('첫 광동체의 순간은 처분이 소모하지 못하고 진짜 첫 인
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+test('옛 세이브에 열려 있던 수의계약도 수락 시점에 노선 적합을 재검한다', () => {
+  const s = E.newGame(661);
+  const unfit = {
+    id: 'pw-old', name: 'W-OLD', segment: 'wide', phase: 'production',
+    seats: 320, range: 8000, fieldPerf: 70, etopsCertified: false,
+    listPrice: 250, efficiency: 60, comfort: 55, delivered: 0, stock: 0, unitCostBase: 0, spent: 0,
+  };
+  s.programs.push(unfit);
+  s.fleets.carta = { 'pw-old': 70 };
+
+  // 검사가 없던 시절의 세이브 재현 — memo 에 reqEtops 가 없다.
+  const openDecision = () => {
+    s.decision = {
+      id: 'loyal_direct_order', name: '핵심 고객의 수의계약', turn: s.turn,
+      memo: { airline: 'carta', airlineName: '카르타 에어', program: 'pw-old', qty: 8 },
+      options: [],
+    };
+  };
+  openDecision();
+  const backlogBefore = s.backlog.length;
+  const r = E.decide(s, 'accept');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.backlog.length, backlogBefore, '노선에 안 맞는 옛 제안이 수락되면 안 된다');
+  assert.ok(/무산/.test(r.text), '무산 사유가 안내돼야 한다');
+
+  // 기체가 적합해지면 같은 옛 세이브도 서명되고, ETOPS 표식이 붙는다.
+  unfit.range = 13000;
+  unfit.etopsCertified = true;
+  openDecision();
+  const r2 = E.decide(s, 'accept');
+  assert.ok(r2.ok, r2.error);
+  const o = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(o.airlineId, 'carta');
+  assert.strictEqual(o.reqEtops, true, '초장거리 계약에는 ETOPS 표식이 붙어야 한다');
+});
+
+test('옛 달력의 진행 중 개량은 불러올 때 새 달력으로 맞춰진다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(673);
+    const p = s.programs[0];
+    const effBefore = p.efficiency;
+    // 옛 엔진에서 "이번 정산에 완성" 상태로 저장된 세이브 재현.
+    p.upgrades = { pip: { doneTurn: s.turn } };
+    E.ensureShape(s);
+    assert.strictEqual(p.upgrades.pip.doneTurn, s.turn + 1, '지난 doneTurn 이 다음 분기로 당겨져야 한다');
+
+    s.cash = 30000;
+    E.endTurn(s);
+    assert.ok(p.upgrades.pip.applied, '정규화된 개량이 그 정산에서 완성돼야 한다');
+    assert.strictEqual(p.efficiency, effBefore + E.UPGRADES.pip.eff, '성능이 붙어야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

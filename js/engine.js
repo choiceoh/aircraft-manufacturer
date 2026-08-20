@@ -417,6 +417,15 @@
       }
     }
 
+    // 옛 달력(정산 중 완성)으로 저장된 진행 중 개량 — 새 달력에서 doneTurn 은
+    // "적용 시작 분기"다. 이미 지난 doneTurn 을 다음 분기로 당겨 화면("1분기
+    // 남음")과 실제 적용 시점이 일치하게 한다. 완성 정산 자체는 같은 분기다.
+    for (const p of s.programs || []) {
+      for (const u of Object.values(p.upgrades || {})) {
+        if (!u.applied && typeof u.doneTurn === 'number' && u.doneTurn <= s.turn) u.doneTurn = s.turn + 1;
+      }
+    }
+
     // 드라마가 없던 세이브 — 남은 기간의 드라마를 새로 뽑지 않고 빈 채로 둔다.
     // 중간부터 지연을 얹으면 이미 취항한 기종이 갑자기 미취항으로 되돌아간다.
     if (!Array.isArray(s.rivalDrama)) s.rivalDrama = [];
