@@ -5256,3 +5256,34 @@ test('재고 처분도 마일스톤 문턱을 지난다', () => {
   assert.ok(s.milestones.some((m) => /TAIL 100호기/.test(m.text)), '처분으로 지난 100호기가 연표에 없다');
   assert.ok(!s.milestones.some((m) => /TAIL 1호기 인도식/.test(m.text)), '처분 데뷔에 인도식 문구를 쓰면 안 된다');
 });
+
+test('첫 광동체의 순간은 처분이 소모하지 못하고 진짜 첫 인도가 가져간다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(659);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'FIRSTW').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.stock = 3;
+
+    assert.ok(E.sellStock(s, p.id, 3).ok);
+    assert.ok(!s.stats.firstWideDone, '리스사 주기장행이 첫 광동체 인도로 기록되면 안 된다');
+    assert.ok(!s.milestones.some((m) => /첫 광동체 인도/.test(m.text)), '처분이 그 순간을 소모했다');
+
+    p.stock = 2;
+    s.backlog.push({
+      id: 'ord-firstw', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 2, remaining: 2, unitPrice: 250, wonTurn: s.turn,
+    });
+    E.endTurn(s);
+    assert.ok(s.stats.firstWideDone, '진짜 첫 고객 인도가 왔는데 깃발이 안 섰다');
+    assert.ok(s.milestones.some((m) => /첫 광동체 인도/.test(m.text)), '뒤늦게라도 그 순간이 축하돼야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

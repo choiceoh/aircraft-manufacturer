@@ -1780,10 +1780,14 @@
             : `${p.name} 1호기 인도식 — ${o.airlineName}이 런치 커스터머로 이름을 남겼다.`,
           1,
         );
-        if (p.segment === 'wide' && !s.stats.firstWideDone) {
-          s.stats.firstWideDone = true;
-          addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
-        }
+      }
+      // 첫 광동체는 "1호기"가 아니라 "첫 항공사 인도"의 순간이다. 처분이 이 순간을
+      // 소모하면 안 되고(리스사 주기장행은 대양 노선이 아니다), 처분으로 1호기가
+      // 먼저 나갔더라도 진짜 첫 고객 인도가 오면 그때 축하해야 한다 — 그래서
+      // progBefore 가 아니라 firstWideDone 깃발로 따로 센다.
+      if (p.segment === 'wide' && !s.stats.firstWideDone && !o.disposal) {
+        s.stats.firstWideDone = true;
+        addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
       }
       for (const m of PROGRAM_MILESTONES) {
         if (progBefore < m.at && p.delivered >= m.at) {
