@@ -959,8 +959,13 @@
     }
     const n = Math.min(qty, p.stock);
     const revenue = Math.round(n * p.listPrice * 0.68);
+    const progBefore = p.delivered;
+    const companyBefore = s.stats.delivered;
     p.stock -= n;
     p.delivered += n;
+    // 처분도 delivered 를 올리므로 마일스톤 문턱을 지난다. 여기서 안 세면
+    // 문턱이 조용히 넘어가고, 이후의 진짜 인도는 그 순간을 영영 되찾지 못한다.
+    recordDeliveryMilestones(s, p, { airlineName: '리스 시장', disposal: true }, progBefore, companyBefore);
     s.cash += revenue;
     s.stats.delivered += n;
     s.stats.revenue += revenue;
@@ -1087,6 +1092,9 @@
     };
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
 
+    // 개량 완성은 이 분기의 첫 사건이다. 뒤에 두면 화면이 "0분기 남음"이라
+    // 말한 분기의 입찰이 여전히 옛 연비로 나간다 — 광고와 게임이 어긋난다.
+    tickUpgrades(s, report);
     resolveBids(s, rng, report);
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
@@ -1095,7 +1103,6 @@
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
-    tickUpgrades(s, report);
     tickEtopsService(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
@@ -1768,7 +1775,13 @@
     if (n <= 0) return;
     if (!p.legacy) {
       if (progBefore === 0) {
-        addMilestone(s, `${p.name} 1호기 인도식 — ${o.airlineName}이 런치 커스터머로 이름을 남겼다.`, 1);
+        addMilestone(
+          s,
+          o.disposal
+            ? `${p.name} 1호기가 리스사 주기장으로 — 화려하진 않아도 데뷔는 데뷔다.`
+            : `${p.name} 1호기 인도식 — ${o.airlineName}이 런치 커스터머로 이름을 남겼다.`,
+          1,
+        );
         if (p.segment === 'wide' && !s.stats.firstWideDone) {
           s.stats.firstWideDone = true;
           addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
@@ -2779,7 +2792,7 @@
         s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, quarters);
       },
       /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
-      order: ({ airlineId, airlineName, program, qty, unitPrice }) => {
+      order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops }) => {
         const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
         s.cash += deposit;
         s.pending.revenue += deposit;
@@ -2795,6 +2808,8 @@
           remaining: qty,
           unitPrice,
           wonTurn: s.turn,
+          // 대양 노선 계약이면 인도 게이트가 지켜야 한다 — 입찰 주문과 같은 표식.
+          reqEtops: !!reqEtops,
         });
       },
     };

@@ -5066,18 +5066,21 @@ test('기체 개량 — 완성되면 성능·키트 매출·운용사 신뢰가 
     assert.ok(r.ok, r.error);
     assert.strictEqual(E.startUpgrade(s, p.id, 'pip').ok, false, '같은 개량이 중복되면 안 된다');
 
-    // doneTurn 은 "그 분기부터 적용"이다 — 화물형(freighterAt)과 같은 달력.
-    // 정산이 턴을 올리기 전에 돌므로 quarters+1 번째 정산에서 완성된다.
+    // doneTurn 은 "그 분기부터 적용"이다 — 완성은 doneTurn 분기 정산의 첫 사건이라
+    // 그 분기의 입찰부터 새 성능을 쓴다. 키트 매출은 완성 시점(직전 분기까지의
+    // 인도분)으로 계산되므로 마지막 정산 직전 값을 잡아 둔다.
     const spec = E.UPGRADES.pip;
-    for (let i = 0; i <= spec.quarters; i++) {
+    for (let i = 0; i < spec.quarters; i++) {
       E.endTurn(ctrl);
       E.endTurn(s);
     }
+    const deliveredAtTick = p.delivered;
+    E.endTurn(ctrl);
+    E.endTurn(s);
     assert.strictEqual(p.efficiency, effBefore + spec.eff, '완성 후 연비가 올라야 한다');
 
     // 현금 차이 = 키트 매출 − 개량비. (완성 분기까지는 성능이 같아 나머지 전개가 동일하다)
-    // 키트는 완성 시점의 인도 대수 기준이다 — 그 사이 승계 주문 인도분이 포함된다.
-    const kits = Math.round(p.delivered * p.listPrice * 0.012);
+    const kits = Math.round(deliveredAtTick * p.listPrice * 0.012);
     assert.strictEqual(Math.round(s.cash - ctrl.cash), kits - r.cost, '키트 매출과 개량비가 장부와 어긋난다');
     // 운용사(판아메르·한울) 신뢰 +2.
     assert.strictEqual(s.relations.panamer - ctrl.relations.panamer, 2, '운용사 신뢰가 올라야 한다');
@@ -5221,4 +5224,38 @@ test('마일스톤 — 1호기·100호기·누적 500기가 연표에 남고 승
     Data.EVENTS.push(...savedEvents);
     Dec.DECISIONS.push(...savedDecisions);
   }
+});
+
+test('수의계약도 그 항공사의 노선을 날 기체라야 한다', () => {
+  const s = E.newGame(647);
+  const d = Dec.DECISIONS.find((x) => x.id === 'loyal_direct_order');
+  // 카르타(12,000km+ · ETOPS)를 핵심 고객으로 만들고, 단거리·미인증 광동체만 준다.
+  s.lastLoyalDealTurn = undefined;
+  const unfit = {
+    id: 'pw-unfit', name: 'W-UNFIT', segment: 'wide', phase: 'production',
+    seats: 320, range: 8000, fieldPerf: 70, etopsCertified: false,
+    listPrice: 250, efficiency: 60, comfort: 55, delivered: 0, stock: 0, unitCostBase: 0, spent: 0,
+  };
+  s.programs.push(unfit);
+  s.fleets.carta = { 'pw-unfit': 70 };
+  s.fleets.panamer = {}; // 승계 핵심 고객을 치워 카르타만 남긴다
+  assert.strictEqual(d.weight(s), 0, '항속이 모자란 기체로 초장거리 수의계약이 서면 안 된다');
+
+  unfit.range = 13000;
+  assert.strictEqual(d.weight(s), 0, 'ETOPS 미인증인데 대양 노선 수의계약이 서면 안 된다');
+
+  unfit.etopsCertified = true;
+  assert.ok(d.weight(s) > 0, '임무에 맞는 기체면 수의계약이 열려야 한다');
+});
+
+test('재고 처분도 마일스톤 문턱을 지난다', () => {
+  const s = E.newGame(653);
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5500, tech: 45 }, 'TAIL').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.delivered = 98;
+  p.stock = 5;
+  assert.ok(E.sellStock(s, p.id, 5).ok);
+  assert.ok(s.milestones.some((m) => /TAIL 100호기/.test(m.text)), '처분으로 지난 100호기가 연표에 없다');
+  assert.ok(!s.milestones.some((m) => /TAIL 1호기 인도식/.test(m.text)), '처분 데뷔에 인도식 문구를 쓰면 안 된다');
 });

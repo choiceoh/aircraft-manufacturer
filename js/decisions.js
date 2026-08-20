@@ -18,7 +18,7 @@
 (function (root) {
   'use strict';
 
-  const { AIRLINES, CONFIG, SEGMENTS } = root.AirlinerData;
+  const { AIRLINES, CONFIG, SEGMENTS, FIELD_REQUIREMENT, ETOPS_RANGE_KM } = root.AirlinerData;
   const Fleet = root.AirlinerFleet;
 
   const money = (m) => {
@@ -41,14 +41,21 @@
       const fleet = (s.fleets && s.fleets[a.id]) || {};
       const units = Object.values(fleet).reduce((x, y) => x + y, 0);
       if (units < 60) continue;
+      // 수의계약도 그 항공사의 노선을 날 기체라야 한다 — 입찰(RFP)과 같은 임무
+      // 적합 기준을 쓴다. 이걸 빼면 카르타(초장거리·ETOPS)가 단거리 미인증
+      // 기체를 전화로 주문하는, 입찰로는 막혀 있는 뒷문이 열린다.
+      const needEtops = a.rangeBand[0] >= ETOPS_RANGE_KM;
       const p = s.programs.find(
         (x) =>
           x.phase === 'production' &&
           x.segment === a.bias &&
           x.seats >= a.seatBand[0] * 0.85 &&
-          x.seats <= a.seatBand[1] * 1.15,
+          x.seats <= a.seatBand[1] * 1.15 &&
+          x.range >= a.rangeBand[0] * 0.9 &&
+          (x.fieldPerf || 0) >= (FIELD_REQUIREMENT[a.field] || 0) &&
+          (!needEtops || x.etopsCertified),
       );
-      if (p) return { airline: a, program: p };
+      if (p) return { airline: a, program: p, needEtops };
     }
     return null;
   }
@@ -304,6 +311,7 @@
         h.remember('airline', deal.airline.id);
         h.remember('airlineName', deal.airline.name);
         h.remember('program', deal.program.id);
+        h.remember('reqEtops', deal.needEtops);
         h.remember('qty', h.rng.int(6, 12));
         return `${deal.airline.name}이 입찰 없이 ${deal.program.name} ${h.recall('qty')}기 추가 도입을 타진해 왔다 — 오래 거래한 사이라 조건만 맞으면 바로 계약하겠다고 한다. 대신 단골값을 기대한다.`;
       },
@@ -318,7 +326,7 @@
             if (!p || p.phase !== 'production') return '그 기종은 더 이상 계약할 수 없는 상태다.';
             const qty = h.recall('qty', 8);
             const unitPrice = Math.round(p.listPrice * 0.92);
-            h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice });
+            h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice, reqEtops: h.recall('reqEtops', false) });
             h.relation(h.recall('airline'), 4);
             return `${h.recall('airlineName')}과 ${qty}기 수의계약 (대당 ${money(unitPrice)}). 오래된 거래가 또 한 장 쌓였다.`;
           },
@@ -333,9 +341,9 @@
             if (!p || p.phase !== 'production') return '그 기종은 더 이상 계약할 수 없는 상태다.';
             if (h.rng.chance(0.55)) {
               const qty = h.recall('qty', 8);
-              const unitPrice = Math.round(p.listPrice * 0.98);
-              h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice });
-              return `${h.recall('airlineName')}이 결국 정가에 가깝게 서명했다 (대당 ${money(unitPrice)}).`;
+              const unitPrice = p.listPrice;
+              h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice, reqEtops: h.recall('reqEtops', false) });
+              return `${h.recall('airlineName')}이 결국 정가에 서명했다 (대당 ${money(unitPrice)}).`;
             }
             h.relation(h.recall('airline'), -3);
             return `${h.recall('airlineName')}이 제안을 거둬들였다 — "단골한테 이러기냐"는 말이 남았다.`;
