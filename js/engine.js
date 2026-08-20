@@ -417,6 +417,15 @@
       }
     }
 
+    // 옛 달력(정산 중 완성)으로 저장된 진행 중 개량 — 새 달력에서 doneTurn 은
+    // "적용 시작 분기"다. 이미 지난 doneTurn 을 다음 분기로 당겨 화면("1분기
+    // 남음")과 실제 적용 시점이 일치하게 한다. 완성 정산 자체는 같은 분기다.
+    for (const p of s.programs || []) {
+      for (const u of Object.values(p.upgrades || {})) {
+        if (!u.applied && typeof u.doneTurn === 'number' && u.doneTurn <= s.turn) u.doneTurn = s.turn + 1;
+      }
+    }
+
     // 드라마가 없던 세이브 — 남은 기간의 드라마를 새로 뽑지 않고 빈 채로 둔다.
     // 중간부터 지연을 얹으면 이미 취항한 기종이 갑자기 미취항으로 되돌아간다.
     if (!Array.isArray(s.rivalDrama)) s.rivalDrama = [];
@@ -959,8 +968,13 @@
     }
     const n = Math.min(qty, p.stock);
     const revenue = Math.round(n * p.listPrice * 0.68);
+    const progBefore = p.delivered;
+    const companyBefore = s.stats.delivered;
     p.stock -= n;
     p.delivered += n;
+    // 처분도 delivered 를 올리므로 마일스톤 문턱을 지난다. 여기서 안 세면
+    // 문턱이 조용히 넘어가고, 이후의 진짜 인도는 그 순간을 영영 되찾지 못한다.
+    recordDeliveryMilestones(s, p, { airlineName: '리스 시장', disposal: true }, progBefore, companyBefore);
     s.cash += revenue;
     s.stats.delivered += n;
     s.stats.revenue += revenue;
@@ -1768,11 +1782,21 @@
     if (n <= 0) return;
     if (!p.legacy) {
       if (progBefore === 0) {
-        addMilestone(s, `${p.name} 1호기 인도식 — ${o.airlineName}이 런치 커스터머로 이름을 남겼다.`, 1);
-        if (p.segment === 'wide' && !s.stats.firstWideDone) {
-          s.stats.firstWideDone = true;
-          addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
-        }
+        addMilestone(
+          s,
+          o.disposal
+            ? `${p.name} 1호기가 리스사 주기장으로 — 화려하진 않아도 데뷔는 데뷔다.`
+            : `${p.name} 1호기 인도식 — ${o.airlineName}이 런치 커스터머로 이름을 남겼다.`,
+          1,
+        );
+      }
+      // 첫 광동체는 "1호기"가 아니라 "첫 항공사 인도"의 순간이다. 처분이 이 순간을
+      // 소모하면 안 되고(리스사 주기장행은 대양 노선이 아니다), 처분으로 1호기가
+      // 먼저 나갔더라도 진짜 첫 고객 인도가 오면 그때 축하해야 한다 — 그래서
+      // progBefore 가 아니라 firstWideDone 깃발로 따로 센다.
+      if (p.segment === 'wide' && !s.stats.firstWideDone && !o.disposal) {
+        s.stats.firstWideDone = true;
+        addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
       }
       for (const m of PROGRAM_MILESTONES) {
         if (progBefore < m.at && p.delivered >= m.at) {
@@ -2378,7 +2402,12 @@
     for (const p of s.programs) {
       if (!p.upgrades) continue;
       for (const [kind, u] of Object.entries(p.upgrades)) {
-        if (u.applied || s.turn < u.doneTurn) continue;
+        // doneTurn 은 "이 분기부터 적용"이다. 적용은 그 직전 분기 정산의 끝 —
+        // 입찰 판정(resolveBids) **뒤** — 에서 일어난다. 판정 전에 적용하면 화면이
+        // 보여 준 점수와 판정 점수가 갈라지고(분기 시작 상태로 채점한다는 불변식
+        // 위반), 판정 후 적용하면서 doneTurn 을 한 분기 뒤로 두면 "0분기 남음"
+        // 인데 효과가 없는 분기가 생긴다. 이 배치가 둘 다 지키는 유일한 자리다.
+        if (u.applied || s.turn < u.doneTurn - 1) continue;
         const spec = UPGRADES[kind];
         if (!spec) continue;
         u.applied = true;
@@ -2779,7 +2808,7 @@
         s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, quarters);
       },
       /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
-      order: ({ airlineId, airlineName, program, qty, unitPrice }) => {
+      order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops }) => {
         const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
         s.cash += deposit;
         s.pending.revenue += deposit;
@@ -2795,6 +2824,8 @@
           remaining: qty,
           unitPrice,
           wonTurn: s.turn,
+          // 대양 노선 계약이면 인도 게이트가 지켜야 한다 — 입찰 주문과 같은 표식.
+          reqEtops: !!reqEtops,
         });
       },
     };

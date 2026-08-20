@@ -5066,17 +5066,17 @@ test('기체 개량 — 완성되면 성능·키트 매출·운용사 신뢰가 
     assert.ok(r.ok, r.error);
     assert.strictEqual(E.startUpgrade(s, p.id, 'pip').ok, false, '같은 개량이 중복되면 안 된다');
 
-    // doneTurn 은 "그 분기부터 적용"이다 — 화물형(freighterAt)과 같은 달력.
-    // 정산이 턴을 올리기 전에 돌므로 quarters+1 번째 정산에서 완성된다.
+    // doneTurn 은 "그 분기부터 적용"이다 — 완성은 직전 분기 정산의 끝(입찰 판정
+    // 뒤)에서 일어나, quarters 번째 정산에서 성능이 붙고 다음 분기 입찰부터 쓴다.
     const spec = E.UPGRADES.pip;
-    for (let i = 0; i <= spec.quarters; i++) {
+    for (let i = 0; i < spec.quarters; i++) {
       E.endTurn(ctrl);
       E.endTurn(s);
     }
     assert.strictEqual(p.efficiency, effBefore + spec.eff, '완성 후 연비가 올라야 한다');
 
     // 현금 차이 = 키트 매출 − 개량비. (완성 분기까지는 성능이 같아 나머지 전개가 동일하다)
-    // 키트는 완성 시점의 인도 대수 기준이다 — 그 사이 승계 주문 인도분이 포함된다.
+    // 완성 정산의 인도가 tick 보다 먼저이므로, 루프 종료 시점 delivered 가 곧 키트 기준이다.
     const kits = Math.round(p.delivered * p.listPrice * 0.012);
     assert.strictEqual(Math.round(s.cash - ctrl.cash), kits - r.cost, '키트 매출과 개량비가 장부와 어긋난다');
     // 운용사(판아메르·한울) 신뢰 +2.
@@ -5217,6 +5217,131 @@ test('마일스톤 — 1호기·100호기·누적 500기가 연표에 남고 승
     E.endTurn(s);
     assert.ok(s.milestones.some((m) => /MILE 100호기/.test(m.text)), '100호기 라인오프가 남아야 한다');
     assert.ok(s.milestones.some((m) => /누적 인도 500기/.test(m.text)), '회사 누적 마일스톤이 남아야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('수의계약도 그 항공사의 노선을 날 기체라야 한다', () => {
+  const s = E.newGame(647);
+  const d = Dec.DECISIONS.find((x) => x.id === 'loyal_direct_order');
+  // 카르타(12,000km+ · ETOPS)를 핵심 고객으로 만들고, 단거리·미인증 광동체만 준다.
+  s.lastLoyalDealTurn = undefined;
+  const unfit = {
+    id: 'pw-unfit', name: 'W-UNFIT', segment: 'wide', phase: 'production',
+    seats: 320, range: 8000, fieldPerf: 70, etopsCertified: false,
+    listPrice: 250, efficiency: 60, comfort: 55, delivered: 0, stock: 0, unitCostBase: 0, spent: 0,
+  };
+  s.programs.push(unfit);
+  s.fleets.carta = { 'pw-unfit': 70 };
+  s.fleets.panamer = {}; // 승계 핵심 고객을 치워 카르타만 남긴다
+  assert.strictEqual(d.weight(s), 0, '항속이 모자란 기체로 초장거리 수의계약이 서면 안 된다');
+
+  unfit.range = 13000;
+  assert.strictEqual(d.weight(s), 0, 'ETOPS 미인증인데 대양 노선 수의계약이 서면 안 된다');
+
+  unfit.etopsCertified = true;
+  assert.ok(d.weight(s) > 0, '임무에 맞는 기체면 수의계약이 열려야 한다');
+});
+
+test('재고 처분도 마일스톤 문턱을 지난다', () => {
+  const s = E.newGame(653);
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5500, tech: 45 }, 'TAIL').ok);
+  const p = s.programs[s.programs.length - 1];
+  p.phase = 'production';
+  p.delivered = 98;
+  p.stock = 5;
+  assert.ok(E.sellStock(s, p.id, 5).ok);
+  assert.ok(s.milestones.some((m) => /TAIL 100호기/.test(m.text)), '처분으로 지난 100호기가 연표에 없다');
+  assert.ok(!s.milestones.some((m) => /TAIL 1호기 인도식/.test(m.text)), '처분 데뷔에 인도식 문구를 쓰면 안 된다');
+});
+
+test('첫 광동체의 순간은 처분이 소모하지 못하고 진짜 첫 인도가 가져간다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(659);
+    s.cash = 60000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 45, wing: 60 }, 'FIRSTW').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.stock = 3;
+
+    assert.ok(E.sellStock(s, p.id, 3).ok);
+    assert.ok(!s.stats.firstWideDone, '리스사 주기장행이 첫 광동체 인도로 기록되면 안 된다');
+    assert.ok(!s.milestones.some((m) => /첫 광동체 인도/.test(m.text)), '처분이 그 순간을 소모했다');
+
+    p.stock = 2;
+    s.backlog.push({
+      id: 'ord-firstw', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 2, remaining: 2, unitPrice: 250, wonTurn: s.turn,
+    });
+    E.endTurn(s);
+    assert.ok(s.stats.firstWideDone, '진짜 첫 고객 인도가 왔는데 깃발이 안 섰다');
+    assert.ok(s.milestones.some((m) => /첫 광동체 인도/.test(m.text)), '뒤늦게라도 그 순간이 축하돼야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('옛 세이브에 열려 있던 수의계약도 수락 시점에 노선 적합을 재검한다', () => {
+  const s = E.newGame(661);
+  const unfit = {
+    id: 'pw-old', name: 'W-OLD', segment: 'wide', phase: 'production',
+    seats: 320, range: 8000, fieldPerf: 70, etopsCertified: false,
+    listPrice: 250, efficiency: 60, comfort: 55, delivered: 0, stock: 0, unitCostBase: 0, spent: 0,
+  };
+  s.programs.push(unfit);
+  s.fleets.carta = { 'pw-old': 70 };
+
+  // 검사가 없던 시절의 세이브 재현 — memo 에 reqEtops 가 없다.
+  const openDecision = () => {
+    s.decision = {
+      id: 'loyal_direct_order', name: '핵심 고객의 수의계약', turn: s.turn,
+      memo: { airline: 'carta', airlineName: '카르타 에어', program: 'pw-old', qty: 8 },
+      options: [],
+    };
+  };
+  openDecision();
+  const backlogBefore = s.backlog.length;
+  const r = E.decide(s, 'accept');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.backlog.length, backlogBefore, '노선에 안 맞는 옛 제안이 수락되면 안 된다');
+  assert.ok(/무산/.test(r.text), '무산 사유가 안내돼야 한다');
+
+  // 기체가 적합해지면 같은 옛 세이브도 서명되고, ETOPS 표식이 붙는다.
+  unfit.range = 13000;
+  unfit.etopsCertified = true;
+  openDecision();
+  const r2 = E.decide(s, 'accept');
+  assert.ok(r2.ok, r2.error);
+  const o = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(o.airlineId, 'carta');
+  assert.strictEqual(o.reqEtops, true, '초장거리 계약에는 ETOPS 표식이 붙어야 한다');
+});
+
+test('옛 달력의 진행 중 개량은 불러올 때 새 달력으로 맞춰진다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(673);
+    const p = s.programs[0];
+    const effBefore = p.efficiency;
+    // 옛 엔진에서 "이번 정산에 완성" 상태로 저장된 세이브 재현.
+    p.upgrades = { pip: { doneTurn: s.turn } };
+    E.ensureShape(s);
+    assert.strictEqual(p.upgrades.pip.doneTurn, s.turn + 1, '지난 doneTurn 이 다음 분기로 당겨져야 한다');
+
+    s.cash = 30000;
+    E.endTurn(s);
+    assert.ok(p.upgrades.pip.applied, '정규화된 개량이 그 정산에서 완성돼야 한다');
+    assert.strictEqual(p.efficiency, effBefore + E.UPGRADES.pip.eff, '성능이 붙어야 한다');
   } finally {
     Data.EVENTS.push(...savedEvents);
     Dec.DECISIONS.push(...savedDecisions);

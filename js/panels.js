@@ -702,7 +702,11 @@
           .map(([kind, u]) => {
             const st = p.upgrades && p.upgrades[kind];
             if (st && st.applied) return `<span class="tag good">${esc(u.name)} 완료</span>`;
-            if (st) return `<span class="tag">${esc(u.name)} 진행 중 · ${Math.max(0, st.doneTurn - s.turn)}분기 남음</span>`;
+            if (st) {
+              // doneTurn 분기가 오면 이미 applied 라 이 분기엔 항상 left ≥ 1 이다.
+              const left = Math.max(1, st.doneTurn - s.turn);
+              return `<span class="tag">${esc(u.name)} 진행 중 · ${left}분기 남음</span>`;
+            }
             const cost = Math.round(p.devCost * u.costRate);
             return `<button data-action="upgrade" data-id="${p.id}" data-kind="${kind}" ${s.cash >= cost ? '' : 'disabled'}
                 title="${esc(u.desc)}">${esc(u.name)} · ${money(cost)}</button>`;
