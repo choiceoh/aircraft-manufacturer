@@ -15,6 +15,10 @@
 
   const SEGMENT_IDS = Object.keys(SEGMENTS);
 
+  function airlineOf(id) {
+    return AIRLINES.find((a) => a.id === id) || {};
+  }
+
   /**
    * 경쟁사 응찰 우위. 카탈로그 점수는 "기종의 실력"일 뿐이고, 실제 수주전에서
    * 기존 기종은 개발비를 이미 회수했기 때문에 가격 공세 여지가 크다 — 그만큼 문턱을 올린다.
@@ -451,7 +455,9 @@
       // 공통성은 가중치 항목이 아니라 가산점이다. 가중합에 넣으면 분모(wsum)가 커져
       // "우리 기체가 없는 항공사" 점수가 일괄로 깎이는데, 그건 신규 계정을 뚫는 걸
       // 더 어렵게 만들 뿐 공통성의 취지(기존 계정이 유리하다)와 반대다.
-      commonality * COMMONALITY_BONUS;
+      // 단일 기종 독트린(버텍스 같은 저비용사)은 공통성을 남들보다 크게 쳐 준다 —
+      // 그 항공사를 한 번 뚫으면 이후 수주전이 실제로 더 기운다.
+      commonality * COMMONALITY_BONUS * (airlineOf(rfp.airlineId).commonalityMult || 1);
 
     // 입찰 조건도 가산점이다. 항공사가 원하는 건 기체만이 아니라 **언제 받고 어떻게
     // 치르느냐**이기도 하다. 조건은 공짜가 아니라 라인 여력과 현금흐름을 담보로 잡는다.
@@ -515,7 +521,8 @@
    */
   function bestOffering(state, segmentId, reqSeats, reqRange) {
     const year = Fleet.yearAt(state.turn, CONFIG.startYear);
-    const pool = Fleet.availableTypes(segmentId, year);
+    // 이 판의 개발 지연을 얹은 달력으로 본다 — 밀린 기종은 밀린 날부터 문턱이 된다.
+    const pool = Fleet.availableTypes(segmentId, year, state.rivalDelays);
 
     let best = null;
     for (const c of state.competitors) {
@@ -524,7 +531,10 @@
       const drift = ((c.drift && c.drift[segmentId]) || 0) + ((c.reaction && c.reaction[segmentId]) || 0);
       for (const type of pool) {
         if (type.maker !== c.id) continue;
-        const score = Fleet.typeScore(type, state.market.fuelIndex, reqSeats, reqRange) + drift;
+        // 초기 결함 파동 중인 기종은 그 기간만큼 약하다 — 항공사가 세워 둔 기종을
+        // 제값에 사 주지 않는다. 파동이 지나면 원래 실력으로 돌아온다.
+        const crisis = (state.rivalCrises && state.rivalCrises[type.id] && state.rivalCrises[type.id].amount) || 0;
+        const score = Fleet.typeScore(type, state.market.fuelIndex, reqSeats, reqRange) + drift - crisis;
         if (!best || score > best.score) best = { maker: c, type, score };
       }
     }

@@ -5034,3 +5034,191 @@ test('순자산 목표는 선주문 위약을 다 갚은 잔고로 채점된다'
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+// ─────────────────────────────── 컨텐츠 확장 — 개량·드라마·단골·마일스톤 ───────────────────────────────
+
+test('기체 개량 — 완성되면 성능·키트 매출·운용사 신뢰가 함께 온다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const make = () => {
+      const s = E.newGame(601);
+      s.cash = 20000;
+      return s;
+    };
+    const ctrl = make();
+    const s = make();
+    const p = s.programs[0]; // 승계 DN-150 — 양산 · 인도 186기
+    assert.strictEqual(p.phase, 'production');
+
+    // 자격 규칙: 개발 중 기종 불가, 같은 개량 중복 불가.
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5500, tech: 45 }, 'DEV-X').ok);
+    const dev = s.programs[s.programs.length - 1];
+    assert.strictEqual(E.startUpgrade(s, dev.id, 'pip').ok, false, '개발 중 기종이 개량되면 안 된다');
+    // 대조군과 상태를 맞춘다 — 착수금 지출을 양쪽 모두에.
+    assert.ok(E.launchProgram(ctrl, { segment: 'narrow', seats: 170, range: 5500, tech: 45 }, 'DEV-X').ok);
+
+    const effBefore = p.efficiency;
+    const relBefore = { ...s.relations };
+    const r = E.startUpgrade(s, p.id, 'pip');
+    assert.ok(r.ok, r.error);
+    assert.strictEqual(E.startUpgrade(s, p.id, 'pip').ok, false, '같은 개량이 중복되면 안 된다');
+
+    // doneTurn 은 "그 분기부터 적용"이다 — 화물형(freighterAt)과 같은 달력.
+    // 정산이 턴을 올리기 전에 돌므로 quarters+1 번째 정산에서 완성된다.
+    const spec = E.UPGRADES.pip;
+    for (let i = 0; i <= spec.quarters; i++) {
+      E.endTurn(ctrl);
+      E.endTurn(s);
+    }
+    assert.strictEqual(p.efficiency, effBefore + spec.eff, '완성 후 연비가 올라야 한다');
+
+    // 현금 차이 = 키트 매출 − 개량비. (완성 분기까지는 성능이 같아 나머지 전개가 동일하다)
+    // 키트는 완성 시점의 인도 대수 기준이다 — 그 사이 승계 주문 인도분이 포함된다.
+    const kits = Math.round(p.delivered * p.listPrice * 0.012);
+    assert.strictEqual(Math.round(s.cash - ctrl.cash), kits - r.cost, '키트 매출과 개량비가 장부와 어긋난다');
+    // 운용사(판아메르·한울) 신뢰 +2.
+    assert.strictEqual(s.relations.panamer - ctrl.relations.panamer, 2, '운용사 신뢰가 올라야 한다');
+    assert.strictEqual(s.relations.carta, ctrl.relations.carta, '운용사가 아닌 항공사는 그대로여야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('경쟁사 드라마 — 시드에 결정적이고, 지연은 취항 문턱을 실제로 늦춘다', () => {
+  const a = E.newGame(607);
+  const b = E.newGame(607);
+  assert.deepStrictEqual(a.rivalDrama, b.rivalDrama, '같은 시드는 같은 드라마여야 한다');
+  assert.deepStrictEqual(a.rivalDelays, b.rivalDelays, '같은 시드는 같은 지연이어야 한다');
+  assert.ok(a.rivalDrama.some((ev) => ev.kind === 'announce'), '발표 예고가 있어야 한다');
+
+  // 지연은 조회 시점의 달력을 민다 — 787-8(2011.75)을 5년 미루면 2012년에 없다.
+  const year2012 = 2012.5;
+  const without = F.availableTypes('wide', year2012).some((t) => t.id === 'b787-8');
+  const withDelay = F.availableTypes('wide', year2012, { 'b787-8': 20 }).some((t) => t.id === 'b787-8');
+  assert.ok(without, '지연 없이는 2012년에 787-8 이 팔리고 있어야 한다');
+  assert.ok(!withDelay, '5년 지연이면 2012년에 787-8 이 없어야 한다');
+});
+
+test('결함 파동 — 그 기종의 제안이 약해지고 기간이 끝나면 회복된다', () => {
+  const s = E.newGame(613);
+  s.turn = 60; // 2013년 — 787-8 취항 후
+  const before = B.bestOffering(s, 'wide', 290, 13000);
+  assert.ok(before, '광동체 제안이 있어야 한다');
+
+  s.rivalCrises = { [before.type.id]: { left: 4, amount: 50 } };
+  const during = B.bestOffering(s, 'wide', 290, 13000);
+  assert.ok(
+    during.type.id !== before.type.id || during.score < before.score,
+    '파동 중에는 그 기종이 최선의 제안에서 밀리거나 약해져야 한다',
+  );
+
+  // 만료 tick — rollMarketNews 가 도는 endTurn 을 4번 돌리면 회복된다.
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    for (let i = 0; i < 4; i++) {
+      s.cash = 30000;
+      E.endTurn(s);
+    }
+    assert.ok(!s.rivalCrises[before.type.id], '파동은 광고한 기간이 지나면 걷혀야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('단골 등급 — 판아메르는 시작부터 핵심 고객이고 전속 정비가 값을 한다', () => {
+  const s = E.newGame(617);
+  assert.strictEqual(E.loyaltyTier(s, 'panamer'), 2, '승계 선단 62기 — 핵심 고객이어야 한다');
+  assert.strictEqual(E.loyaltyTier(s, 'hanul'), 1, '승계 선단 48기 — 단골이어야 한다');
+  assert.strictEqual(E.loyaltyTier(s, 'carta'), 0, '거래 없는 항공사는 등급이 없어야 한다');
+
+  // 전속 정비: 핵심 고객 선단 62기 × 협동체 단가 × 25% 가 애프터마켓에 얹힌다.
+  const per = Data.AFTERMARKET_PER_UNIT;
+  const expected = 186 * per + 62 * per * 0.15;
+  assert.ok(Math.abs(E.serviceIncome(s).aftermarket - expected) < 0.01, '핵심 고객 전속 정비 가산이 빠졌다');
+});
+
+test('수의계약 — 핵심 고객이 입찰 없이 발주한다', () => {
+  const s = E.newGame(619);
+  const d = Dec.DECISIONS.find((x) => x.id === 'loyal_direct_order');
+  assert.ok(d, '수의계약 사건이 있어야 한다');
+  assert.ok(d.weight(s) > 0, '판아메르(핵심)와 DN-150(대역 적합)이 있는데 사건이 잠겨 있다');
+
+  const memo = {};
+  const h = { rng: R.createRng(3), remember: (k, v) => ((memo[k] = v), v), recall: (k, f) => (memo[k] === undefined ? f : memo[k]) };
+  d.text(s, h);
+  s.decision = { id: 'loyal_direct_order', name: d.name, memo, turn: s.turn, options: [] };
+
+  const backlogBefore = s.backlog.length;
+  const cashBefore = s.cash;
+  const relBefore = s.relations.panamer;
+  const r = E.decide(s, 'accept');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.backlog.length, backlogBefore + 1, '수의계약 주문이 백로그에 서야 한다');
+  const o = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(o.airlineId, 'panamer');
+  assert.ok(s.cash > cashBefore, '선수금이 즉시 들어와야 한다');
+  assert.strictEqual(s.relations.panamer - relBefore, 4, '단골값의 보상은 관계다');
+});
+
+test('버텍스의 단일 기종 독트린 — 공통성 가산이 남들보다 크다', () => {
+  const s = E.newGame(631);
+  const prog = { id: 'px', segment: 'narrow', seats: 220, range: 4200, listPrice: 120, efficiency: 62, comfort: 50, wing: 40, phase: 'production' };
+  s.fleets.vertex = { px: 25 };
+  s.fleets.hanul = { px: 25 };
+  s.relations.vertex = 50;
+  s.relations.hanul = 50;
+
+  const mk = (airlineId) => ({
+    id: 'r-' + airlineId, airlineId, airlineName: airlineId, segment: 'narrow',
+    reqSeats: 215, reqRange: 4000, reqField: 0, reqEtops: false, qty: 20,
+    priceSensitivity: 1, prestige: 1,
+  });
+  const v = B.scoreBid(s, mk('vertex'), prog, 0.1).total;
+  const hnl = B.scoreBid(s, mk('hanul'), prog, 0.1).total;
+  assert.ok(v > hnl, `같은 조건이면 단일 기종 독트린 쪽 공통성이 커야 한다 (${v} vs ${hnl})`);
+});
+
+test('마일스톤 — 1호기·100호기·누적 500기가 연표에 남고 승계 기종은 제외된다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(641);
+    s.cash = 50000;
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5500, tech: 45 }, 'MILE').ok);
+    const p = s.programs[s.programs.length - 1];
+    p.phase = 'production';
+    p.stock = 2;
+    s.backlog.push({
+      id: 'ord-mile', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 2, remaining: 2, unitPrice: 120, wonTurn: s.turn,
+    });
+    E.endTurn(s);
+    assert.ok(s.milestones.some((m) => /MILE 1호기 인도식/.test(m.text)), '첫 인도가 연표에 남아야 한다');
+    assert.ok(!s.milestones.some((m) => /DN-150 1호기/.test(m.text)), '승계 기종의 1호기는 이미 지난 일이다');
+
+    // 100호기 문턱과 누적 500기를 같은 인도로 넘긴다.
+    p.delivered = 98;
+    p.stock = 6;
+    s.stats.delivered = 497;
+    s.backlog.push({
+      id: 'ord-mile2', airlineId: 'carta', airlineName: '카르타', programId: p.id, programName: p.name,
+      qty: 6, remaining: 6, unitPrice: 120, wonTurn: s.turn,
+    });
+    E.endTurn(s);
+    assert.ok(s.milestones.some((m) => /MILE 100호기/.test(m.text)), '100호기 라인오프가 남아야 한다');
+    assert.ok(s.milestones.some((m) => /누적 인도 500기/.test(m.text)), '회사 누적 마일스톤이 남아야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

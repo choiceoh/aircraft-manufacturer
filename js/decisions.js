@@ -19,6 +19,7 @@
   'use strict';
 
   const { AIRLINES, CONFIG, SEGMENTS } = root.AirlinerData;
+  const Fleet = root.AirlinerFleet;
 
   const money = (m) => {
     const v = Math.round(m);
@@ -29,6 +30,27 @@
   /** 양산 중인 기종이 있나 — 생산·고객 관련 사건의 공통 전제. */
   function hasProduction(s) {
     return s.programs.some((p) => p.phase === 'production');
+  }
+
+  /**
+   * 핵심 고객(누적 60기+) 중 우리 양산 기종이 자기 대역에 맞는 항공사 — 수의계약
+   * 사건의 전제다. 엔진의 loyaltyTier 와 같은 문턱을 쓴다(로드 순서상 여기서 직접 센다).
+   */
+  function pickLoyalDeal(s) {
+    for (const a of AIRLINES) {
+      const fleet = (s.fleets && s.fleets[a.id]) || {};
+      const units = Object.values(fleet).reduce((x, y) => x + y, 0);
+      if (units < 60) continue;
+      const p = s.programs.find(
+        (x) =>
+          x.phase === 'production' &&
+          x.segment === a.bias &&
+          x.seats >= a.seatBand[0] * 0.85 &&
+          x.seats <= a.seatBand[1] * 1.15,
+      );
+      if (p) return { airline: a, program: p };
+    }
+    return null;
   }
 
   function inDevelopment(s) {
@@ -265,6 +287,123 @@
           detail: '돈도 뒷말도 없다',
           fallback: true,
           apply: () => '영입을 포기했다. 그들은 다른 곳으로 갔다.',
+        },
+      ],
+    },
+    {
+      id: 'loyal_direct_order',
+      name: '핵심 고객의 수의계약',
+      // 단골의 진짜 보상 — 입찰 없이 전화가 온다. 실제로도 대량 운용사는 입찰
+      // 대신 기존 제조사와 조용히 추가분을 계약한다(사우스웨스트가 그랬다).
+      // 상시 후보면 로테이션을 통째로 채워 다른 사건(대개 더 쓴 것)을 밀어낸다 —
+      // 측정: 이 사건 하나로 기준 하네스 파산이 12→6/40 으로 반토막 났다.
+      // 쿨다운 12분기 + 낮은 가중치로 "가끔 오는 전화"로 만든다.
+      weight: (s) => (pickLoyalDeal(s) && s.turn - (s.lastLoyalDealTurn ?? -99) >= 12 ? 4 : 0),
+      text: (s, h) => {
+        const deal = pickLoyalDeal(s);
+        h.remember('airline', deal.airline.id);
+        h.remember('airlineName', deal.airline.name);
+        h.remember('program', deal.program.id);
+        h.remember('qty', h.rng.int(6, 12));
+        return `${deal.airline.name}이 입찰 없이 ${deal.program.name} ${h.recall('qty')}기 추가 도입을 타진해 왔다 — 오래 거래한 사이라 조건만 맞으면 바로 계약하겠다고 한다. 대신 단골값을 기대한다.`;
+      },
+      options: [
+        {
+          id: 'accept',
+          label: '단골값에 계약한다',
+          detail: '정가의 92% — 입찰 비용 없이 물량과 관계를 얻는다',
+          apply: (s, h) => {
+            s.lastLoyalDealTurn = s.turn;
+            const p = s.programs.find((x) => x.id === h.recall('program'));
+            if (!p || p.phase !== 'production') return '그 기종은 더 이상 계약할 수 없는 상태다.';
+            const qty = h.recall('qty', 8);
+            const unitPrice = Math.round(p.listPrice * 0.92);
+            h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice });
+            h.relation(h.recall('airline'), 4);
+            return `${h.recall('airlineName')}과 ${qty}기 수의계약 (대당 ${money(unitPrice)}). 오래된 거래가 또 한 장 쌓였다.`;
+          },
+        },
+        {
+          id: 'hold_price',
+          label: '정가를 고수한다',
+          detail: '성사되면 이문이 크지만, 단골이 서운해할 수 있다',
+          apply: (s, h) => {
+            s.lastLoyalDealTurn = s.turn;
+            const p = s.programs.find((x) => x.id === h.recall('program'));
+            if (!p || p.phase !== 'production') return '그 기종은 더 이상 계약할 수 없는 상태다.';
+            if (h.rng.chance(0.55)) {
+              const qty = h.recall('qty', 8);
+              const unitPrice = Math.round(p.listPrice * 0.98);
+              h.order({ airlineId: h.recall('airline'), airlineName: h.recall('airlineName'), program: p, qty, unitPrice });
+              return `${h.recall('airlineName')}이 결국 정가에 가깝게 서명했다 (대당 ${money(unitPrice)}).`;
+            }
+            h.relation(h.recall('airline'), -3);
+            return `${h.recall('airlineName')}이 제안을 거둬들였다 — "단골한테 이러기냐"는 말이 남았다.`;
+          },
+        },
+        {
+          id: 'decline',
+          label: '지금은 라인이 빠듯하다',
+          detail: '정중히 미룬다. 관계가 조금 상한다',
+          fallback: true,
+          apply: (s, h) => {
+            s.lastLoyalDealTurn = s.turn;
+            h.relation(h.recall('airline'), -1);
+            return `${h.recall('airlineName', '고객사')}에 다음 기회를 기약했다.`;
+          },
+        },
+      ],
+    },
+    {
+      id: 'rival_crisis_talent',
+      name: '결함 파동 — 흩어지는 인력',
+      // 경쟁사 결함 파동(양수 위기) 중에만 온다 — 호평(음수)은 사람이 빠져나올
+      // 이유가 없다. 파동은 벌이 아니라 기회로 설계돼 있고, 이 사건이 그 손잡이다.
+      weight: (s) =>
+        Object.values(s.rivalCrises || {}).some((c) => c.amount > 0) && s.cash > 200 ? 7 : 0,
+      text: (s, h) => {
+        const typeId = Object.entries(s.rivalCrises).find(([, c]) => c.amount > 0)[0];
+        const t = (Fleet && Fleet.AIRCRAFT.find((x) => x.id === typeId)) || null;
+        const maker = t && Fleet.MAKER_BY_ID[t.maker];
+        h.remember('makerName', maker ? maker.name : '경쟁사');
+        h.remember('typeName', t ? t.name : '문제 기종');
+        return `${maker ? maker.name : '경쟁사'}의 ${t ? t.name : '신기종'} 결함 파동으로 그쪽 엔지니어들이 이력서를 돌리고 있다. 평소보다 싸게, 소문 없이 데려올 수 있는 창이다.`;
+      },
+      options: [
+        {
+          id: 'wave',
+          label: '크게 받아들인다',
+          detail: '엔지니어 400명을 평시보다 싸게. 급여 부담은 늘어난다',
+          apply: (s, h) => {
+            const heads = 400;
+            // 위기 이직은 웃돈이 없다 — 평시 영입(×1.6)과 달리 제값의 70%.
+            const cost = Math.round(heads * CONFIG.engineerHireCost * 0.7);
+            if (s.cash < cost) return '자금이 모자라 창을 놓쳤다.';
+            h.expense(cost);
+            s.engineers += heads;
+            return `${money(cost)}에 ${heads}명이 넘어왔다 — ${h.recall('makerName', '경쟁사')} 사정이 그렇다. 평판 손상 없이 조직이 커졌다.`;
+          },
+        },
+        {
+          id: 'select',
+          label: '그 결함을 아는 사람만',
+          detail: '수습팀 핵심 몇을 산다 — 개발 중 기종의 결함 위험이 준다',
+          apply: (s, h) => {
+            const cost = 180;
+            if (s.cash < cost) return '자금이 모자라 접촉을 접었다.';
+            h.expense(cost);
+            const targets = s.programs.filter((p) => p.phase === 'dev' || p.phase === 'cert');
+            if (!targets.length) return `${money(cost)}을 썼지만 배운 교훈을 쓸 개발 기종이 없다.`;
+            for (const p of targets) p.defectRisk = Math.round(p.defectRisk * 0.92 * 1000) / 1000;
+            return `${h.recall('typeName', '그 기종')} 수습팀 핵심을 데려왔다 (${money(cost)}). 남의 실패가 우리 결함 위험을 깎았다.`;
+          },
+        },
+        {
+          id: 'pass',
+          label: '지켜본다',
+          detail: '남의 불행에 손대지 않는다',
+          fallback: true,
+          apply: () => '창이 닫히게 두었다. 그들은 다른 회사로 흩어졌다.',
         },
       ],
     },

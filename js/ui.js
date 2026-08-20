@@ -295,6 +295,10 @@
         break;
       }
 
+      case 'upgrade':
+        act(E.startUpgrade(s, btn.dataset.id, btn.dataset.kind));
+        break;
+
       case 'set-outsourcing':
         act(E.setOutsourcing(s, btn.dataset.level));
         break;

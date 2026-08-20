@@ -113,14 +113,20 @@
     return startYear + turn / 4;
   }
 
-  /** 그 시점에 신규 판매 중이었나. end 는 배타적(그 해부터는 못 산다). */
-  function inService(type, year) {
-    return year >= type.eis && (type.end === null || year < type.end);
+  /**
+   * 그 시점에 신규 판매 중이었나. end 는 배타적(그 해부터는 못 산다).
+   * delays 는 판(시드)별 개발 지연 — {기종id: 분기 수}. 실제 역사에서도 취항은
+   * 계획이 아니라 결과였다(787 이 3년 밀렸다). 카탈로그는 공유 데이터라 여기서
+   * 직접 고치지 않고, 판마다의 지연을 조회 시점에 얹는다.
+   */
+  function inService(type, year, delays) {
+    const eis = type.eis + ((delays && delays[type.id]) || 0) / 4;
+    return year >= eis && (type.end === null || year < type.end);
   }
 
   /** 해당 시점·세그먼트에서 팔리고 있던 기종들. */
-  function availableTypes(segment, year) {
-    return AIRCRAFT.filter((t) => t.segment === segment && inService(t, year));
+  function availableTypes(segment, year, delays) {
+    return AIRCRAFT.filter((t) => t.segment === segment && inService(t, year, delays));
   }
 
   /**
