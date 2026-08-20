@@ -219,8 +219,8 @@
     s.fleets = { panamer: { [p.id]: 62 }, hanul: { [p.id]: 48 } };
 
     for (const o of [
-      { id: 'panamer', name: '판아메르 항공', qty: 24 },
-      { id: 'hanul', name: '한울항공', qty: 16 },
+      { id: 'panamer', name: '델타 항공', qty: 24 },
+      { id: 'hanul', name: '대한항공', qty: 16 },
     ]) {
       s.backlog.push({
         id: 'ord-' + s.nextId++,
@@ -258,6 +258,16 @@
       reaction: { regional: 0, narrow: 0, wide: 0 },
     }));
   }
+
+  /**
+   * 실명 교체(2026) 이전 세이브가 쓰던 가상 표기 — 열려 있는 결정 사건의 본문은
+   * memo 에 이름을 안 남기는 사건도 있어, id 로 못 찾고 이 사전으로 훑는다.
+   */
+  const LEGACY_AIRLINE_NAMES = {
+    hanul: '한울항공', carta: '카르타 에어', nordic: '노르딕윙스', panamer: '판아메르 항공',
+    asialink: '아시아링크', albion: '알비온 항공', meridian: '메리디안 항공', sahara: '사하라 에어',
+    oceanic: '오세아닉', kosmo: '코스모항공', lumen: '루멘 에어라인', vertex: '버텍스 제트',
+  };
 
   function ensureShape(s) {
     if (!s.effects) s.effects = {};
@@ -326,6 +336,49 @@
         const shipped = o.qty - (o.cancelled || 0) - o.remaining;
         if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
       }
+    }
+
+    // 항공사 표시 이름은 카탈로그가 정본이다 (id 는 불변). 가상 이름 시절의
+    // 세이브를 불러오면 열린 주문·공고가 옛 이름을 물고 있어 화면에 두 이름이
+    // 섞인다 — 표시 문자열만 맞춘다. 완료 주문·로그·마일스톤은 그 시점의 기록이라 둔다.
+    for (const o of s.backlog || []) {
+      if (!(o.remaining > 0)) continue;
+      const a = AIRLINES.find((x) => x.id === o.airlineId);
+      if (a && o.airlineName !== a.name) o.airlineName = a.name;
+    }
+    for (const r of s.rfps || []) {
+      const a = AIRLINES.find((x) => x.id === r.airlineId);
+      if (!a) continue;
+      if (r.airlineName !== a.name) r.airlineName = a.name;
+      // 본거지도 표시용이다 — 카탈로그에서 본거지가 옮겨진 항공사의 옛 공고가
+      // 새 이름에 옛 본거지를 달고 나오면 안 된다.
+      if (r.home !== a.home) r.home = a.home;
+    }
+    // 열려 있는 결정 사건도 항공사 이름을 물고 있다 (기록이 아니라 진행형이다).
+    // memo.airlineName 은 수의계약 수락 시 h.order 로 그대로 들어가므로, 안 맞추면
+    // 옛 이름의 주문이 오늘 새로 태어난다. 본문 치환은 **그 사건이 가리키는 항공사의
+    // 옛 표기만** 바꾼다 — 사전 전체로 훑으면 플레이어가 기체 이름을 다른 옛 항공사
+    // 이름으로 지어 둔 경우까지 덮어쓴다. 항공사 이름을 본문에 싣는 사건은 전부
+    // memo.airline 을 남기므로(launch_customer·loyal_direct_order·delivery_slip) 이걸로 충분하다.
+    const d = s.decision;
+    if (d && d.memo && d.memo.airline) {
+      const a = AIRLINES.find((x) => x.id === d.memo.airline);
+      const old = LEGACY_AIRLINE_NAMES[d.memo.airline];
+      // 어느 기체의 이름이 그 옛 표기를 품고 있으면 본문 치환을 통째로 건너뛴다 —
+      // 문자열만으로는 항공사와 기체를 구분할 수 없고, 플레이어가 지은 이름을
+      // 덮어쓰는 쪽이 옛 항공사 이름이 카드에 한 번 더 보이는 쪽보다 나쁘다.
+      const collides = s.programs.some((p) => typeof p.name === 'string' && old && p.name.includes(old));
+      if (a && old && a.name !== old && !collides) {
+        if (typeof d.text === 'string' && d.text.includes(old)) d.text = d.text.split(old).join(a.name);
+        if (typeof d.name === 'string' && d.name.includes(old)) d.name = d.name.split(old).join(a.name);
+      }
+      if (a && typeof d.memo.airlineName === 'string') d.memo.airlineName = a.name;
+    }
+    // 예약된 후속 결과의 memo 도 같은 이유로 맞춘다 — 몇 분기 뒤 그 이름으로 발화한다.
+    for (const po of s.pendingOutcomes || []) {
+      if (!po.memo || !po.memo.airline || typeof po.memo.airlineName !== 'string') continue;
+      const a = AIRLINES.find((x) => x.id === po.memo.airline);
+      if (a) po.memo.airlineName = a.name;
     }
 
     // 단면 개념이 없던 세이브의 프로그램에 단면을 채운다. 비워 두면 라인 전환
@@ -2526,7 +2579,7 @@
    * 단골 등급 — 그 항공사에 인도한 누적 대수로 잰다. 관계 점수는 오르내리지만
    * 인도 실적은 지워지지 않는다: 한 번 쌓은 단골은 유지된다.
    *   0 거래처 · 1 단골(20기+) · 2 핵심 고객(60기+)
-   * 승계 선단의 판아메르(62기)가 시작부터 핵심 고객이다 — 물려받은 것은 기체만이
+   * 승계 선단의 델타(62기)가 시작부터 핵심 고객이다 — 물려받은 것은 기체만이
    * 아니라 계정이고, 그 계정을 지키는 것이 초반 전략의 한 축이 된다.
    */
   function loyaltyTier(s, airlineId) {
@@ -2805,7 +2858,7 @@
    *
    * memo 는 상태에 저장된다 — 사건 문구를 만들 때 뽑은 대상(어느 기종, 어느 항공사)을
    * 선택지 apply 와 몇 분기 뒤 지연 결과가 같이 봐야 하기 때문이다. 다시 뽑으면
-   * "판아메르가 제안했는데 코스모와 계약됐다" 같은 어긋남이 생긴다.
+   * "델타가 제안했는데 에어아스타나와 계약됐다" 같은 어긋남이 생긴다.
    */
   function decisionHelpers(s, rng, memo, opts) {
     return {
