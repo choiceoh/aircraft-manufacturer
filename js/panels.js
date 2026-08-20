@@ -403,14 +403,20 @@
       : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
           <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 신규 설계 대비 22%(일반 34%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
         </button>`;
-    const etops = ev.etopsUsable
-      ? `<button class="mat ${ev.etops ? 'on' : ''}" data-action="design-etops">
+    // 4발이면 ETOPS 는 살 것이 없다 — 켜진 채 두면 숨은 spec.etops 만 토글돼,
+    // 나중에 쌍발로 되돌렸을 때 개발비 +8%·인증 +1분기가 몰래 붙는다.
+    const etops = ev.engines === 4
+      ? `<button class="mat" disabled>
+          <b>ETOPS 인증</b><span>4발은 ETOPS 규정 밖이다 — 인증 없이 대양 노선에 응찰·인도하므로 여기서 살 것이 없다.</span>
+        </button>`
+      : ev.etopsUsable
+        ? `<button class="mat ${ev.etops ? 'on' : ''}" data-action="design-etops">
           <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
         </button>`
-      : `<button class="mat" disabled>
+        : `<button class="mat" disabled>
           <b>ETOPS 인증</b><span>이 항속(${num(ev.range)}km)으로는 ${num(ETOPS_RANGE_KM)}km 노선에 닿지 않는다. <b>${num(
-          Math.ceil(ETOPS_USEFUL_RANGE),
-        )}km 이상</b>부터 값을 한다.</span>
+            Math.ceil(ETOPS_USEFUL_RANGE),
+          )}km 이상</b>부터 값을 한다.</span>
         </button>`;
     // 파생형은 구조(성장 여유·정비성·엔진 수)를 원형에서 물려받는다 — 토글이 아니라 사실이다.
     const inherit = ev.derivative;
