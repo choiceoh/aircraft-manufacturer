@@ -203,40 +203,40 @@
    * 완전히 다른 비행기다.
    */
   const AIRLINES = [
-    { id: 'hanul', name: '대한항공', home: '동아시아', bias: 'narrow', priceSensitivity: 0.9, prestige: 0.8,
+    { id: 'hanul', enginePref: 'P&W', name: '대한항공', home: '동아시아', bias: 'narrow', priceSensitivity: 0.9, prestige: 0.8,
       seatBand: [150, 185], rangeBand: [3000, 4800], field: 'normal', route: '조밀 단거리 간선',
       doctrine: '균형 조달', doctrineNote: '가격과 품질을 함께 본다 — 조건이 무난하면 기존 거래처를 잇는다', },
-    { id: 'carta', name: '에미레이트 항공', home: '중동', bias: 'wide', priceSensitivity: 0.5, prestige: 1.25,
+    { id: 'carta', enginePref: 'GE', name: '에미레이트 항공', home: '중동', bias: 'wide', priceSensitivity: 0.5, prestige: 1.25,
       seatBand: [280, 400], rangeBand: [12000, 16000], field: 'normal', route: '허브 초장거리',
       doctrine: '위신 우선', doctrineNote: '최신·최대가 아니면 사지 않는다. 가격은 마지막 질문이다', },
-    { id: 'nordic', name: '비데뢰에', home: '북유럽', bias: 'regional', priceSensitivity: 1.15, prestige: 0.7,
+    { id: 'nordic', enginePref: 'P&W 캐나다', name: '비데뢰에', home: '북유럽', bias: 'regional', priceSensitivity: 1.15, prestige: 0.7,
       seatBand: [68, 95], rangeBand: [1400, 2600], field: 'short', route: '단거리 지선 · 짧은 활주로',
       doctrine: '험지 운용', doctrineNote: '짧은 활주로가 전부다 — 이착륙 성능이 곧 응찰 자격이다', },
-    { id: 'panamer', name: '델타 항공', home: '북미', bias: 'narrow', priceSensitivity: 1.05, prestige: 1.0,
+    { id: 'panamer', enginePref: 'P&W', name: '델타 항공', home: '북미', bias: 'narrow', priceSensitivity: 1.05, prestige: 1.0,
       seatBand: [170, 205], rangeBand: [5200, 7200], field: 'normal', route: '대륙횡단 (장거리 협동체)',
       doctrine: '보수적 갱신', doctrineNote: '검증된 기종을 오래 굴린다 — 승계 선단의 최대 고객', },
-    { id: 'asialink', name: '세부퍼시픽', home: '동남아', bias: 'wide', priceSensitivity: 1.2, prestige: 0.85,
+    { id: 'asialink', enginePref: '롤스로이스', name: '세부퍼시픽', home: '동남아', bias: 'wide', priceSensitivity: 1.2, prestige: 0.85,
       seatBand: [330, 430], rangeBand: [7000, 9800], field: 'normal', route: '역내 고밀도 중장거리',
       doctrine: '물량 승부', doctrineNote: '고밀도 좌석과 낮은 좌석단가 — 싸고 큰 기체를 찾는다', },
-    { id: 'albion', name: '영국항공', home: '서유럽', bias: 'wide', priceSensitivity: 0.75, prestige: 1.15,
+    { id: 'albion', enginePref: '롤스로이스', name: '영국항공', home: '서유럽', bias: 'wide', priceSensitivity: 0.75, prestige: 1.15,
       seatBand: [250, 330], rangeBand: [10000, 14000], field: 'normal', route: '프리미엄 장거리',
       doctrine: '프리미엄 장거리', doctrineNote: '객실이 곧 브랜드다 — 편안함에 웃돈을 낸다', },
-    { id: 'meridian', name: '아비앙카', home: '남미', bias: 'narrow', priceSensitivity: 1.3, prestige: 0.6,
+    { id: 'meridian', enginePref: 'CFM', name: '아비앙카', home: '남미', bias: 'narrow', priceSensitivity: 1.3, prestige: 0.6,
       seatBand: [125, 160], rangeBand: [2900, 4400], field: 'hot', route: '고온고지 소형 간선',
       doctrine: '가성비', doctrineNote: '고온고지에서 버티는 싼 기체 — 조건은 험하고 지갑은 얇다', },
-    { id: 'sahara', name: '에티오피아 항공', home: '아프리카', bias: 'regional', priceSensitivity: 1.25, prestige: 0.55,
+    { id: 'sahara', enginePref: 'GE', name: '에티오피아 항공', home: '아프리카', bias: 'regional', priceSensitivity: 1.25, prestige: 0.55,
       seatBand: [62, 88], rangeBand: [1600, 3000], field: 'hot', route: '고온 오지 노선',
       doctrine: '오지 운항', doctrineNote: '고온·엉성한 정비망 — 단순하고 튼튼해야 산다', },
-    { id: 'oceanic', name: '에어뉴질랜드', home: '오세아니아', bias: 'wide', priceSensitivity: 0.95, prestige: 0.9,
+    { id: 'oceanic', enginePref: '롤스로이스', name: '에어뉴질랜드', home: '오세아니아', bias: 'wide', priceSensitivity: 0.95, prestige: 0.9,
       seatBand: [232, 275], rangeBand: [11000, 15000], field: 'normal', route: '저밀도 장거리 (얇은 노선)',
       doctrine: '얇은 장거리', doctrineNote: '못 채울 좌석은 짐이다 — 편당 원가로 기종을 고른다', },
-    { id: 'kosmo', name: '에어아스타나', home: '중앙아시아', bias: 'narrow', priceSensitivity: 1.35, prestige: 0.5,
+    { id: 'kosmo', enginePref: 'IAE', name: '에어아스타나', home: '중앙아시아', bias: 'narrow', priceSensitivity: 1.35, prestige: 0.5,
       seatBand: [140, 175], rangeBand: [3400, 5200], field: 'hot', route: '고지 공항 간선',
       doctrine: '최저가 입찰', doctrineNote: '가격이 8할이다 — 할인 없는 제안은 읽지 않는다', },
-    { id: 'lumen', name: 'KLM 시티호퍼', home: '서유럽', bias: 'regional', priceSensitivity: 1.1, prestige: 0.75,
+    { id: 'lumen', enginePref: 'GE', name: 'KLM 시티호퍼', home: '서유럽', bias: 'regional', priceSensitivity: 1.1, prestige: 0.75,
       seatBand: [100, 128], rangeBand: [1800, 3400], field: 'normal', route: '지선 피더 (대형 리저널)',
       doctrine: '피더 효율', doctrineNote: '연결편 정시성 — 큰 리저널로 굵게 잇는다', },
-    { id: 'vertex', name: '라이언에어', home: '서유럽', bias: 'narrow', priceSensitivity: 1.4, prestige: 0.45,
+    { id: 'vertex', enginePref: 'CFM', name: '라이언에어', home: '서유럽', bias: 'narrow', priceSensitivity: 1.4, prestige: 0.45,
       seatBand: [205, 240], rangeBand: [2900, 4600], field: 'normal', route: '저비용 초고밀도',
       doctrine: '단일 기종', doctrineNote: '한 기종만 굴린다 — 이미 굴리는 기종의 공통성을 남들보다 훨씬 크게 쳐 준다', commonalityMult: 1.35, },
   ];
@@ -653,6 +653,105 @@
         s.effects.rateBump = Math.max(s.effects.rateBump || 0, h.rng.range(0.004, 0.011));
         s.effects.rateBumpQuarters = Math.max(s.effects.rateBumpQuarters || 0, h.rng.int(2, 5));
         return `금융시장이 경색됐다. 당분간 차입 이자율이 분기 ${(s.effects.rateBump * 100).toFixed(1)}%p 오른다.`;
+      },
+    },
+
+    // ── 엔진 공급사 ──
+    {
+      id: 'engine_shortage',
+      name: '엔진 공급 차질',
+      weight: 5,
+      // 양산 기종이 어느 공급사 엔진이라도 달고 있어야 성립한다.
+      condition: (s) =>
+        s.programs.some((p) => p.phase === 'production' && (root.AirlinerEngines.get(p.engine) || {}).maker),
+      apply: (s, h) => {
+        // 우리 노출이 큰 공급사일수록 잘 걸린다 — 몰빵의 값이 여기서 드러난다.
+        const exposure = {};
+        for (const p of s.programs) {
+          if (p.phase !== 'production') continue;
+          const m = (root.AirlinerEngines.get(p.engine) || {}).maker;
+          if (m) exposure[m] = (exposure[m] || 0) + (p.delivered || 0) + 5;
+        }
+        const makers = Object.keys(exposure);
+        const maker = h.pickWeighted(makers, (m) => exposure[m]);
+        // 독점 계약 공급사라면 우선 공급을 받는다 — 짧게 앓고, 위약 보상도 나온다.
+        const priority = s.engineDeal && s.turn < s.engineDeal.until && s.engineDeal.maker === maker;
+        const quarters = priority ? 1 : h.rng.int(2, 3);
+        s.effects.engineShortage = { maker, quarters };
+        if (priority) {
+          const comp = Math.round(120 + exposure[maker] * 0.6);
+          h.income(comp);
+          return `${maker} 엔진 라인이 섰다. 독점 계약 덕에 우선 공급을 받아 ${quarters}분기면 풀리고, 위약 보상 ${h.fmt(comp)}도 나왔다.`;
+        }
+        return `${maker} 엔진 라인이 섰다. 그 엔진을 다는 우리 라인도 ${quarters}분기 동안 절반만 돈다.`;
+      },
+    },
+    {
+      id: 'engine_pip',
+      name: '엔진 성능 패키지',
+      weight: 2,
+      // 그 공급사와 거래가 쌓여 있어야 개선분이 우리 기체에 먼저 온다.
+      condition: (s) =>
+        s.programs.some(
+          (p) =>
+            p.phase === 'production' &&
+            ((s.engineRelations || {})[(root.AirlinerEngines.get(p.engine) || {}).maker] || 0) >= 30,
+        ),
+      apply: (s, h) => {
+        const eligible = s.programs.filter(
+          (p) =>
+            p.phase === 'production' &&
+            ((s.engineRelations || {})[(root.AirlinerEngines.get(p.engine) || {}).maker] || 0) >= 30,
+        );
+        const p = h.rng.pick(eligible);
+        const maker = (root.AirlinerEngines.get(p.engine) || {}).maker;
+        const gain = s.engineDeal && s.turn < s.engineDeal.until && s.engineDeal.maker === maker ? 2 : 1;
+        // 공짜 개선은 기종당 +2 까지다 — 무한히 쌓이면 아무것도 안 한 플레이어의
+        // 승계 기종이 20년 내내 저절로 젊어져, 후속기를 띄울 이유가 사라진다.
+        let touched = 0;
+        for (const x of s.programs) {
+          if (x.phase !== 'production' || (root.AirlinerEngines.get(x.engine) || {}).maker !== maker) continue;
+          const got = x.enginePipGain || 0;
+          const g = Math.min(gain, 2 - got);
+          if (g <= 0) continue;
+          x.efficiency = Math.min(99, x.efficiency + g);
+          x.enginePipGain = got + g;
+          touched++;
+        }
+        if (!touched) return `${maker}가 성능 패키지를 내놨지만, 우리 기체는 이미 최신 사양이라 적용분이 없었다.`;
+        return `${maker}가 엔진 성능 개선 패키지를 내놨다. 오랜 고객이라 우리 기체부터 적용 — ${maker} 엔진 기종 연비 +${gain}.`;
+      },
+    },
+
+    // ── 무역 분쟁 — 정부 지원금의 청구서 ──
+    {
+      id: 'trade_ruling',
+      name: 'WTO 보조금 판정',
+      // 긴장이 쌓일수록 판정이 가까워진다. 지원을 안 받았으면 영영 오지 않는다.
+      weight: (s) => ((s.tradeTension || 0) >= 4 ? Math.min(10, s.tradeTension) : 0),
+      apply: (s, h) => {
+        s.effects.tradeTariffQuarters = h.rng.int(4, 6);
+        s.tradeTension = Math.max(0, (s.tradeTension || 0) - 4);
+        h.reputation(-2);
+        return `WTO가 정부 지원금을 불법 보조금으로 판정했다. ${s.effects.tradeTariffQuarters}분기 동안 북미·서유럽 인도에 보복 관세가 붙는다.`;
+      },
+    },
+    {
+      id: 'trade_counter',
+      name: '맞제소 승소',
+      // 우리만 지원을 받는 게 아니다 — 긴장이 있어야 맞제소도 성립한다.
+      weight: (s) => ((s.tradeTension || 0) >= 4 ? 4 : 0),
+      apply: (s, h) => {
+        s.tradeTension = Math.max(0, (s.tradeTension || 0) - 2);
+        // 경쟁사도 보조금을 받았다는 판정 — 그쪽 주력의 수주 경쟁력이 꺾인다.
+        const targets = rivalTargets(s);
+        if (!targets.length) return '맞제소에서 이겼지만, 걸 만한 경쟁 기종이 없는 조용한 시장이었다.';
+        const t = h.rng.pick(targets);
+        const type = flagshipOf(t.types);
+        s.rivalCrises = s.rivalCrises || {};
+        s.rivalCrises[type.id] = { left: 4, amount: h.rng.range(5, 9) };
+        h.reputation(2);
+        return `우리 정부가 맞제소에서 이겼다. ${t.c.name} ${type.name}의 보조금이 문제가 되어 4분기 동안 수주 경쟁력이 꺾인다.`;
       },
     },
   ];

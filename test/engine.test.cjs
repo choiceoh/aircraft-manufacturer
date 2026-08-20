@@ -5687,3 +5687,437 @@ test('가상 이름 시절 세이브의 열린 주문·공고는 현재 항공�
   E.ensureShape(s);
   assert.strictEqual(s.pendingOutcomes[s.pendingOutcomes.length - 1].memo.airlineName, '대한항공', '예약 결과의 memo 이름이 옛 이름 그대로다');
 });
+
+// ────────────── 엔진 공급사 관계 · 정부 런치 에이드 ──────────────
+
+test('런치 에이드: 지금 현금을 받고, 성공한 기체가 인도마다 갚는다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(801);
+    s.cash = 50000;
+    assert.ok(E.launchProgram(s, { segment: 'wide', seats: 320, range: 12000, tech: 50, wing: 60 }, 'AID').ok);
+    const p = s.programs[s.programs.length - 1];
+
+    const cashBefore = s.cash;
+    const tensionBefore = s.tradeTension;
+    const r = E.investLaunchAid(s, p.id);
+    assert.ok(r.ok, r.error);
+    assert.strictEqual(r.aid, Math.round(p.devCost * E.LAUNCH_AID_RATE), '광고한 지원 규모와 다르다');
+    assert.strictEqual(s.cash - cashBefore, r.aid, '지원금이 현금으로 들어와야 한다');
+    assert.strictEqual(s.tradeTension - tensionBefore, 3, '무역 긴장이 쌓여야 한다 — 이 돈의 진짜 값이다');
+    assert.match(E.investLaunchAid(s, p.id).error, /이미/, '두 번 받을 수 없어야 한다');
+
+    // 인도가 시작되면 계약가의 5%씩 원천 공제로 갚는다.
+    p.phase = 'production';
+    p.stock = 4;
+    s.backlog.push({
+      id: 'ord-aid', airlineId: 'carta', airlineName: '에미레이트 항공', programId: p.id, programName: p.name,
+      qty: 4, remaining: 4, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+    });
+    // 같은 상태에서 지원 여부만 다르게 — 로열티가 장부에서 실제로 빠지는지 잰다.
+    const twin = JSON.parse(JSON.stringify(s));
+    delete twin.programs.find((x) => x.id === p.id).launchAid;
+    const withAid = E.endTurn(s).report;
+    const without = E.endTurn(twin).report;
+    const expected = Math.min(Math.round(r.aid * E.LAUNCH_AID_PAYBACK), Math.round(4 * 250 * E.LAUNCH_AID_ROYALTY));
+    assert.strictEqual(p.launchAid.repaid, expected, `로열티가 공제되지 않았다 (${p.launchAid.repaid})`);
+    assert.strictEqual(without.revenue - withAid.revenue, expected, '로열티가 상환 기록만 되고 돈은 안 나갔다');
+
+    // 상한(1.4배)까지 갚으면 끝 — 더는 공제되지 않는다.
+    p.launchAid.repaid = Math.round(r.aid * E.LAUNCH_AID_PAYBACK);
+    p.stock = 2;
+    s.backlog.push({
+      id: 'ord-aid2', airlineId: 'carta', airlineName: '에미레이트 항공', programId: p.id, programName: p.name,
+      qty: 2, remaining: 2, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15,
+    });
+    const repaidBefore = p.launchAid.repaid;
+    E.endTurn(s);
+    assert.strictEqual(p.launchAid.repaid, repaidBefore, '상환이 끝났는데 계속 뜯어간다');
+
+    // 진행 50% 이후·양산 단계는 막힌다.
+    assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5000, tech: 45 }, 'LATE').ok);
+    const late = s.programs[s.programs.length - 1];
+    late.progress = 60;
+    assert.match(E.investLaunchAid(s, late.id).error, /절반/, '개발 후반에는 위험 분담이 성립하지 않는다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('보복 관세: 상대 앞마당(북미·서유럽) 인도만 세금을 문다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const mk = () => {
+      const st = E.newGame(803);
+      st.cash = 50000;
+      const p = st.programs.find((x) => x.legacy);
+      p.stock = 4;
+      st.backlog.length = 0;
+      return { st, p };
+    };
+    const order = (st, p, airlineId, name) =>
+      st.backlog.push({
+        id: 'ord-' + airlineId, airlineId, airlineName: name, programId: p.id, programName: p.name,
+        qty: 4, remaining: 4, unitPrice: 100, wonTurn: st.turn, depositRate: 0.15,
+      });
+
+    // 같은 시드·같은 주문 — 관세 발효 여부만 다르게.
+    const a = mk();
+    order(a.st, a.p, 'panamer', '델타 항공');
+    const b = mk();
+    order(b.st, b.p, 'panamer', '델타 항공');
+    b.st.effects.tradeTariffQuarters = 3;
+    const ra = E.endTurn(a.st).report;
+    const rb = E.endTurn(b.st).report;
+    const duty = Math.round(4 * 100 * E.TRADE_TARIFF_RATE);
+    assert.strictEqual(ra.revenue - rb.revenue, duty, `북미 인도에 관세 ${duty}가 붙어야 한다`);
+
+    // 중동(에미레이트) 인도는 관세 밖이다.
+    const c = mk();
+    order(c.st, c.p, 'carta', '에미레이트 항공');
+    const d = mk();
+    order(d.st, d.p, 'carta', '에미레이트 항공');
+    d.st.effects.tradeTariffQuarters = 3;
+    const rc = E.endTurn(c.st).report;
+    const rd = E.endTurn(d.st).report;
+    assert.strictEqual(rc.revenue, rd.revenue, '분쟁 밖 지역 인도까지 관세를 물면 안 된다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('무역 판정 이벤트: 긴장이 판정으로, 판정이 관세·맞제소로 돌아온다', () => {
+  const s = E.newGame(805);
+  const stub = {
+    rng: { int: (a) => a, range: (a) => a, pick: (arr) => arr[0], next: () => 0, chance: () => false },
+    reputation() {}, income() {}, expense() {}, fmt: String,
+    pickWeighted: (arr) => arr[0],
+  };
+
+  const ruling = Data.EVENTS.find((e) => e.id === 'trade_ruling');
+  assert.strictEqual(typeof ruling.weight, 'function');
+  assert.strictEqual(ruling.weight(s), 0, '지원을 안 받았으면 판정도 없어야 한다');
+  s.tradeTension = 6;
+  assert.ok(ruling.weight(s) > 0, '긴장이 쌓이면 판정이 다가와야 한다');
+  ruling.apply(s, stub);
+  assert.ok(s.effects.tradeTariffQuarters >= 4, '판정은 관세로 실행돼야 한다');
+  assert.strictEqual(s.tradeTension, 2, '판정이 나면 긴장이 풀려야 한다');
+
+  const counter = Data.EVENTS.find((e) => e.id === 'trade_counter');
+  s.tradeTension = 5;
+  counter.apply(s, stub);
+  const crisis = Object.values(s.rivalCrises || {}).find((c) => c.amount > 0);
+  assert.ok(crisis, '맞제소 승소는 경쟁 기종의 경쟁력을 꺾어야 한다');
+  assert.strictEqual(s.tradeTension, 3);
+});
+
+test('엔진 공급사: 인도가 관계로 쌓이고, 독점 계약은 리베이트로 돌아온다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const mk = (withDeal) => {
+      const st = E.newGame(807);
+      st.cash = 50000;
+      const p = st.programs.find((x) => x.legacy);
+      p.engine = 'cfm56-5b'; // CFM
+      p.stock = 5;
+      st.backlog.length = 0;
+      st.backlog.push({
+        id: 'ord-eng', airlineId: 'hanul', airlineName: '대한항공', programId: p.id, programName: p.name,
+        qty: 5, remaining: 5, unitPrice: 100, wonTurn: st.turn, depositRate: 0.15,
+      });
+      if (withDeal) st.engineDeal = { maker: 'CFM', until: st.turn + 8 };
+      return { st, p };
+    };
+
+    const plain = mk(false);
+    const before = plain.st.engineRelations.CFM || 0;
+    const rPlain = E.endTurn(plain.st).report;
+    assert.strictEqual((plain.st.engineRelations.CFM || 0) - before, 5, '인도 5기가 CFM 관계로 쌓여야 한다');
+
+    const deal = mk(true);
+    const rDeal = E.endTurn(deal.st).report;
+    const rebate = Math.round(5 * deal.p.unitCostBase * E.ENGINE_DEAL_REBATE);
+    assert.ok(rebate > 0);
+    assert.strictEqual(rDeal.revenue - rPlain.revenue, rebate, `독점 리베이트 ${rebate}가 매출에 실려야 한다`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('엔진 공급 차질: 그 공급사 엔진을 다는 라인만 절반이 된다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const mk = (short) => {
+      const st = E.newGame(809);
+      st.cash = 50000;
+      const p = st.programs.find((x) => x.legacy);
+      p.engine = 'cfm56-5b';
+      p.stock = 0;
+      st.backlog.length = 0;
+      st.backlog.push({
+        id: 'ord-sh', airlineId: 'hanul', airlineName: '대한항공', programId: p.id, programName: p.name,
+        qty: 60, remaining: 60, unitPrice: 100, wonTurn: st.turn, depositRate: 0.15,
+      });
+      if (short) st.effects.engineShortage = { maker: short, quarters: 2 };
+      return { st, p };
+    };
+    const normal = mk(null);
+    E.endTurn(normal.st);
+    const hit = mk('CFM');
+    E.endTurn(hit.st);
+    const other = mk('롤스로이스');
+    E.endTurn(other.st);
+    assert.ok(hit.p.produced < normal.p.produced, `차질이 생산을 줄여야 한다 (${hit.p.produced} vs ${normal.p.produced})`);
+    assert.strictEqual(other.p.produced, normal.p.produced, '남의 공급사 차질이 우리 라인을 세우면 안 된다');
+
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('공급 차질 이벤트: 독점 계약 공급사면 짧게 앓고 보상을 받는다', () => {
+  const s = E.newGame(811);
+  const p = s.programs.find((x) => x.legacy);
+  p.engine = 'cfm56-5b';
+  p.delivered = 40;
+  let income = 0;
+  const stub = {
+    rng: { int: (a) => a, range: (a) => a, pick: (arr) => arr[0], next: () => 0, chance: () => false },
+    reputation() {}, income: (v) => { income += v; }, expense() {}, fmt: String,
+    pickWeighted: (arr) => arr[0],
+  };
+  const ev = Data.EVENTS.find((e) => e.id === 'engine_shortage');
+  assert.ok(ev.condition(s), '양산 기종이 있으면 차질이 성립해야 한다');
+
+  ev.apply(s, stub);
+  assert.strictEqual(s.effects.engineShortage.maker, 'CFM');
+  assert.ok(s.effects.engineShortage.quarters >= 2, '계약 없는 차질은 길어야 한다');
+  assert.strictEqual(income, 0);
+
+  s.effects.engineShortage = null;
+  s.engineDeal = { maker: 'CFM', until: s.turn + 8 };
+  ev.apply(s, stub);
+  assert.strictEqual(s.effects.engineShortage.quarters, 1, '우선 공급은 1분기면 풀려야 한다');
+  assert.ok(income > 0, '위약 보상이 나와야 한다');
+});
+
+test('독점 계약 중 타사 엔진 설계는 개발비 할증을 문다', () => {
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 55, engine: 'v2500', year: 2005 };
+  const free = D.evaluate(base);
+  const locked = D.evaluate({ ...base, exclusiveMaker: 'CFM' }); // v2500 은 IAE
+  const loyal = D.evaluate({ ...base, engine: 'cfm56-5b', exclusiveMaker: 'CFM' });
+  const loyalFree = D.evaluate({ ...base, engine: 'cfm56-5b' });
+  assert.ok(locked.exclusiveSurcharge, '계약 밖 엔진에 할증 표식이 서야 한다');
+  assert.ok(Math.abs(locked.devCost / free.devCost - 1.08) < 0.005, `할증이 8%가 아니다 (${locked.devCost / free.devCost})`);
+  assert.ok(!loyal.exclusiveSurcharge);
+  assert.strictEqual(loyal.devCost, loyalFree.devCost, '계약 공급사 엔진은 할증이 없어야 한다');
+
+  // 계약 만료는 endTurn 이 정리한다.
+  const s = E.newGame(813);
+  s.engineDeal = { maker: 'CFM', until: s.turn + 1 };
+  s.cash = 30000;
+  E.endTurn(s);
+  assert.strictEqual(s.engineDeal, null, '만료된 계약이 남아 있다');
+  assert.ok(s.log.some((l) => /독점 공급 계약이 만료/.test(l.text)), '만료가 안내돼야 한다');
+});
+
+test('런칭 파트너: 분담금을 낸 엔진만 2년 먼저 열린다', () => {
+  const EN = globalThis.AirlinerEngines;
+  // 2014년: LEAP-1A(2016)는 아직 없다 — 조기 접근 없이는 기본 엔진으로 대체된다.
+  assert.notStrictEqual(EN.resolve('narrow', 'leap-1a', 2014).id, 'leap-1a');
+  assert.strictEqual(EN.resolve('narrow', 'leap-1a', 2014, ['leap-1a']).id, 'leap-1a', '런칭 파트너에게는 열려야 한다');
+  assert.notStrictEqual(EN.resolve('narrow', 'leap-1a', 2013, ['leap-1a']).id, 'leap-1a', '2년보다 더 먼저 열리면 안 된다');
+  assert.ok(EN.maturityRisk(EN.get('leap-1a'), 2014) > 1, '일찍 쓰는 만큼 초기 위험도 먼저 떠안아야 한다');
+
+  // 결정 경로 — 관계가 쌓인 공급사의 신형이 제안되고, 서명하면 카탈로그가 열린다.
+  const s = E.newGame(815);
+  s.turn = (2014 - 1998) * 4;
+  s.engineRelations = { CFM: 30, 'P&W': 5 };
+  const def = Dec.get('engine_launch_partner');
+  assert.ok(def.weight(s) > 0, '조건이 맞으면 제안이 와야 한다');
+  s.decision = { id: 'engine_launch_partner', name: def.name, turn: s.turn, memo: {}, options: [] };
+  // text 가 memo 를 채운다 — 실제 발화 경로 재현.
+  const memoStub = {};
+  def.text(s, {
+    rng: { pick: (arr) => arr[0], int: (a) => a, range: (a) => a, chance: () => false, next: () => 0 },
+    remember: (k, v) => { memoStub[k] = v; },
+  });
+  s.decision.memo = memoStub;
+  assert.strictEqual(memoStub.engine, 'leap-1a', 'CFM 관계 조건에서 LEAP 이 제안돼야 한다');
+  const r = E.decide(s, 'join');
+  assert.ok(r.ok, r.error);
+  assert.ok(s.engineEarlyAccess['leap-1a'], '분담금을 냈으면 카탈로그가 열려야 한다');
+
+  // 열린 카탈로그로 실제 착수하면 그 엔진이 실린다.
+  s.cash = 50000;
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 60, engine: 'leap-1a' }, 'NEO').ok);
+  const p = s.programs[s.programs.length - 1];
+  assert.strictEqual(p.engine, 'leap-1a', '조기 접근 엔진이 설계에 실려야 한다');
+});
+
+test('엔진 성능 패키지: 오랜 고객의 기체부터 좋아진다', () => {
+  const s = E.newGame(817);
+  const p = s.programs.find((x) => x.legacy);
+  p.engine = 'cfm56-5b';
+  s.engineRelations = { CFM: 35 };
+  const stub = {
+    rng: { int: (a) => a, range: (a) => a, pick: (arr) => arr[0], next: () => 0, chance: () => false },
+    reputation() {}, income() {}, expense() {}, fmt: String,
+    pickWeighted: (arr) => arr[0],
+  };
+  const ev = Data.EVENTS.find((e) => e.id === 'engine_pip');
+  assert.ok(ev.condition(s), '관계 30기 이상이면 패키지가 올 수 있어야 한다');
+  const before = p.efficiency;
+  ev.apply(s, stub);
+  assert.strictEqual(p.efficiency, before + 1, '연비가 +1 붙어야 한다');
+  // 독점 계약 고객은 +2 — 다만 공짜 개선은 기종당 +2 가 상한이다. 무한히 쌓이면
+  // 아무것도 안 한 플레이어의 승계 기종이 저절로 젊어져 후속기의 이유가 사라진다.
+  s.engineDeal = { maker: 'CFM', until: s.turn + 8 };
+  ev.apply(s, stub);
+  assert.strictEqual(p.efficiency, before + 2, '상한(+2)을 넘으면 안 된다');
+  const capped = p.efficiency;
+  const text = ev.apply(s, stub);
+  assert.strictEqual(p.efficiency, capped, '상한 이후에도 계속 쌓인다');
+  assert.match(text, /이미 최신/, '적용분이 없으면 그렇게 말해야 한다');
+});
+
+test('독점 계약 제안은 상시가 아니다 — 문턱과 쿨다운', () => {
+  const s = E.newGame(819);
+  const def = Dec.get('engine_exclusive');
+  s.engineRelations = { CFM: 50 };
+  assert.strictEqual(def.weight(s), 0, '실적 60기 전에는 제안이 오면 안 된다');
+  s.engineRelations = { CFM: 70 };
+  assert.ok(def.weight(s) > 0, '실적이 쌓이면 제안이 와야 한다');
+  s.lastEngineDealOfferTurn = s.turn - 4;
+  assert.strictEqual(def.weight(s), 0, '한 번 오간 제안이 매 분기 다시 오면 더 매서운 사건을 밀어낸다');
+  s.lastEngineDealOfferTurn = s.turn - 12;
+  assert.ok(def.weight(s) > 0, '시간이 지나면 다시 제안할 수 있다');
+  s.engineDeal = { maker: 'CFM', until: s.turn + 8 };
+  assert.strictEqual(def.weight(s), 0, '계약 중에는 제안이 없어야 한다');
+});
+
+test('항공사 선호 엔진: 맞추면 +2, 이중화는 어느 쪽이든 맞는다', () => {
+  const s = E.newGame(821);
+  const rfp = {
+    id: 'r', airlineId: 'albion', airlineName: '영국항공', segment: 'wide',
+    reqSeats: 290, reqRange: 11000, reqField: 0, reqEtops: false,
+    qty: 10, priceSensitivity: 0.7, prestige: 1.1,
+  };
+  const base = {
+    ...D.evaluate({ segment: 'wide', seats: 300, range: 11500, tech: 55, year: E.yearOf(s.turn) }),
+    id: 'pw-pref', name: 'P', phase: 'production', produced: 0, delivered: 0, stock: 0, certTurn: s.turn,
+  };
+  // 같은 제원, 엔진 딱지만 다르게 — 가산이 정확히 그 차이여야 한다.
+  const rr = B.scoreBid(s, rfp, { ...base, engine: 'trent700' }, 0.1);
+  const ge = B.scoreBid(s, rfp, { ...base, engine: 'cf6-80c2' }, 0.1);
+  assert.strictEqual(rr.enginePref, 2, '영국항공에 롤스로이스는 +2 여야 한다');
+  assert.strictEqual(ge.enginePref, -1, '낯선 공급사는 부품·훈련을 새로 갖춰야 한다 — 감점이다');
+  assert.ok(Math.abs(rr.total - ge.total - 3) < 0.11, `가산·감점이 총점에 실려야 한다 (${rr.total} vs ${ge.total})`);
+  // 이중화 — 주엔진이 안 맞아도 대안이 맞으면 받고, 어느 쪽도 아니면 감점만 면한다.
+  const dual = B.scoreBid(s, rfp, { ...base, engine: 'cf6-80c2', altEngine: 'trent700' }, 0.1);
+  assert.strictEqual(dual.enginePref, 2, '이중화 기체는 대안 엔진으로도 선호를 맞춰야 한다');
+  const dualMiss = B.scoreBid(s, rfp, { ...base, engine: 'cf6-80c2', altEngine: 'pw4000' }, 0.1);
+  assert.strictEqual(dualMiss.enginePref, 0, '이중화는 낯선 감점을 면해야 한다');
+});
+
+test('엔진 이중화: 개발·기체가 비싸지고, 파생형은 인증된 파일런을 물려받는다', () => {
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 55, material: 'aluminum', engine: 'cfm56-5b', year: 2005 };
+  const plain = D.evaluate(base);
+  const dual = D.evaluate({ ...base, dualSource: true });
+  assert.strictEqual(dual.dualSource, true);
+  assert.ok(dual.altEngine, '대안 엔진이 정해져야 한다');
+  assert.notStrictEqual((globalThis.AirlinerEngines.get(dual.altEngine) || {}).maker, 'CFM', '대안은 다른 공급사여야 한다');
+  assert.ok(Math.abs(dual.devCost / plain.devCost - 1.1) < 0.005, `통합 두 번의 개발비가 붙어야 한다 (${dual.devCost / plain.devCost})`);
+  assert.ok(Math.abs(dual.unitCostBase / plain.unitCostBase - 1.03) < 0.005, '파일런 두 벌은 기체마다 진다');
+
+  // 파생형 — 이중화를 물려받되 개발 프리미엄은 다시 내지 않는다.
+  const df = { id: 'x', name: 'y', tech: 55, material: 'aluminum', range: 5500, engine: 'cfm56-5b' };
+  const dPlain = D.evaluate({ ...base, seats: 200, derivedFrom: { ...df } });
+  const dDual = D.evaluate({ ...base, seats: 200, derivedFrom: { ...df, dualSource: true } });
+  assert.strictEqual(dPlain.derivative, true);
+  assert.strictEqual(dDual.dualSource, true, '이중화는 구조라 파생형이 물려받아야 한다');
+  assert.strictEqual(dDual.devCost, dPlain.devCost, '인증된 파일런에 개발비를 또 내면 안 된다');
+  assert.ok(dDual.unitCostBase > dPlain.unitCostBase, '기체값은 그대로 진다');
+});
+
+test('엔진 이중화는 공급 차질의 절반을 메운다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const mk = (alt) => {
+      const st = E.newGame(823);
+      st.cash = 50000;
+      const p = st.programs.find((x) => x.legacy);
+      p.engine = 'cfm56-5b';
+      if (alt) p.altEngine = 'v2500';
+      p.stock = 0;
+      st.backlog.length = 0;
+      st.backlog.push({
+        id: 'ord-du', airlineId: 'hanul', airlineName: '대한항공', programId: p.id, programName: p.name,
+        qty: 60, remaining: 60, unitPrice: 100, wonTurn: st.turn, depositRate: 0.15,
+      });
+      st.effects.engineShortage = { maker: 'CFM', quarters: 2 };
+      return { st, p };
+    };
+    const solo = mk(false);
+    E.endTurn(solo.st);
+    const dual = mk(true);
+    E.endTurn(dual.st);
+    assert.ok(dual.p.produced > solo.p.produced, `이중화가 차질을 메워야 한다 (${dual.p.produced} vs ${solo.p.produced})`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+
+test('이중화 인도는 항공사가 선호하는 공급사의 실적이 된다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const mk = (airlineId, name) => {
+      const st = E.newGame(825);
+      st.cash = 50000;
+      const p = st.programs.find((x) => x.legacy);
+      p.engine = 'cfm56-5b'; // CFM 주엔진
+      p.altEngine = 'v2500'; // IAE 대안
+      p.stock = 4;
+      st.backlog.length = 0;
+      st.backlog.push({
+        id: 'ord-cr', airlineId, airlineName: name, programId: p.id, programName: p.name,
+        qty: 4, remaining: 4, unitPrice: 100, wonTurn: st.turn, depositRate: 0.15,
+      });
+      return st;
+    };
+    // 에어아스타나(IAE 선호) — 대안 쪽을 달아 나간다.
+    const a = mk('kosmo', '에어아스타나');
+    E.endTurn(a);
+    assert.strictEqual(a.engineRelations.IAE || 0, 4, 'IAE 실적으로 쌓여야 한다');
+    // 라이언에어(CFM 선호) — 주엔진 그대로.
+    const b = mk('vertex', '라이언에어');
+    E.endTurn(b);
+    assert.strictEqual(b.engineRelations.CFM || 0, 4, 'CFM 실적으로 쌓여야 한다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

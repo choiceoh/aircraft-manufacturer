@@ -9,6 +9,7 @@
 
   const { SEGMENTS, AIRLINES, CONFIG, RIVAL_STRENGTH_CAP, RIVAL_STRENGTH_FLOOR, FIELD_REQUIREMENT, ETOPS_RANGE_KM, UPGAUGE_PER_YEAR, BID_PLEDGES, BID_FINANCING } =
     root.AirlinerData;
+  const Engines = root.AirlinerEngines;
   const { clamp } = root.AirlinerDesign;
   const Fleet = root.AirlinerFleet;
   const Airframe = root.AirlinerAirframe;
@@ -36,6 +37,25 @@
 
   /** 선단 공통성이 줄 수 있는 최대 가산점 (입찰 점수 0~100 척도). */
   const COMMONALITY_BONUS = 6;
+
+  /**
+   * 항공사 선호 엔진 가산 — 영국항공은 롤스로이스를, 라이언에어는 CFM 을 원한다.
+   * 정비 인프라·훈련·부품 재고가 그 공급사에 맞춰져 있기 때문이다.
+   * 이중화(dual-source) 기체는 어느 쪽이든 달아 줄 수 있어 더 넓게 맞는다.
+   */
+  const ENGINE_PREF_BONUS = 2;
+  /** 낯선 공급사 감점 — 부품 재고·정비 훈련을 새로 갖춰야 한다. 이중화는 면제. */
+  const ENGINE_PREF_MISS = -1;
+
+  function enginePrefBonus(rfp, program) {
+    const pref = airlineOf(rfp.airlineId).enginePref;
+    if (!pref) return 0;
+    const prim = (Engines.get(program.engine) || {}).maker;
+    const alt = program.altEngine ? (Engines.get(program.altEngine) || {}).maker : null;
+    if (pref === prim || pref === alt) return ENGINE_PREF_BONUS;
+    // 이중화 기체는 낯선 감점을 면한다 — 선택지를 주는 것 자체가 성의다.
+    return alt ? 0 : ENGINE_PREF_MISS;
+  }
 
   /** 미인증 기체 선주문의 기본 신뢰 감점. 결함 위험에 비례해 커진다. */
   const PREORDER_PENALTY = 9;
@@ -487,7 +507,8 @@
 
     // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
     // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
-    const bounded = clamp(total + termBonus + flagshipBonus(state) - preorderPenalty, 0, 100);
+    const prefBonus = enginePrefBonus(rfp, program);
+    const bounded = clamp(total + termBonus + flagshipBonus(state) + prefBonus - preorderPenalty, 0, 100);
 
     return {
       total: Math.round(bounded * 10) / 10,
@@ -511,6 +532,7 @@
       preorder,
       terms: t,
       termBonus: Math.round(termBonus * 10) / 10,
+      enginePref: prefBonus,
       blocked: null,
       price: Math.round(effPrice * 10) / 10,
     };

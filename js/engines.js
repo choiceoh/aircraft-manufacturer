@@ -71,13 +71,21 @@
     return 1 + 0.45 * (1 - Math.max(0, age) / MATURITY_YEARS);
   }
 
-  function inService(eng, year) {
-    return year >= eng.eis && (eng.end === null || year < eng.end);
+  /**
+   * 런칭 파트너는 정식 취항 몇 년 전에 엔진을 받는다 — A320neo 런치 커스터머가
+   * LEAP·GTF 를 남들보다 먼저 단 것이 이것이다. 성숙도 위험은 실제 eis 기준
+   * 그대로 계산한다: 일찍 쓰는 만큼 초기 트러블도 온전히 먼저 겪는다.
+   */
+  const EARLY_ACCESS_YEARS = 2;
+
+  function inService(eng, year, earlyIds) {
+    const early = earlyIds && earlyIds.includes(eng.id) ? EARLY_ACCESS_YEARS : 0;
+    return year >= eng.eis - early && (eng.end === null || year < eng.end);
   }
 
   /** 그 시점 그 세그먼트에서 채택 가능한 엔진들. */
-  function available(segment, year) {
-    return ENGINES.filter((e) => e.segments.includes(segment) && (!year || inService(e, year)));
+  function available(segment, year, earlyIds) {
+    return ENGINES.filter((e) => e.segments.includes(segment) && (!year || inService(e, year, earlyIds)));
   }
 
   /**
@@ -97,15 +105,16 @@
   }
 
   /** 설계안이 실제로 쓸 엔진을 정한다. 지정이 없거나 그 시점에 못 사면 기본값으로. */
-  function resolve(segment, engineId, year) {
+  function resolve(segment, engineId, year, earlyIds) {
     const e = get(engineId);
-    if (e && e.segments.includes(segment) && (!year || inService(e, year))) return e;
+    if (e && e.segments.includes(segment) && (!year || inService(e, year, earlyIds))) return e;
     return defaultFor(segment, year);
   }
 
   root.AirlinerEngines = {
     ENGINES,
     MATURITY_YEARS,
+    EARLY_ACCESS_YEARS,
     available,
     defaultFor,
     get,
