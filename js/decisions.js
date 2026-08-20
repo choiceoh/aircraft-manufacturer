@@ -61,7 +61,7 @@
       const fleet = (s.fleets && s.fleets[a.id]) || {};
       const units = Object.values(fleet).reduce((x, y) => x + y, 0);
       if (units < 60) continue;
-      // 수의계약도 그 항공사의 노선을 날 기체라야 한다 — 이걸 빼면 카르타(초장거리·
+      // 수의계약도 그 항공사의 노선을 날 기체라야 한다 — 이걸 빼면 에미레이트(초장거리·
       // ETOPS)가 단거리 미인증 기체를 전화로 주문하는, 입찰로는 막힌 뒷문이 열린다.
       const p = s.programs.find((x) => loyalDealFit(a, x));
       if (p) return { airline: a, program: p, needEtops: loyalDealFit(a, p).needEtops };

@@ -219,8 +219,8 @@
     s.fleets = { panamer: { [p.id]: 62 }, hanul: { [p.id]: 48 } };
 
     for (const o of [
-      { id: 'panamer', name: '판아메르 항공', qty: 24 },
-      { id: 'hanul', name: '한울항공', qty: 16 },
+      { id: 'panamer', name: '델타 항공', qty: 24 },
+      { id: 'hanul', name: '대한항공', qty: 16 },
     ]) {
       s.backlog.push({
         id: 'ord-' + s.nextId++,
@@ -325,6 +325,16 @@
       for (const o of s.backlog || []) {
         const shipped = o.qty - (o.cancelled || 0) - o.remaining;
         if (shipped > 0) addToFleet(s, o.airlineId, o.programId, shipped);
+      }
+    }
+
+    // 항공사 표시 이름은 카탈로그가 정본이다 (id 는 불변). 가상 이름 시절의
+    // 세이브를 불러오면 열린 주문·공고가 옛 이름을 물고 있어 화면에 두 이름이
+    // 섞인다 — 표시 문자열만 맞춘다. 로그·마일스톤은 그 시점의 기록이라 둔다.
+    for (const list of [s.backlog || [], s.rfps || []]) {
+      for (const o of list) {
+        const a = AIRLINES.find((x) => x.id === o.airlineId);
+        if (a && o.airlineName !== a.name) o.airlineName = a.name;
       }
     }
 
@@ -2526,7 +2536,7 @@
    * 단골 등급 — 그 항공사에 인도한 누적 대수로 잰다. 관계 점수는 오르내리지만
    * 인도 실적은 지워지지 않는다: 한 번 쌓은 단골은 유지된다.
    *   0 거래처 · 1 단골(20기+) · 2 핵심 고객(60기+)
-   * 승계 선단의 판아메르(62기)가 시작부터 핵심 고객이다 — 물려받은 것은 기체만이
+   * 승계 선단의 델타(62기)가 시작부터 핵심 고객이다 — 물려받은 것은 기체만이
    * 아니라 계정이고, 그 계정을 지키는 것이 초반 전략의 한 축이 된다.
    */
   function loyaltyTier(s, airlineId) {
@@ -2805,7 +2815,7 @@
    *
    * memo 는 상태에 저장된다 — 사건 문구를 만들 때 뽑은 대상(어느 기종, 어느 항공사)을
    * 선택지 apply 와 몇 분기 뒤 지연 결과가 같이 봐야 하기 때문이다. 다시 뽑으면
-   * "판아메르가 제안했는데 코스모와 계약됐다" 같은 어긋남이 생긴다.
+   * "델타가 제안했는데 에어아스타나와 계약됐다" 같은 어긋남이 생긴다.
    */
   function decisionHelpers(s, rng, memo, opts) {
     return {

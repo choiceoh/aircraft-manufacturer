@@ -5620,3 +5620,15 @@ test('설계 동결의 주사위: 풍동을 산 팀은 실측 편차가 정확�
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+test('가상 이름 시절 세이브의 열린 주문·공고는 현재 항공사 이름으로 맞춰진다', () => {
+  const s = E.newGame(719);
+  s.backlog.push({
+    id: 'ord-old-name', airlineId: 'carta', airlineName: '카르타 에어', programId: s.programs[0].id,
+    programName: 'X', qty: 2, remaining: 2, unitPrice: 100, wonTurn: s.turn, depositRate: 0.15,
+  });
+  s.rfps.push({ id: 'rfp-old-name', airlineId: 'panamer', airlineName: '판아메르 항공', segment: 'narrow', reqSeats: 180, reqRange: 5000, reqField: 0, qty: 10 });
+  E.ensureShape(s);
+  assert.strictEqual(s.backlog.find((o) => o.id === 'ord-old-name').airlineName, '에미레이트 항공', '열린 주문의 표시 이름이 카탈로그와 어긋난다');
+  assert.strictEqual(s.rfps.find((r) => r.id === 'rfp-old-name').airlineName, '델타 항공', '공고의 표시 이름이 카탈로그와 어긋난다');
+});
