@@ -51,7 +51,8 @@
       p.seats <= a.seatBand[1] * 1.15 &&
       p.range >= a.rangeBand[0] * 0.9 &&
       (p.fieldPerf || 0) >= (FIELD_REQUIREMENT[a.field] || 0) &&
-      (!needEtops || p.etopsCertified);
+      // 4발은 ETOPS 규정 밖 — 입찰·인도 게이트와 같은 면제를 여기도 적용한다.
+      (!needEtops || p.etopsCertified || p.engines === 4);
     return ok ? { needEtops } : null;
   }
 
@@ -98,7 +99,7 @@
   function rushableOrder(s, order) {
     const p = s.programs.find((x) => x.id === order.programId);
     if (!p || p.phase !== 'production') return false;
-    if (order.reqEtops && !p.etopsCertified) return false;
+    if (order.reqEtops && !p.etopsCertified && p.engines !== 4) return false;
     // 운항 정지 중인 기종도 마찬가지다 — 인도 게이트(runDeliveries)에 막혀 있는
     // 주문에 특별 근무를 팔면 돈만 쓰는 거짓 선택지가 된다.
     if (((s.effects && s.effects.grounded) || {})[p.id] > 0) return false;

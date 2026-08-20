@@ -283,12 +283,12 @@
    * 감톤 운항이 여기서 제값을 한다: 연료는 기체 크기대로 태우는데 태울 수 있는
    * 승객은 줄어드니, 좌석마일 원가가 그만큼 나빠진다.
    */
-  function tripCostOf(seats, distance, efficiency, fuelIndex, maintFactor) {
+  function tripCostOf(seats, distance, efficiency, fuelIndex, maintFactor = 1) {
     const eff = clamp(efficiency, 5, 99);
     const fuel = Math.pow(seats, 0.9) * distance * (60 / eff) * clamp(fuelIndex, 0.4, 2.4);
     // fixed 는 정비·승무·지상 처리 같은 편당 고정비다. 정비성 설계는 여기가 내려간다 —
     // 연비(연료 항)와 다른 축이라, 유가가 낮은 시대에도 제값을 한다.
-    const fixed = Math.pow(seats, 0.7) * (900 + distance * 0.22) * (maintFactor || 1);
+    const fixed = Math.pow(seats, 0.7) * (900 + distance * 0.22) * maintFactor;
     return fuel + fixed;
   }
 

@@ -5373,6 +5373,12 @@ test('성장 여유: 지금 무겁고 비싸지만, 재장착 파생형에서 �
   assert.ok(eased.efficiency > squeezed.efficiency, '타협 폭만큼 연비 차이가 나야 한다');
   assert.ok(eased.devCost < squeezed.devCost, '선투자한 여유가 개조 비용으로 돌아와야 한다');
   assert.ok(eased.devQuarters <= squeezed.devQuarters, '개조 기간도 길어지면 안 된다');
+  // 설계 프리미엄(+6%)은 뿌리에서 한 번만 문다 — 파생형에 또 물리면 광고한
+  // 15% 할인이 1.06×0.85 로 희석돼 10%가 된다. 비율이 정확히 0.85여야 한다.
+  assert.ok(
+    Math.abs(eased.devCost / squeezed.devCost - 0.85) < 0.005,
+    `파생형 할인 비율이 0.85가 아니다 (${(eased.devCost / squeezed.devCost).toFixed(3)})`,
+  );
 });
 
 test('파생형의 구조 축은 원형을 따른다 — 딱지만 바꿔 붙일 수 없다', () => {
@@ -5451,6 +5457,40 @@ test('4발은 ETOPS 인증 없이 대양 노선에 응찰하고 인도한다', (
   E.endTurn(s);
   const o = s.backlog.find((x) => x.id === 'ord-quad');
   assert.ok(!o || o.remaining < 4, '4발 인도가 ETOPS 게이트에 걸렸다');
+});
+
+test('4발 면제는 결정 경로에도 적용된다 — 수의계약·특별 근무', () => {
+  const s = E.newGame(717);
+  const quad = {
+    id: 'pw-q4', name: 'Q4', segment: 'wide', phase: 'production',
+    seats: 320, range: 13000, fieldPerf: 70, etopsCertified: false, engines: 4,
+    listPrice: 250, efficiency: 50, comfort: 55, delivered: 0, stock: 2, unitCostBase: 100, spent: 0,
+  };
+  s.programs.push(quad);
+  s.fleets.carta = { 'pw-q4': 70 };
+
+  // 수의계약 — ETOPS 미인증이라도 4발이면 대양 노선 제안이 서명된다.
+  s.decision = {
+    id: 'loyal_direct_order', name: '핵심 고객의 수의계약', turn: s.turn,
+    memo: { airline: 'carta', airlineName: '카르타 에어', program: 'pw-q4', qty: 8 },
+    options: [],
+  };
+  const backlogBefore = s.backlog.length;
+  const r = E.decide(s, 'accept');
+  assert.ok(r.ok, r.error);
+  assert.ok(s.backlog.length > backlogBefore, '4발 수의계약이 ETOPS 게이트에 막혔다');
+
+  // 특별 근무(delivery_slip) — 4발의 대양 노선 주문은 앞당겨 인도할 수 있는
+  // 주문이다 (인도 게이트가 실제로 열려 있으므로 거짓 선택지가 아니다).
+  s.backlog.length = 0;
+  s.backlog.push({
+    id: 'ord-q', airlineId: 'carta', airlineName: '카르타', programId: quad.id, programName: quad.name,
+    qty: 4, remaining: 4, unitPrice: 250, wonTurn: s.turn, depositRate: 0.15, reqEtops: true,
+  });
+  const slip = Dec.get('delivery_slip');
+  assert.ok(slip.weight(s) > 0, '4발 주문이 특별 근무 후보에서 빠졌다');
+  quad.engines = 2;
+  assert.strictEqual(slip.weight(s), 0, '쌍발 미인증의 대양 주문이 후보에 들어갔다 — 인도가 안 되는데 돈만 쓴다');
 });
 
 test('4발은 부품·정비 매출이 두텁다 (엔진 정비 계약 두 벌)', () => {
