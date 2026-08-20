@@ -259,6 +259,16 @@
     }));
   }
 
+  /**
+   * 실명 교체(2026) 이전 세이브가 쓰던 가상 표기 — 열려 있는 결정 사건의 본문은
+   * memo 에 이름을 안 남기는 사건도 있어, id 로 못 찾고 이 사전으로 훑는다.
+   */
+  const LEGACY_AIRLINE_NAMES = {
+    hanul: '한울항공', carta: '카르타 에어', nordic: '노르딕윙스', panamer: '판아메르 항공',
+    asialink: '아시아링크', albion: '알비온 항공', meridian: '메리디안 항공', sahara: '사하라 에어',
+    oceanic: '오세아닉', kosmo: '코스모항공', lumen: '루멘 에어라인', vertex: '버텍스 제트',
+  };
+
   function ensureShape(s) {
     if (!s.effects) s.effects = {};
     if (!s.effects.grounded) {
@@ -344,18 +354,28 @@
       // 새 이름에 옛 본거지를 달고 나오면 안 된다.
       if (r.home !== a.home) r.home = a.home;
     }
-    // 열려 있는 결정 사건도 항공사 이름을 물고 있다. memo.airlineName 은 수의계약
-    // 수락 시 h.order 로 그대로 들어가므로, 여기서 안 맞추면 옛 이름의 주문이
-    // 오늘 새로 태어난다. 본문·제목의 옛 이름도 함께 바꾼다 (기록이 아니라 진행형이다).
+    // 열려 있는 결정 사건도 항공사 이름을 물고 있다 (기록이 아니라 진행형이다).
+    // memo.airlineName 은 수의계약 수락 시 h.order 로 그대로 들어가므로, 안 맞추면
+    // 옛 이름의 주문이 오늘 새로 태어난다. 본문은 memo 에 이름이 없는 사건도
+    // (launch_customer 는 id 만 기억한다) 있으므로, 옛 표기 사전으로 훑는다.
     const d = s.decision;
-    if (d && d.memo && d.memo.airline && typeof d.memo.airlineName === 'string') {
-      const a = AIRLINES.find((x) => x.id === d.memo.airline);
-      if (a && d.memo.airlineName !== a.name) {
-        const old = d.memo.airlineName;
-        if (typeof d.text === 'string') d.text = d.text.split(old).join(a.name);
-        if (typeof d.name === 'string') d.name = d.name.split(old).join(a.name);
-        d.memo.airlineName = a.name;
+    if (d) {
+      for (const [id, old] of Object.entries(LEGACY_AIRLINE_NAMES)) {
+        const a = AIRLINES.find((x) => x.id === id);
+        if (!a || a.name === old) continue;
+        if (typeof d.text === 'string' && d.text.includes(old)) d.text = d.text.split(old).join(a.name);
+        if (typeof d.name === 'string' && d.name.includes(old)) d.name = d.name.split(old).join(a.name);
       }
+      if (d.memo && d.memo.airline && typeof d.memo.airlineName === 'string') {
+        const a = AIRLINES.find((x) => x.id === d.memo.airline);
+        if (a) d.memo.airlineName = a.name;
+      }
+    }
+    // 예약된 후속 결과의 memo 도 같은 이유로 맞춘다 — 몇 분기 뒤 그 이름으로 발화한다.
+    for (const po of s.pendingOutcomes || []) {
+      if (!po.memo || !po.memo.airline || typeof po.memo.airlineName !== 'string') continue;
+      const a = AIRLINES.find((x) => x.id === po.memo.airline);
+      if (a) po.memo.airlineName = a.name;
     }
 
     // 단면 개념이 없던 세이브의 프로그램에 단면을 채운다. 비워 두면 라인 전환

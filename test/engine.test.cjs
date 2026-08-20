@@ -5648,4 +5648,18 @@ test('가상 이름 시절 세이브의 열린 주문·공고는 현재 항공�
   assert.strictEqual(s.rfps.find((r) => r.id === 'rfp-old-home').home, '서유럽', '공고의 본거지가 카탈로그와 어긋난다');
   assert.strictEqual(s.decision.memo.airlineName, '에미레이트 항공', '결정 memo 의 이름이 옛 이름 그대로다 — 수락하면 옛 이름의 주문이 태어난다');
   assert.ok(s.decision.text.includes('에미레이트 항공') && !s.decision.text.includes('카르타'), '결정 본문의 이름이 안 바뀌었다');
+
+  // launch_customer 는 memo 에 id 만 남긴다 — 본문의 옛 이름은 사전으로 잡아야 한다.
+  s.decision = {
+    id: 'launch_customer', name: '런치 커스터머 제안', turn: s.turn,
+    text: '노르딕윙스가 개발 중인 <b>X</b>의 런치 커스터머를 자청했다.',
+    memo: { program: 'x', airline: 'nordic' }, options: [],
+  };
+  E.ensureShape(s);
+  assert.ok(s.decision.text.includes('비데뢰에') && !s.decision.text.includes('노르딕윙스'), 'id 만 기억하는 사건의 본문이 옛 이름 그대로다');
+
+  // 예약된 후속 결과의 memo 도 몇 분기 뒤 그 이름으로 발화한다.
+  s.pendingOutcomes.push({ turn: s.turn + 2, id: 'delivery_slip', optionId: 'overtime', memo: { airline: 'hanul', airlineName: '한울항공', orderId: 'x' } });
+  E.ensureShape(s);
+  assert.strictEqual(s.pendingOutcomes[s.pendingOutcomes.length - 1].memo.airlineName, '대한항공', '예약 결과의 memo 이름이 옛 이름 그대로다');
 });
