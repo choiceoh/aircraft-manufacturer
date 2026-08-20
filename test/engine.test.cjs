@@ -6121,3 +6121,81 @@ test('이중화 인도는 항공사가 선호하는 공급사의 실적이 된�
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+// ────────────── 플레이어블 실존 제조사 ──────────────
+
+test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경쟁 명단에서 빠진다', () => {
+  const s = E.newGame(31, 'boeing');
+  assert.strictEqual(s.company, '보잉');
+  assert.strictEqual(s.playerMaker, 'boeing');
+  assert.strictEqual(s.programs.length, 2, '협동체·광동체 두 주력을 승계해야 한다');
+  const narrow = s.programs.find((p) => p.segment === 'narrow');
+  const wide = s.programs.find((p) => p.segment === 'wide');
+  assert.strictEqual(narrow.name, '737-400');
+  assert.strictEqual(wide.name, '767-300ER');
+  assert.strictEqual(wide.etopsCertified, true, '767은 이미 대양을 건너고 있어야 한다');
+  assert.strictEqual(s.stats.delivered, 730, '두 주력의 누적 인도가 합산돼야 한다');
+  assert.strictEqual(s.lines.length, 2, '주력마다 라인이 있어야 한다');
+  assert.ok((s.fleets.vertex || {})[narrow.id] === 70, '라이언에어 선단을 물려받아야 한다');
+
+  assert.ok(!s.competitors.some((c) => c.id === 'boeing'), '자기 자신과 경쟁하면 안 된다');
+  assert.ok(s.competitors.some((c) => c.id === 'airbus'), '에어버스는 여전히 상대다');
+
+  // 드라마·시장 배분도 플레이어 제조사를 모른 척해야 한다. 지연 추첨은 시드마다
+  // 다르므로 한 시드로는 우연히 통과할 수 있다 — 20개 시드를 전부 훑는다.
+  const F = globalThis.AirlinerFleet;
+  for (let seed = 1; seed <= 20; seed++) {
+    const b = E.newGame(seed, 'boeing');
+    for (const id of Object.keys(b.rivalDelays)) {
+      assert.notStrictEqual(F.AIRCRAFT.find((t) => t.id === id).maker, 'boeing', `시드 ${seed}: 자기 미래 기종의 지연 드라마가 잡혔다`);
+    }
+  }
+  s.cash = 60000;
+  for (let i = 0; i < 8; i++) E.endTurn(s);
+  assert.ok(!(s.stats.rivalByMaker.boeing > 0), '경쟁 인도 배분에 플레이어 제조사가 섞였다');
+  assert.ok(s.stats.rivalByMaker.airbus > 0, '나머지 경쟁사 배분은 돌아야 한다');
+});
+
+test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프리셋 id 는 그 회사', () => {
+  const custom = E.newGame(33, '나의 회사');
+  assert.strictEqual(custom.company, '나의 회사');
+  assert.strictEqual(custom.playerMaker, null);
+  assert.strictEqual(custom.programs[0].name, 'DN-150', '이름만 바꾼 판은 기준 승계 그대로여야 한다');
+  assert.strictEqual(custom.competitors.length, globalThis.AirlinerFleet.MANUFACTURERS.length, '기준 회사는 전 제조사와 경쟁한다');
+
+  const em = E.newGame(33, 'embraer');
+  assert.strictEqual(em.company, '엠브라에르');
+  assert.strictEqual(em.programs[0].segment, 'regional', '엠브라에르는 리저널에서 시작한다');
+  const boeing = E.newGame(33, 'boeing');
+  assert.ok(em.engineers < custom.engineers && em.engineers < boeing.engineers, '복병은 몸집이 작아야 한다');
+  assert.ok(em.overheadMult < 1 && boeing.overheadMult > 1, '간접비는 몸집을 따라야 한다');
+  assert.ok(em.scoreMult > 1 && boeing.scoreMult < 1, '등급 환산은 출발선을 감안해야 한다');
+
+  // 옛 세이브 — playerMaker 가 없어도 기준 회사로 읽힌다.
+  const old = E.newGame(35);
+  delete old.playerMaker;
+  E.ensureShape(old);
+  assert.strictEqual(old.playerMaker, null);
+});
+
+test('회사 환산 배수는 최종 점수에 실제로 반영된다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(37, 'boeing');
+    s.turn = 79;
+    s.cash = 30000;
+    const twin = JSON.parse(JSON.stringify(s));
+    twin.scoreMult = 1;
+    E.endTurn(s);
+    E.endTurn(twin);
+    assert.ok(s.gameOver && twin.gameOver, '20년이 끝나야 한다');
+    const ratio = s.gameOver.score / twin.gameOver.score;
+    assert.ok(Math.abs(ratio - 0.45) < 0.01, `보잉 환산 ×0.45 가 점수에 실려야 한다 (${ratio.toFixed(3)})`);
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});

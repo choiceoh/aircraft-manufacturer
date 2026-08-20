@@ -58,18 +58,100 @@
 
   // ─────────────────────────────── 상태 생성 ───────────────────────────────
 
+  /**
+   * 플레이어블 회사 — 가상 승계사(기준 난이도) 또는 실제 제조사.
+   * 실제 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년 실제 위치를
+   * 본뜬 승계 상태(주력기·선단·자금 규모)에서 시작한다. 등급 문턱은 데네브
+   * 기준으로 조정돼 있다 — 거인으로 시작하면 점수는 쉽게 나온다. 그게 거인이다.
+   */
+  const PLAYABLE_COMPANIES = [
+    {
+      id: 'deneb', name: '데네브 항공우주', maker: null, difficulty: '기준',
+      desc: '가상의 중견 제조사. 낡은 주력기 하나와 20년 — 이 게임의 원래 이야기다.',
+      cash: CONFIG.startCash, debt: CONFIG.startDebt, engineers: CONFIG.startEngineers,
+      reputation: CONFIG.startReputation, rivalDelivered: 240, overheadMult: 1, scoreMult: 1,
+      legacies: [
+        { name: 'DN-150', segment: 'narrow', seats: 150, range: 4800, tech: 38, engine: 'cfm56-3',
+          produced: 186, fleets: [['panamer', 62], ['hanul', 48]], backlog: [['panamer', 24], ['hanul', 16]] },
+      ],
+      intro: '주력기 DN-150이 아직 현금을 벌어다 주지만, 설계는 이미 낡았다.',
+    },
+    {
+      id: 'boeing', name: '보잉', maker: 'boeing', difficulty: '쉬움',
+      desc: '시애틀의 거인. 협동체와 광동체 두 주력, 두터운 선단 — 대신 에어버스가 전력으로 온다.',
+      cash: 9500, debt: 5200, engineers: 7800, reputation: 63, rivalDelivered: 620,
+      // 거인의 값: 본사·법무·연금이 무겁고(간접비 ×1.7), 등급은 출발선을 감안해 환산된다.
+      overheadMult: 1.7, scoreMult: 0.45,
+      legacies: [
+        { name: '737-400', segment: 'narrow', seats: 150, range: 4200, tech: 42, engine: 'cfm56-3',
+          produced: 520, fleets: [['vertex', 70], ['panamer', 55]], backlog: [['vertex', 20], ['panamer', 12]] },
+        { name: '767-300ER', segment: 'wide', seats: 269, range: 11000, tech: 45, engine: 'cf6-80c2', etopsCertified: true,
+          produced: 210, fleets: [['albion', 30], ['oceanic', 24]], backlog: [['oceanic', 6]] },
+      ],
+      intro: '737 라인이 현금을 찍고 767이 대양을 건넌다. 다만 둘 다 설계가 한 세대 전 것이다.',
+    },
+    {
+      id: 'airbus', name: '에어버스', maker: 'airbus', difficulty: '쉬움',
+      desc: '툴루즈의 도전자. A320의 기세와 A330의 대양 — 보잉의 아성을 허물어야 한다.',
+      cash: 8800, debt: 6000, engineers: 7200, reputation: 59, rivalDelivered: 780,
+      overheadMult: 1.65, scoreMult: 0.5,
+      legacies: [
+        { name: 'A320', segment: 'narrow', seats: 164, range: 5600, tech: 50, engine: 'cfm56-5b',
+          produced: 340, fleets: [['kosmo', 48], ['albion', 26]], backlog: [['kosmo', 14]] },
+        { name: 'A330-300', segment: 'wide', seats: 277, range: 10400, tech: 48, engine: 'trent700', etopsCertified: true,
+          produced: 96, fleets: [['asialink', 22]], backlog: [['asialink', 8]] },
+      ],
+      intro: 'A320은 아직 젊고 A330은 팔리는 중이다. 출발선은 좋다 — 문제는 바다 건너의 거인이다.',
+    },
+    {
+      id: 'embraer', name: '엠브라에르', maker: 'embraer', difficulty: '어려움',
+      desc: '상파울루의 복병. 리저널 틈새 하나로 시작해 위로 올라가야 한다.',
+      cash: 4400, debt: 1300, engineers: 1800, reputation: 46, rivalDelivered: 260,
+      // 복병의 위안: 몸집이 작아 간접비도 작고(×0.6), 등급 환산은 후하다.
+      overheadMult: 0.6, scoreMult: 1.5,
+      legacies: [
+        { name: 'ERJ-145', segment: 'regional', seats: 74, range: 2600, tech: 48, wing: 38, engine: 'ae3007',
+          produced: 140, fleets: [['lumen', 40], ['sahara', 22]], backlog: [['sahara', 30], ['nordic', 20]] },
+      ],
+      intro: 'ERJ가 피더 시장을 뚫었다. 리저널의 얇은 마진 위에서 다음 급을 노려야 한다.',
+    },
+    {
+      id: 'bombardier', name: '봉바르디에', maker: 'bombardier', difficulty: '어려움',
+      desc: '몬트리올의 승부사. CRJ로 버는 동안 더 큰 기체로 올라설 길을 찾아야 한다.',
+      cash: 4600, debt: 1500, engineers: 1900, reputation: 47, rivalDelivered: 300,
+      overheadMult: 0.62, scoreMult: 1.45,
+      legacies: [
+        { name: 'CRJ-200', segment: 'regional', seats: 72, range: 2400, tech: 47, wing: 36, engine: 'cf34-3',
+          produced: 170, fleets: [['nordic', 36], ['lumen', 20]], backlog: [['nordic', 26], ['sahara', 22]] },
+      ],
+      intro: 'CRJ가 지선을 지배한다. 다만 리저널만으로 20년을 버틸 수는 없다.',
+    },
+  ];
+
+  function companyPreset(id) {
+    return PLAYABLE_COMPANIES.find((c) => c.id === id) || PLAYABLE_COMPANIES[0];
+  }
+
   function newGame(seed, companyName) {
+    // companyName 이 프리셋 id 면 그 회사로 시작한다. 아니면 기준 회사에 그 이름을 붙인다
+    // (옛 호출·테스트 호환 — newGame(seed) / newGame(seed, '내 회사') 모두 그대로 돈다).
+    const preset = PLAYABLE_COMPANIES.some((c) => c.id === companyName) ? companyPreset(companyName) : companyPreset('deneb');
     const s = {
       version: 1,
       seed: seed >>> 0,
       rngState: seed >>> 0,
-      company: companyName || '데네브 항공우주',
+      company: preset.id !== 'deneb' ? preset.name : companyName || '데네브 항공우주',
+      // 이 회사가 실존 제조사라면 그 제조사는 경쟁 명단·시장 배분에서 빠진다.
+      playerMaker: preset.maker,
+      // 회사 규모의 값 — 간접비 배수. 그리고 출발선을 감안한 등급 환산 배수.
+      overheadMult: preset.overheadMult,
+      scoreMult: preset.scoreMult,
       turn: 0,
       nextId: 1,
-      cash: CONFIG.startCash,
-      debt: CONFIG.startDebt,
-      reputation: CONFIG.startReputation,
-      engineers: CONFIG.startEngineers,
+      cash: preset.cash,
+      debt: preset.debt,
+      reputation: preset.reputation,
+      engineers: preset.engineers,
       market: { fuelIndex: 1.0, demandIndex: 1.0 },
       effects: {
         strikeQuarters: 0,
@@ -87,7 +169,7 @@
       relations: {},
       // 항공사별 우리 기체 보유량 (airlineId → programId → 대수). 선단 공통성 가산의 근거.
       fleets: {},
-      competitors: newCompetitors(),
+      competitors: newCompetitors(preset.maker),
       rfps: [],
       bids: {},
       log: [],
@@ -95,7 +177,7 @@
       stats: {
         delivered: 0,
         revenue: 0,
-        rivalDelivered: 240,
+        rivalDelivered: preset.rivalDelivered,
         ordersWon: 0,
         bidsMade: 0,
         // 경쟁 서사용 장부 — 총량만으로는 "누구에게 밀리고 있는가"가 보이지 않는다.
@@ -149,7 +231,7 @@
     // 승계 부채가 봉우리의 출발점이다. 첫 정산 전에 갚아 버리면 이력에 한 번도 안 남는다.
     markDebtPeak(s);
 
-    seedLegacyProgram(s);
+    seedLegacyProgram(s, preset);
     // 승계 선단(186기)이 들어온 **뒤에** 재야 시작 점유율(43.7%)이 잡힌다.
     s.stats.peakShare = marketShare(s);
 
@@ -157,7 +239,7 @@
     s.shocks = buildShockSchedule(s, rng);
     // 드라마는 **별도 난수열**로 뽑는다. 본류(rng)에 끼우면 드라마 규칙을 손볼 때마다
     // 같은 시드의 모든 전개가 통째로 갈려, 밸런스 변화와 시드 재편이 구분되지 않는다.
-    const drama = buildRivalDrama(s.seed);
+    const drama = buildRivalDrama(s.seed, preset.maker);
     s.rivalDrama = drama.events;
     s.rivalDelays = drama.delays;
     issueMandate(s, rng);
@@ -166,12 +248,8 @@
     s.rateForQuarter = interestRate(s);
     saveRng(s, rng);
 
-    pushLog(
-      s,
-      'info',
-      `${s.company} 경영을 인계받았다. 자본금 ${fmtMoney(s.cash)}, 차입금 ${fmtMoney(s.debt)}. 주력기 DN-150이 아직 현금을 벌어다 주지만, 설계는 이미 낡았다.`,
-    );
-    pushLog(s, 'info', '20년 안에 후속기를 띄워 시장을 잡아라. DN-150의 수명은 길지 않다.');
+    pushLog(s, 'info', `${s.company} 경영을 인계받았다. 자본금 ${fmtMoney(s.cash)}, 차입금 ${fmtMoney(s.debt)}. ${preset.intro}`);
+    pushLog(s, 'info', `20년 안에 후속기를 띄워 시장을 잡아라. ${s.programs[0] ? s.programs[0].name : '주력기'}의 수명은 길지 않다.`);
     return s;
   }
 
@@ -181,66 +259,68 @@
    * 플레이어에게 후속기 개발을 버텨낼 캐시카우를 쥐여준다.
    * 대신 연비가 낮아 유가가 오르거나 경쟁사가 신형을 내면 급속히 경쟁력을 잃는다.
    */
-  function seedLegacyProgram(s) {
-    // 1990년대 초 설계라 그 시절 엔진을 달고 있다 — 지금 기준으로는 연비가 처진다.
-    const spec = { segment: 'narrow', seats: 150, range: 4800, tech: 38, material: 'aluminum', engine: 'cfm56-3', year: yearOf(0) };
-    const ev = evaluate(spec);
-    const p = {
-      id: 'prog-' + s.nextId++,
-      name: 'DN-150',
-      ...ev,
-      phase: 'production',
-      progress: 100,
-      spent: ev.devCost,
-      certRemaining: 0,
-      qualityInvests: 1,
-      share: 0,
-      produced: 186, // 이미 학습곡선을 상당히 내려온 상태
-      delivered: 186,
-      stock: 0,
-      launchTurn: -40,
-      certTurn: -8,
-      derivedFrom: null,
-      legacy: true,
-    };
-    // 오랜 운용으로 초기 결함은 대부분 잡혔다.
-    p.defectRisk = Math.round(p.defectRisk * 0.7 * 1000) / 1000;
-    s.programs.push(p);
+  function seedLegacyProgram(s, preset) {
+    // 1990년대 설계라 그 시절 엔진을 달고 있다 — 지금 기준으로는 연비가 처진다.
+    // 어느 회사를 골랐든 승계라는 출발점은 같다: 이미 팔리는 기체, 이미 있는 선단.
+    s.fleets = {};
+    for (const leg of (preset || companyPreset('deneb')).legacies) {
+      const spec = { segment: leg.segment, seats: leg.seats, range: leg.range, tech: leg.tech, material: 'aluminum', engine: leg.engine, wing: leg.wing, year: yearOf(0) };
+      const ev = evaluate(spec);
+      const p = {
+        id: 'prog-' + s.nextId++,
+        name: leg.name,
+        ...ev,
+        phase: 'production',
+        progress: 100,
+        spent: ev.devCost,
+        certRemaining: 0,
+        qualityInvests: 1,
+        share: 0,
+        produced: leg.produced, // 이미 학습곡선을 상당히 내려온 상태
+        delivered: leg.produced,
+        stock: 0,
+        launchTurn: -40,
+        certTurn: -8,
+        derivedFrom: null,
+        legacy: true,
+      };
+      // 오랜 운용으로 초기 결함은 대부분 잡혔다. 광동체 승계기는 ETOPS 실적도 있다.
+      p.defectRisk = Math.round(p.defectRisk * 0.7 * 1000) / 1000;
+      if (leg.etopsCertified) p.etopsCertified = true;
+      s.programs.push(p);
 
-    s.lines.push({
-      id: 'line-' + s.nextId++,
-      programId: p.id,
-      capacity: SEGMENTS.narrow.lineMaxRate,
-      ramp: 1,
-      partial: 0,
-      idle: false,
-      builtTurn: -8,
-    });
-
-    s.stats.delivered = p.delivered;
-
-    // 인계받은 수주 잔고 — 초반 몇 년치 현금흐름.
-    // 이미 인도된 186기 중 상당수가 이 두 항공사에 있다. 선단 공통성 가산이 여기서
-    // 시작되므로, 이 두 계정은 지켜야 할 자산이고 나머지는 새로 뚫어야 할 시장이다.
-    // (남은 물량은 이미 퇴역했거나 더는 기체를 사지 않는 사업자에게 있다고 본다.)
-    s.fleets = { panamer: { [p.id]: 62 }, hanul: { [p.id]: 48 } };
-
-    for (const o of [
-      { id: 'panamer', name: '델타 항공', qty: 24 },
-      { id: 'hanul', name: '대한항공', qty: 16 },
-    ]) {
-      s.backlog.push({
-        id: 'ord-' + s.nextId++,
-        airlineId: o.id,
-        airlineName: o.name,
+      s.lines.push({
+        id: 'line-' + s.nextId++,
         programId: p.id,
-        programName: p.name,
-        qty: o.qty,
-        remaining: o.qty,
-        unitPrice: Math.round(p.listPrice * 0.92 * 10) / 10,
-        wonTurn: -4,
+        capacity: SEGMENTS[leg.segment].lineMaxRate,
+        ramp: 1,
+        partial: 0,
+        idle: false,
+        builtTurn: -8,
       });
-      s.relations[o.id] = 58;
+      s.stats.delivered += p.delivered;
+
+      // 인계받은 선단과 수주 잔고 — 선단 공통성 가산이 여기서 시작되므로
+      // 이 계정들은 지켜야 할 자산이고 나머지는 새로 뚫어야 할 시장이다.
+      for (const [aid, units] of leg.fleets) {
+        s.fleets[aid] = s.fleets[aid] || {};
+        s.fleets[aid][p.id] = units;
+      }
+      for (const [aid, qty] of leg.backlog) {
+        const a = AIRLINES.find((x) => x.id === aid);
+        s.backlog.push({
+          id: 'ord-' + s.nextId++,
+          airlineId: aid,
+          airlineName: a ? a.name : aid,
+          programId: p.id,
+          programName: p.name,
+          qty,
+          remaining: qty,
+          unitPrice: Math.round(p.listPrice * 0.92 * 10) / 10,
+          wonTurn: -4,
+        });
+        s.relations[aid] = 58;
+      }
     }
   }
 
@@ -254,8 +334,8 @@
    * 경쟁사 상태. 세그먼트별 경쟁력 자체는 fleet 카탈로그가 시점별로 만들어 주므로
    * 여기 남는 건 이벤트가 얹는 보정치(drift)뿐이다.
    */
-  function newCompetitors() {
-    return MANUFACTURERS.map((m) => ({
+  function newCompetitors(playerMaker) {
+    return MANUFACTURERS.filter((m) => m.id !== playerMaker).map((m) => ({
       id: m.id,
       name: m.name,
       // drift 는 이벤트가 얹는 보정치, reaction 은 우리 성적에 대한 가격 공세다.
@@ -467,7 +547,7 @@
     // 가상 경쟁사(strength 스칼라)를 쓰던 세이브는 실존 제조사 명단으로 갈아끼운다.
     // 옛 strength 는 새 카탈로그와 척도가 달라 옮겨올 수 없으므로 보정치는 0에서 시작한다.
     if (!Array.isArray(s.competitors) || s.competitors.some((c) => !c.drift)) {
-      s.competitors = newCompetitors();
+      s.competitors = newCompetitors(s.playerMaker);
     }
     for (const c of s.competitors) {
       if (!c.reaction) c.reaction = {};
@@ -495,6 +575,9 @@
     if (s.engineDeal === undefined) s.engineDeal = null;
     if (!s.engineEarlyAccess || typeof s.engineEarlyAccess !== 'object') s.engineEarlyAccess = {};
     if (typeof s.tradeTension !== 'number') s.tradeTension = 0;
+    if (s.playerMaker === undefined) s.playerMaker = null;
+    if (typeof s.overheadMult !== 'number') s.overheadMult = 1;
+    if (typeof s.scoreMult !== 'number') s.scoreMult = 1;
     if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;
   }
@@ -560,13 +643,15 @@
   const DRAMA_CRISIS_ODDS = 0.18;
   const DRAMA_ACCLAIM_ODDS = 0.25;
 
-  function buildRivalDrama(seed) {
+  function buildRivalDrama(seed, playerMaker) {
     // 본류 난수열과 분리한다 — 드라마 규칙을 손볼 때 같은 시드의 나머지 전개가
     // 통째로 재편되면, 밸런스 변화와 시드 재편을 구분할 수 없게 된다.
     const rng = createRng(((seed >>> 0) + 0x5eed0) >>> 0);
     const events = [];
     const delays = {};
     for (const t of AIRCRAFT) {
+      // 플레이어가 그 제조사면 자기 미래 기종의 드라마는 없다 — 그 미래는 이제 플레이어의 몫이다.
+      if (playerMaker && t.maker === playerMaker) continue;
       const eisTurn = Math.round((t.eis - CONFIG.startYear) * 4);
       // 시작 시점에 이미 취항(임박)했거나 게임 밖이면 드라마 없이 지나간다.
       if (eisTurn <= 2 || eisTurn >= CONFIG.totalTurns) continue;
@@ -2116,7 +2201,7 @@
     s.rating = creditRating(s).grade;
     report.rate = Math.round(rate * 10000) / 100;
     const overhead =
-      CONFIG.fixedOverheadPerQuarter +
+      CONFIG.fixedOverheadPerQuarter * (s.overheadMult || 1) +
       s.lines.reduce((a, l) => a + CONFIG.lineOverheadPerLine * ((LINE_GRADES[l.grade] || LINE_GRADES.standard).overhead), 0) +
       s.engineers * CONFIG.engineerCostPerQuarter +
       s.programs.reduce((a, p) => a + p.stock * p.unitCostBase * CONFIG.inventoryHoldingCost, 0);
@@ -2296,7 +2381,7 @@
     const weights = new Map();
 
     for (const seg of Object.keys(SEGMENT_UNIT_SHARE)) {
-      const pool = availableTypes(seg, year, s.rivalDelays);
+      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => t.maker !== s.playerMaker);
       if (!pool.length) continue;
       const segWeight = SEGMENT_UNIT_SHARE[seg];
       // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
@@ -2408,8 +2493,8 @@
       });
       const wonUnits = recent.reduce((a, o) => a + o.qty, 0);
 
-      // 그 시장에서 지금 가장 강한 제조사가 공세의 주체다.
-      const pool = availableTypes(seg, year, s.rivalDelays);
+      // 그 시장에서 지금 가장 강한 제조사가 공세의 주체다. 플레이어 제조사는 뺀다.
+      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => t.maker !== s.playerMaker);
       let leader = null;
       for (const t of pool) {
         // 입찰·인도 배분과 같은 실력(보정치 포함)으로 봐야 한다. 카탈로그 점수만
@@ -2941,7 +3026,7 @@
     // 그 시장에서 가장 약한 축이 따라잡으려 산다고 보는 편이 자연스럽다.
     const seg = p.segment;
     const year = yearOf(s.turn);
-    const active = new Set(availableTypes(seg, year).map((t) => t.maker));
+    const active = new Set(availableTypes(seg, year).filter((t) => t.maker !== s.playerMaker).map((t) => t.maker));
     const candidates = s.competitors.filter((c) => active.has(c.id));
     const buyer =
       (candidates.length
@@ -3410,8 +3495,11 @@
     // 증자로 살아남았다면 그만큼은 우리 성과가 아니다. 회생 수단이 공짜가 되면
     // "위험해지면 찍어낸다"가 언제나 정답이 된다.
     const ownership = 1 - (s.equityDilution || 0);
+    // 회사 환산 배수 — 보잉으로 시작한 판의 점수를 데네브 눈금에 맞춘다.
+    // 거인의 출발선은 이미 절반의 승리라, 그대로 재면 등급이 난이도표가 아니라
+    // 회사 선택표가 된다.
     const score = Math.round(
-      (deliveredScore(s) + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership,
+      (deliveredScore(s) + share * 4000 + Math.max(0, worth) * 0.08 + s.reputation * 12) * ownership * (s.scoreMult || 1),
     );
     // 파산은 아무리 많이 팔았어도 실패다 — 등급으로 성적을 덮지 않는다.
     // 문턱은 시뮬레이션으로 잡는다. 회생 수단이 생기기 전에는 파산 아니면 A·S 뿐이라
@@ -3445,6 +3533,15 @@
         label: '지분 희석',
         detail: `증자 ${s.equityRounds}회 · 우리 몫 ${(own * 100).toFixed(0)}%`,
         points: Math.round(gross * own) - gross,
+      });
+    }
+    const mult = s.scoreMult || 1;
+    if (mult !== 1) {
+      const gross = rows.reduce((a, r) => a + r.points, 0);
+      rows.push({
+        label: '회사 환산',
+        detail: `${s.company} 출발선 보정 ×${mult}`,
+        points: Math.round(gross * mult) - gross,
       });
     }
     return rows;
@@ -3571,6 +3668,7 @@
 
   root.AirlinerEngine = {
     newGame,
+    PLAYABLE_COMPANIES,
     launchProgram,
     companyExperience,
     derivativeSpec,

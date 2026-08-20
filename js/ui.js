@@ -162,7 +162,7 @@
   }
 
   // 게임 종료 뒤에도 허용되는 행동 — 나머지는 저장 상태를 바꿔 최종 성적과 어긋나게 만든다.
-  const ALLOWED_AFTER_END = new Set(['tab', 'new-game', 'close-modal']);
+  const ALLOWED_AFTER_END = new Set(['tab', 'new-game', 'new-game-as', 'close-modal']);
 
   /**
    * 종료 후 잠금. 클릭뿐 아니라 슬라이더(input/change)도 막아야 한다 —
@@ -418,7 +418,11 @@
         break;
 
       case 'new-game':
-        if (confirm('새 게임을 시작하시겠습니까? 현재 진행 상황은 사라집니다.')) startNewGame();
+        openCompanyPicker();
+        break;
+
+      case 'new-game-as':
+        startNewGame(btn.dataset.company);
         break;
 
       case 'close-modal':
@@ -654,16 +658,36 @@
     return (t ^ (t << 13) ^ (t >>> 7)) >>> 0;
   }
 
-  function startNewGame() {
+  function startNewGame(companyId) {
     const seed = randomSeed();
-    ui.state = E.newGame(seed);
+    ui.state = E.newGame(seed, companyId);
     ui.tab = 'overview';
     ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
     ui.discountDraft = {};
     ui.designName = '';
     closeModal();
     render();
-    toast('새 경영을 시작한다. 주력기 DN-150이 버텨주는 동안 후속기를 띄워라.', 'good');
+    const flagship = ui.state.programs[0];
+    toast(`${ui.state.company} 경영을 시작한다. ${flagship ? flagship.name + '이(가)' : '주력기가'} 버텨주는 동안 후속기를 띄워라.`, 'good');
+  }
+
+  /** 새 게임 — 어느 회사로 20년을 시작할지 고른다. 실존 제조사는 경쟁 명단에서 빠진다. */
+  function openCompanyPicker() {
+    const cards = E.PLAYABLE_COMPANIES.map((c) => {
+      const legacies = c.legacies.map((l) => l.name).join(' · ');
+      return `<button class="mat" data-action="new-game-as" data-company="${c.id}">
+          <b>${P.esc(c.name)} <span class="muted">— ${P.esc(c.difficulty)}</span></b>
+          <span>${P.esc(c.desc)}</span>
+          <span class="muted">주력 ${P.esc(legacies)} · 자본 ${money(c.cash)} · 엔지니어 ${P.num(c.engineers)}명</span>
+        </button>`;
+    }).join('');
+    openModal(
+      `<h2 id="modal-title">어느 회사로 시작할까</h2>
+       <p class="muted">현재 진행 상황은 사라진다. 실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
+       <div class="mats">${cards}</div>
+       <div class="row"><button class="ghost" data-action="close-modal">취소</button></div>`,
+      true,
+    );
   }
 
   function boot() {
