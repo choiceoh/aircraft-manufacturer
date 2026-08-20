@@ -426,10 +426,6 @@
         break;
 
       case 'close-modal':
-        if (ui.state && ui.state.pendingCompanyChoice) {
-          delete ui.state.pendingCompanyChoice;
-          save();
-        }
         closeModal();
         break;
     }
@@ -619,6 +615,12 @@
     modal.setAttribute('aria-hidden', 'true');
     if (lastFocused && lastFocused.isConnected) lastFocused.focus();
     lastFocused = null;
+    // 첫 실행 회사 선택을 닫는 모든 경로(버튼·Esc)가 여기를 지난다 — 어떤 식으로
+    // 닫았든 "데네브로 간다"는 확정이고, 다음 리로드에 다시 물어보면 안 된다.
+    if (ui.state && ui.state.pendingCompanyChoice) {
+      delete ui.state.pendingCompanyChoice;
+      save();
+    }
   }
 
   // ─────────────────────────────── 저장 / 시작 ───────────────────────────────
