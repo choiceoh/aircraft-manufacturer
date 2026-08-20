@@ -5658,6 +5658,17 @@ test('가상 이름 시절 세이브의 열린 주문·공고는 현재 항공�
   E.ensureShape(s);
   assert.ok(s.decision.text.includes('비데뢰에') && !s.decision.text.includes('노르딕윙스'), 'id 만 기억하는 사건의 본문이 옛 이름 그대로다');
 
+  // 플레이어가 기체 이름을 다른 옛 항공사 이름으로 지었어도 그건 항공사가 아니다 —
+  // 치환은 그 사건이 가리키는 항공사(memo.airline)의 옛 표기에만 닿아야 한다.
+  s.decision = {
+    id: 'launch_customer', name: '런치 커스터머 제안', turn: s.turn,
+    text: '노르딕윙스가 개발 중인 <b>카르타 에어</b>의 런치 커스터머를 자청했다.',
+    memo: { program: 'x', airline: 'nordic' }, options: [],
+  };
+  E.ensureShape(s);
+  assert.ok(s.decision.text.includes('카르타 에어'), '기체 이름이 항공사 이름으로 오인돼 덮어써졌다');
+  assert.ok(s.decision.text.includes('비데뢰에'), '정작 그 사건의 항공사 이름은 바뀌어야 한다');
+
   // 예약된 후속 결과의 memo 도 몇 분기 뒤 그 이름으로 발화한다.
   s.pendingOutcomes.push({ turn: s.turn + 2, id: 'delivery_slip', optionId: 'overtime', memo: { airline: 'hanul', airlineName: '한울항공', orderId: 'x' } });
   E.ensureShape(s);

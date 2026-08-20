@@ -356,20 +356,19 @@
     }
     // 열려 있는 결정 사건도 항공사 이름을 물고 있다 (기록이 아니라 진행형이다).
     // memo.airlineName 은 수의계약 수락 시 h.order 로 그대로 들어가므로, 안 맞추면
-    // 옛 이름의 주문이 오늘 새로 태어난다. 본문은 memo 에 이름이 없는 사건도
-    // (launch_customer 는 id 만 기억한다) 있으므로, 옛 표기 사전으로 훑는다.
+    // 옛 이름의 주문이 오늘 새로 태어난다. 본문 치환은 **그 사건이 가리키는 항공사의
+    // 옛 표기만** 바꾼다 — 사전 전체로 훑으면 플레이어가 기체 이름을 다른 옛 항공사
+    // 이름으로 지어 둔 경우까지 덮어쓴다. 항공사 이름을 본문에 싣는 사건은 전부
+    // memo.airline 을 남기므로(launch_customer·loyal_direct_order·delivery_slip) 이걸로 충분하다.
     const d = s.decision;
-    if (d) {
-      for (const [id, old] of Object.entries(LEGACY_AIRLINE_NAMES)) {
-        const a = AIRLINES.find((x) => x.id === id);
-        if (!a || a.name === old) continue;
+    if (d && d.memo && d.memo.airline) {
+      const a = AIRLINES.find((x) => x.id === d.memo.airline);
+      const old = LEGACY_AIRLINE_NAMES[d.memo.airline];
+      if (a && old && a.name !== old) {
         if (typeof d.text === 'string' && d.text.includes(old)) d.text = d.text.split(old).join(a.name);
         if (typeof d.name === 'string' && d.name.includes(old)) d.name = d.name.split(old).join(a.name);
       }
-      if (d.memo && d.memo.airline && typeof d.memo.airlineName === 'string') {
-        const a = AIRLINES.find((x) => x.id === d.memo.airline);
-        if (a) d.memo.airlineName = a.name;
-      }
+      if (a && typeof d.memo.airlineName === 'string') d.memo.airlineName = a.name;
     }
     // 예약된 후속 결과의 memo 도 같은 이유로 맞춘다 — 몇 분기 뒤 그 이름으로 발화한다.
     for (const po of s.pendingOutcomes || []) {
