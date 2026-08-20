@@ -330,11 +330,31 @@
 
     // 항공사 표시 이름은 카탈로그가 정본이다 (id 는 불변). 가상 이름 시절의
     // 세이브를 불러오면 열린 주문·공고가 옛 이름을 물고 있어 화면에 두 이름이
-    // 섞인다 — 표시 문자열만 맞춘다. 로그·마일스톤은 그 시점의 기록이라 둔다.
-    for (const list of [s.backlog || [], s.rfps || []]) {
-      for (const o of list) {
-        const a = AIRLINES.find((x) => x.id === o.airlineId);
-        if (a && o.airlineName !== a.name) o.airlineName = a.name;
+    // 섞인다 — 표시 문자열만 맞춘다. 완료 주문·로그·마일스톤은 그 시점의 기록이라 둔다.
+    for (const o of s.backlog || []) {
+      if (!(o.remaining > 0)) continue;
+      const a = AIRLINES.find((x) => x.id === o.airlineId);
+      if (a && o.airlineName !== a.name) o.airlineName = a.name;
+    }
+    for (const r of s.rfps || []) {
+      const a = AIRLINES.find((x) => x.id === r.airlineId);
+      if (!a) continue;
+      if (r.airlineName !== a.name) r.airlineName = a.name;
+      // 본거지도 표시용이다 — 카탈로그에서 본거지가 옮겨진 항공사의 옛 공고가
+      // 새 이름에 옛 본거지를 달고 나오면 안 된다.
+      if (r.home !== a.home) r.home = a.home;
+    }
+    // 열려 있는 결정 사건도 항공사 이름을 물고 있다. memo.airlineName 은 수의계약
+    // 수락 시 h.order 로 그대로 들어가므로, 여기서 안 맞추면 옛 이름의 주문이
+    // 오늘 새로 태어난다. 본문·제목의 옛 이름도 함께 바꾼다 (기록이 아니라 진행형이다).
+    const d = s.decision;
+    if (d && d.memo && d.memo.airline && typeof d.memo.airlineName === 'string') {
+      const a = AIRLINES.find((x) => x.id === d.memo.airline);
+      if (a && d.memo.airlineName !== a.name) {
+        const old = d.memo.airlineName;
+        if (typeof d.text === 'string') d.text = d.text.split(old).join(a.name);
+        if (typeof d.name === 'string') d.name = d.name.split(old).join(a.name);
+        d.memo.airlineName = a.name;
       }
     }
 
