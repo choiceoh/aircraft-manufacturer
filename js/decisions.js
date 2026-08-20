@@ -20,6 +20,7 @@
 
   const { AIRLINES, CONFIG, SEGMENTS, FIELD_REQUIREMENT, ETOPS_RANGE_KM } = root.AirlinerData;
   const Fleet = root.AirlinerFleet;
+  const Engines = root.AirlinerEngines;
 
   const money = (m) => {
     const v = Math.round(m);
@@ -104,6 +105,32 @@
     // 주문에 특별 근무를 팔면 돈만 쓰는 거짓 선택지가 된다.
     if (((s.effects && s.effects.grounded) || {})[p.id] > 0) return false;
     return true;
+  }
+
+
+  /** 인도 실적이 가장 두터운 엔진 공급사 — 독점 계약 제안의 주체. */
+  function topEngineMaker(s) {
+    const entries = Object.entries(s.engineRelations || {});
+    if (!entries.length) return null;
+    const [maker, units] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
+    return { maker, units };
+  }
+
+  /**
+   * 런칭 파트너를 제안할 만한 엔진 — 정식 취항 3년 안쪽의 신형 중, 우리와 거래가
+   * 쌓인 공급사 것. 가중치·본문이 같은 것을 가리키도록 결정적으로 고른다.
+   */
+  function upcomingEngineFor(s) {
+    const year = CONFIG.startYear + Math.floor(s.turn / 4);
+    return (
+      Engines.ENGINES.filter(
+        (e) =>
+          e.eis > year &&
+          e.eis - year <= 3 &&
+          !(s.engineEarlyAccess || {})[e.id] &&
+          ((s.engineRelations || {})[e.maker] || 0) >= 20,
+      ).sort((a, b) => a.eis - b.eis || b.eff - a.eff)[0] || null
+    );
   }
 
   const DECISIONS = [
@@ -817,6 +844,83 @@
               return '약속한 실적이 나오지 않았다. 신뢰가 무너지고 조달 금리가 올랐다.';
             },
           },
+        },
+      ],
+    },
+
+    // ── 엔진 공급사 ──
+    {
+      id: 'engine_exclusive',
+      name: '엔진 독점 공급 제안',
+      // 상시 제안은 결정 순환에서 더 매서운 사건을 밀어낸다(수의계약에서 배운 것).
+      // 실적 문턱을 높이고, 한 번 오간 제안은 한동안 다시 오지 않는다.
+      weight: (s) => {
+        if (s.engineDeal) return 0;
+        if (s.turn - (s.lastEngineDealOfferTurn ?? -99) < 10) return 0;
+        const best = topEngineMaker(s);
+        return best && best.units >= 60 ? 4 : 0;
+      },
+      text: (s, h) => {
+        const best = topEngineMaker(s);
+        s.lastEngineDealOfferTurn = s.turn;
+        h.remember('maker', best ? best.maker : null);
+        return `<b>${best.maker}</b>가 독점 공급 계약을 제안했다. 4년간 자기 엔진 인도분의 부품값 2%를 돌려주고 공급 차질 때 우선 배정을 약속한다 — 대신 그 사이 다른 공급사 엔진으로 설계하면 통합 지원 없이 개발비를 8% 더 쓴다.`;
+      },
+      options: [
+        {
+          id: 'sign',
+          label: '서명한다',
+          detail: '인도 리베이트 2% · 공급 우선권. 4년간 타사 엔진 설계는 개발비 +8%',
+          apply: (s, h) => {
+            const maker = h.recall('maker');
+            if (!maker) return '제안은 흐지부지됐다.';
+            // 16분기 = 4년. engine.js 의 ENGINE_DEAL_QUARTERS 와 같은 값이다.
+            s.engineDeal = { maker, until: s.turn + 16 };
+            return `${maker}와 독점 공급 계약을 맺었다. 인도마다 리베이트가 돌아오고, 엔진이 모자라면 우리 라인이 먼저 받는다.`;
+          },
+        },
+        {
+          id: 'decline',
+          label: '거절한다',
+          detail: '어느 엔진이든 자유롭게 고른다. 리베이트는 없다',
+          fallback: true,
+          apply: () => '설계의 자유를 지키기로 했다. 공급사는 아쉬운 얼굴로 돌아갔다.',
+        },
+      ],
+    },
+    {
+      id: 'engine_launch_partner',
+      name: '신엔진 런칭 파트너 제안',
+      weight: (s) => (upcomingEngineFor(s) ? 5 : 0),
+      text: (s, h) => {
+        const e = upcomingEngineFor(s);
+        const cost = Math.round(420 * e.costMult);
+        h.remember('engine', e.id);
+        h.remember('cost', cost);
+        return `${e.maker}가 <b>${e.name}</b>(정식 취항 ${e.eis}년)의 런칭 파트너를 제안했다. 개발 분담금 ${money(cost)}을 내면 남들보다 ${Engines.EARLY_ACCESS_YEARS}년 먼저 이 엔진으로 설계할 수 있다 — 초기 결함 위험도 그만큼 먼저 떠안는다.`;
+      },
+      options: [
+        {
+          id: 'join',
+          label: '분담금을 낸다',
+          detail: '이 엔진을 2년 먼저 쓴다. 성숙도 위험은 온전히 우리 몫',
+          apply: (s, h) => {
+            const engId = h.recall('engine');
+            const cost = h.recall('cost', 420);
+            const e = Engines.get(engId);
+            if (!e) return '제안은 흐지부지됐다.';
+            h.expense(cost);
+            s.engineEarlyAccess = s.engineEarlyAccess || {};
+            s.engineEarlyAccess[engId] = true;
+            return `${money(cost)}을 분담했다. ${e.name}이 우리 설계 카탈로그에 ${Engines.EARLY_ACCESS_YEARS}년 먼저 올라온다.`;
+          },
+        },
+        {
+          id: 'decline',
+          label: '기다린다',
+          detail: '정식 취항 후에 성숙한 엔진을 쓴다',
+          fallback: true,
+          apply: () => '남들이 초기 트러블을 겪어 주기를 기다리기로 했다.',
         },
       ],
     },

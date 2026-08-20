@@ -315,19 +315,22 @@
       })
       .join('');
 
-    const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year) || {}).id;
+    const dealCtx = E.engineDealContext(s);
+    const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year, dealCtx.earlyEngines) || {}).id;
     const substituted = spec.engine && effectiveEngine !== spec.engine;
-    const engines = Engines.available(spec.segment, year)
+    const engines = Engines.available(spec.segment, year, dealCtx.earlyEngines)
       .slice()
       .sort((a, b) => a.eff - b.eff)
       .map((e) => {
         const immature = Engines.maturityRisk(e, year) > 1;
         const on = e.id === effectiveEngine;
+        const early = year < e.eis;
+        const offDeal = dealCtx.exclusiveMaker && e.maker !== dealCtx.exclusiveMaker;
         return `<button class="mat ${on ? 'on' : ''}" data-action="design-eng" data-eng="${e.id}">
              <b>${esc(e.name)}</b>
              <span>${esc(e.maker)} · 연비 ${e.eff >= 0 ? '+' : ''}${e.eff} · 단가 ×${e.costMult.toFixed(2)}${
                immature ? ' · <b class="warn">신형(초기 결함 위험)</b>' : ''
-             }</span>
+             }${early ? ' · <b>런칭 파트너 선공급</b>' : ''}${offDeal ? ' · <b class="warn">독점 계약 밖 (개발비 +8%)</b>' : ''}</span>
            </button>`;
       })
       .join('');
@@ -395,7 +398,7 @@
    * 그리면 여기가 옛 상태로 남아 실제 착수 결과와 어긋난다.
    */
   function renderDesignOptions(s, spec) {
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s) });
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
     const family = ev.inFamily
       ? `<button class="mat on" disabled>
           <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
@@ -444,7 +447,20 @@
           : `<button class="mat ${spec.engines === 4 ? 'on' : ''}" data-action="design-engines">
               <b>4발</b><span>ETOPS 가 <b>아예 필요 없다</b> — 인증 없이 대양 노선에 응찰·인도한다. 대신 개발비 +12% · 원가 +8% · 연비 −7: 유가가 오르면 그 감점이 몇 배로 돌아온다. 747 의 흥망이 이 트레이드다.</span>
             </button>`;
-    return family + etops + growth + maintainable + engines;
+    const dual = inherit
+      ? `<button class="mat ${ev.dualSource ? 'on' : ''}" disabled>
+          <b>엔진 이중화</b><span>원형에서 승계한다${ev.dualSource ? ` — 대안 ${esc(ev.altEngineName || '')}` : ''}.</span>
+        </button>`
+      : ev.altEngine || !spec.dualSource
+        ? `<button class="mat ${ev.dualSource ? 'on' : ''}" data-action="design-dual">
+          <b>엔진 이중화</b><span>개발비 +10% · 원가 +3%. 두 공급사 엔진을 모두 인증한다 — 어느 항공사의 <b>선호 엔진 가산</b>이든 받고, 한쪽 공급이 서도 라인이 절반만 죽지 않는다.${
+            ev.dualSource ? ` 대안: <b>${esc(ev.altEngineName || '')}</b>` : ' A330 이 그랬다.'
+          }</span>
+        </button>`
+        : `<button class="mat" disabled>
+          <b>엔진 이중화</b><span>이 시점 이 세그먼트에는 다른 공급사의 엔진이 없다 — 이중화할 상대가 없다.</span>
+        </button>`;
+    return family + etops + growth + maintainable + engines + dual;
   }
 
   function slider(key, label, value, min, max, step, unit) {
@@ -458,7 +474,7 @@
   function renderDesignPreview(s, spec, designName) {
     // 미리보기는 항상 "지금" 기준으로 평가한다. spec.year 를 들고 다니면 분기가
     // 지나도 갱신되지 않아, 이미 살 수 없는 엔진으로 계산된 값을 보여주게 된다.
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s) });
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
     const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
     const seg = SEGMENTS[spec.segment];
 
@@ -545,15 +561,15 @@
           const gone = !Engines.inService(inst, E.yearOf(s.turn));
           rows.push(
             `<tr><th>엔진</th><td>${esc(inst.name)} <span class="muted">${esc(inst.maker)}</span>${
-              gone ? ' <span class="warn">단산 — 파생형은 재장착</span>' : ''
-            }</td></tr>`,
+              p.altEngine ? ` · 대안 ${esc((Engines.get(p.altEngine) || {}).name || '')}` : ''
+            }${gone ? ' <span class="warn">단산 — 파생형은 재장착</span>' : ''}</td></tr>`,
           );
         }
         // ETOPS 는 되돌릴 수 없고 9,000km 이상 노선의 응찰 자격을 좌우한다.
         rows.push(
           `<tr><th>인증 / 계보</th><td>${
             p.engines === 4 ? '4발 ✓' : p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'
-          }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${
+          }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${p.altEngine ? ' · 이중화' : ''}${
             p.familyId ? ' · 패밀리' : ''
           }${p.derivative ? ' · 파생형' : ''}</td></tr>`,
         );
@@ -562,6 +578,14 @@
         // 개발 중에는 인증 진입 때 실측치로 재확정되므로 불확실성 밴드를 함께 보여준다.
         const riskBand = p.phase === 'dev' ? ` <span class="muted">±${p.windTunnel ? 8 : 30}%</span>` : '';
         rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%${riskBand}</td></tr>`);
+        if (p.launchAid) {
+          const owed = Math.max(0, Math.round(p.launchAid.amount * E.LAUNCH_AID_PAYBACK) - p.launchAid.repaid);
+          rows.push(
+            `<tr><th>정부 지원금</th><td>${money(p.launchAid.amount)} 수령${
+              owed > 0 ? ` · 상환 잔액 <b>${money(owed)}</b> <span class="muted">(인도마다 계약가의 ${Math.round(E.LAUNCH_AID_ROYALTY * 100)}%)</span>` : ' · <b>상환 완료</b>'
+            }</td></tr>`,
+          );
+        }
         if (p.phase === 'production') {
           rows.push(`<tr><th>생산 / 인도</th><td>${num(p.produced)}기 / ${num(p.delivered)}기</td></tr>`);
           rows.push(`<tr><th>현재 대당 원가</th><td>${money(E.currentUnitCost(s, p))} <span class="muted">(학습곡선·조달)</span></td></tr>`);
@@ -588,6 +612,9 @@
                 </button>
                 <button data-action="wind-tunnel" data-id="${p.id}" ${p.windTunnel || p.progress >= 50 ? 'disabled' : ''}>
                   풍동·목업 ${p.windTunnel ? '완료 (±8%)' : p.progress >= 50 ? '시기 지남' : `· ${money(p.devCost * E.WIND_TUNNEL_COST_RATE)}`}
+                </button>
+                <button data-action="launch-aid" data-id="${p.id}" ${p.launchAid || p.progress >= 50 ? 'disabled' : ''}>
+                  정부 지원 ${p.launchAid ? '수령함' : p.progress >= 50 ? '시기 지남' : `+${money(p.devCost * E.LAUNCH_AID_RATE)} · 긴장↑`}
                 </button>
                 <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
               </div>
@@ -822,7 +849,42 @@
         <h3 class="sub">화물형 개조</h3>
         <p class="hint">여객 수요가 꺾여도 화물은 돈다. 침체 분기에는 화물 수익이 ${FREIGHTER.slumpMult}배가 된다 — 불황 헤지다.</p>
         <div class="row wrap">${freightButtons}</div>
+        <h3 class="sub">엔진 공급사</h3>
+        ${engineRelationRows(s)}
       </section>`;
+  }
+
+  /** 공급사별 인도 실적과 계약 상태 — 독점 계약·런칭 파트너 제안의 배경 정보다. */
+  function engineRelationRows(s) {
+    const entries = Object.entries(s.engineRelations || {}).sort((a, b) => b[1] - a[1]);
+    const deal = s.engineDeal && s.turn < s.engineDeal.until ? s.engineDeal : null;
+    const early = Object.keys(s.engineEarlyAccess || {})
+      .map((id) => (Engines.get(id) || {}).name)
+      .filter(Boolean);
+    const rows = entries.length
+      ? entries
+          .map(
+            ([maker, units]) =>
+              `<span class="tag ${deal && deal.maker === maker ? 'good' : ''}">${esc(maker)} ${num(units)}기${
+                deal && deal.maker === maker ? ` · 독점 계약 ~${E.yearOf(deal.until)}년` : ''
+              }</span>`,
+          )
+          .join('')
+      : '<span class="muted">아직 인도 실적이 없다.</span>';
+    const tension = s.tradeTension || 0;
+    const tariff = (s.effects && s.effects.tradeTariffQuarters) || 0;
+    return `
+      <p class="hint">엔진 인도 실적이 쌓이면 독점 계약·신엔진 런칭 파트너 제안이 온다. 몰아주면 협상력이, 나눠 주면 공급 차질 내성이 생긴다.</p>
+      <div class="row wrap">${rows}</div>
+      ${
+        tariff > 0
+          ? `<p class="hint warn">보복 관세 발효 중 — ${tariff}분기 동안 북미·서유럽 인도에 ${Math.round(E.TRADE_TARIFF_RATE * 100)}% 관세.</p>`
+          : tension >= 4
+            ? `<p class="hint warn">무역 긴장 ${tension} — 정부 지원금의 청구서(WTO 판정)가 가까워지고 있다.</p>`
+            : tension > 0
+              ? `<p class="hint">무역 긴장 ${tension} <span class="muted">(정부 지원을 받을수록 쌓인다)</span></p>`
+              : ''
+      }`;
   }
 
   // ─────────────────────────────── 수주 ───────────────────────────────
@@ -851,6 +913,7 @@
           </div>
           <table class="spec">
             ${airline && airline.doctrine ? `<tr><th>구매 독트린</th><td><b>${esc(airline.doctrine)}</b> — ${esc(airline.doctrineNote || '')}</td></tr>` : ''}
+            ${airline && airline.enginePref ? `<tr><th>선호 엔진</th><td>${esc(airline.enginePref)} <span class="muted">— 맞추면 +2 · 낯선 공급사는 −1 · 이중화는 어느 쪽이든 맞고 감점을 면한다</span></td></tr>` : ''}
             <tr><th>요구 기종</th><td>${rfp.segmentName} · ${rfp.reqSeats}석급 · ${num(rfp.reqRange)}km</td></tr>
             <tr><th>발주 배경</th><td>${
               rfp.deferredQuarters

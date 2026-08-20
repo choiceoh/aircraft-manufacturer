@@ -134,6 +134,13 @@
       rivalDrama: [],
       rivalDelays: {},
       rivalCrises: {},
+      // 엔진 공급사 관계 — 그 공급사 엔진을 단 인도 실적이 공급사별로 쌓인다.
+      // 독점 계약·런칭 파트너 제안의 전제 조건이 이 장부다.
+      engineRelations: {},
+      engineDeal: null,
+      engineEarlyAccess: {},
+      // 정부 지원금이 쌓는 무역 긴장 — 문턱을 넘으면 관세 판정이 날아온다.
+      tradeTension: 0,
       // 이 회사가 남긴 순간들 — 첫 인도, 100호기, 첫 광동체. 종료 회고의 연표가 된다.
       milestones: [],
       gameOver: null,
@@ -484,6 +491,10 @@
     if (!Array.isArray(s.rivalDrama)) s.rivalDrama = [];
     if (!s.rivalDelays || typeof s.rivalDelays !== 'object') s.rivalDelays = {};
     if (!s.rivalCrises || typeof s.rivalCrises !== 'object') s.rivalCrises = {};
+    if (!s.engineRelations || typeof s.engineRelations !== 'object') s.engineRelations = {};
+    if (s.engineDeal === undefined) s.engineDeal = null;
+    if (!s.engineEarlyAccess || typeof s.engineEarlyAccess !== 'object') s.engineEarlyAccess = {};
+    if (typeof s.tradeTension !== 'number') s.tradeTension = 0;
     if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;
   }
@@ -648,7 +659,7 @@
 
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s) });
+    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s), ...engineDealContext(s) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -717,10 +728,11 @@
       wing: base.wing,
       fuelMargin: base.fuelMargin,
       etops: base.etops,
-      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수.
+      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화.
       growth: !!base.growth,
       maintainable: !!base.maintainable,
       engines: base.engines || 2,
+      dualSource: !!base.dualSource,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
         id: base.id,
@@ -740,6 +752,7 @@
         growth: !!base.growth,
         maintainable: !!base.maintainable,
         engines: base.engines || 2,
+        dualSource: !!base.dualSource,
       },
     };
   }
@@ -793,6 +806,52 @@
     p.defectRisk = Math.round(p.defectRisk * 0.92 * 1000) / 1000;
     pushLog(s, 'program', `${p.name} 확장 풍동·목업 시험에 ${fmtMoney(cost)} 투입. 결함 위험 추정이 ±${Math.round(RISK_UNCERTAINTY_TUNNEL * 100)}% 폭으로 좁혀졌다.`);
     return { ok: true, cost };
+  }
+
+  /**
+   * 정부 런치 에이드 — 개발 위험을 국가와 나눈다.
+   *
+   * 지금 개발비의 25%를 현금으로 받고, 성공하면 인도마다 계약가의 5%씩
+   * 총 1.4배까지 갚는다. 개발을 접으면 갚지 않는다 — 그게 이 돈의 조건이고,
+   * A380·A350 의 launch aid 가 정확히 이 구조였다. 공짜가 아닌 이유는 따로 있다:
+   * 지원을 받을 때마다 무역 긴장이 쌓이고, 문턱을 넘으면 WTO 판정(관세)이 온다.
+   */
+  const LAUNCH_AID_RATE = 0.25;
+  const LAUNCH_AID_ROYALTY = 0.05;
+  const LAUNCH_AID_PAYBACK = 1.4;
+  const LAUNCH_AID_TENSION = 3;
+  /** 관세 판정이 살아 있는 동안 상대 앞마당(북미·서유럽) 인도에 붙는 세율. */
+  const TRADE_TARIFF_RATE = 0.04;
+  /** 독점 공급 계약 — 계약 공급사 엔진 인도분의 부품 리베이트와 계약 기간. */
+  const ENGINE_DEAL_REBATE = 0.02;
+  const ENGINE_DEAL_QUARTERS = 16;
+
+  function investLaunchAid(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'dev') return { ok: false, error: '개발 중인 프로그램만 지원 대상입니다.' };
+    if (p.progress >= 50) return { ok: false, error: '개발이 절반을 넘었다 — 정부는 위험을 나누는 돈만 낸다.' };
+    if (p.launchAid) return { ok: false, error: '이미 지원을 받은 프로그램입니다.' };
+    ensureShape(s);
+    const aid = Math.round(p.devCost * LAUNCH_AID_RATE);
+    s.cash += aid;
+    p.launchAid = { amount: aid, repaid: 0 };
+    s.tradeTension += LAUNCH_AID_TENSION;
+    pushLog(
+      s,
+      'program',
+      `${p.name}에 정부 지원금 ${fmtMoney(aid)}. 인도마다 계약가의 ${Math.round(LAUNCH_AID_ROYALTY * 100)}%씩, 총 ${LAUNCH_AID_PAYBACK}배까지 갚는다 — 개발을 접으면 갚지 않는다. 대신 무역 긴장이 올랐다.`,
+    );
+    return { ok: true, aid };
+  }
+
+  /** 설계 평가에 실어 보낼 공급사 계약 맥락 — 조기 접근 엔진과 독점 공급사. */
+  function engineDealContext(s) {
+    return {
+      earlyEngines: Object.keys(s.engineEarlyAccess || {}),
+      exclusiveMaker: s.engineDeal && s.turn < s.engineDeal.until ? s.engineDeal.maker : null,
+    };
   }
 
   /** 개발 취소 — 투입 비용은 돌아오지 않는다. */
@@ -1760,6 +1819,16 @@
       const p = s.programs.find((x) => x.id === line.programId);
       if (!p || p.phase !== 'production' || line.idle) continue;
 
+      // 엔진 공급 차질 — 그 공급사 엔진을 다는 라인만 멈칫한다.
+      const short = s.effects.engineShortage;
+      // 이중화 기체는 대안 공급사 라인으로 구멍의 절반을 메운다 — 두 번 인증한 값.
+      const pMult =
+        short && short.quarters > 0 && (root.AirlinerEngines.get(p.engine) || {}).maker === short.maker
+          ? p.altEngine
+            ? 0.75
+            : 0.5
+          : 1;
+
       // 미인도 주문에서 이미 쌓아둔 재고를 뺀 만큼만 만든다. p.stock이 갱신되므로
       // 같은 기종에 라인이 여러 개여도 자연히 나눠 갖는다.
       // 주문을 넘어선 선행 생산은 허용하지 않는다 — 여유분을 두면 재고를 처분할 때마다
@@ -1775,7 +1844,7 @@
       // 자동화 라인은 물량이 크지만 안정화가 느리다 — 수요가 확실할 때만 값을 한다.
       const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
       line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter * grade.rampMult);
-      const raw = line.capacity * line.ramp * mult + line.partial;
+      const raw = line.capacity * line.ramp * mult * pMult + line.partial;
       let units = Math.floor(raw);
       line.partial = raw - units;
       if (units > headroom) {
@@ -1820,7 +1889,25 @@
       const financing = BID_FINANCING[o.financing] || BID_FINANCING.normal;
       const now = balance * financing.onDelivery;
       const later = balance - now;
-      const revenue = now;
+      // 정부 지원금 로열티 — 성공한 기체가 갚는다. 인도 대금에서 원천 공제된다.
+      let royalty = 0;
+      if (p.launchAid) {
+        const cap = Math.round(p.launchAid.amount * LAUNCH_AID_PAYBACK) - p.launchAid.repaid;
+        if (cap > 0) {
+          royalty = Math.min(cap, Math.round(n * o.unitPrice * LAUNCH_AID_ROYALTY));
+          p.launchAid.repaid += royalty;
+          if (p.launchAid.repaid >= Math.round(p.launchAid.amount * LAUNCH_AID_PAYBACK)) {
+            pushLog(s, 'good', `${p.name} 정부 지원금 상환 완료 — 이제 인도 대금이 온전히 우리 몫이다.`);
+          }
+        }
+      }
+      // 보복 관세 — 판정이 살아 있는 동안 상대 앞마당(북미·서유럽) 인도에 붙는다.
+      let duty = 0;
+      if ((s.effects.tradeTariffQuarters || 0) > 0) {
+        const home = (AIRLINES.find((a) => a.id === o.airlineId) || {}).home;
+        if (home === '북미' || home === '서유럽') duty = Math.round(n * o.unitPrice * TRADE_TARIFF_RATE);
+      }
+      const revenue = now - royalty - duty;
       const progBefore = p.delivered;
       const companyBefore = s.stats.delivered;
       o.remaining -= n;
@@ -1828,6 +1915,20 @@
       p.delivered += n;
       addToFleet(s, o.airlineId, p.id, n);
       recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
+      // 엔진 공급사 관계 — 그 공급사 엔진을 단 인도가 쌓일수록 협상 테이블이 생긴다.
+      // 이중화 기체는 항공사가 선호하는 쪽 엔진을 달아 나간다 — A330 이 그랬다.
+      const primMaker = (root.AirlinerEngines.get(p.engine) || {}).maker;
+      const altM = p.altEngine ? (root.AirlinerEngines.get(p.altEngine) || {}).maker : null;
+      const wantPref = (AIRLINES.find((a) => a.id === o.airlineId) || {}).enginePref;
+      const engMaker = altM && wantPref === altM ? altM : primMaker;
+      if (engMaker) s.engineRelations[engMaker] = (s.engineRelations[engMaker] || 0) + n;
+      // 독점 계약 리베이트 — 계약 공급사 엔진 인도분은 부품값 일부를 돌려받는다.
+      if (engMaker && s.engineDeal && s.turn < s.engineDeal.until && s.engineDeal.maker === engMaker) {
+        const rebate = Math.round(n * p.unitCostBase * ENGINE_DEAL_REBATE);
+        s.cash += rebate;
+        s.stats.revenue += rebate;
+        report.revenue += rebate;
+      }
       s.cash += revenue;
       s.stats.delivered += n;
       s.stats.revenue += revenue;
@@ -2121,6 +2222,22 @@
     const e = s.effects;
     if (e.strikeQuarters > 0) e.strikeQuarters--;
     if (e.supplyQuarters > 0) e.supplyQuarters--;
+    if (e.tradeTariffQuarters > 0) {
+      e.tradeTariffQuarters--;
+      if (e.tradeTariffQuarters === 0) pushLog(s, 'good', '보복 관세가 만료됐다. 북미·서유럽 인도가 다시 제값을 받는다.');
+    }
+    if (e.engineShortage && e.engineShortage.quarters > 0) {
+      e.engineShortage.quarters--;
+      if (e.engineShortage.quarters === 0) {
+        pushLog(s, 'good', `${e.engineShortage.maker} 엔진 공급이 정상화됐다. 라인이 다시 돈다.`);
+        e.engineShortage = null;
+      }
+    }
+    // 독점 공급 계약 만료 — 리베이트도, 타사 엔진 할증도 함께 끝난다.
+    if (s.engineDeal && s.turn >= s.engineDeal.until) {
+      pushLog(s, 'event', `${s.engineDeal.maker} 독점 공급 계약이 만료됐다. 다음 설계는 어느 엔진이든 자유다.`);
+      s.engineDeal = null;
+    }
     if (e.demandSlumpQuarters > 0) e.demandSlumpQuarters--;
     if (e.demandBoomQuarters > 0) e.demandBoomQuarters--;
     if (e.fuelShockQuarters > 0) e.fuelShockQuarters--;
@@ -3460,6 +3577,14 @@
     investQuality,
     investWindTunnel,
     WIND_TUNNEL_COST_RATE,
+    investLaunchAid,
+    engineDealContext,
+    LAUNCH_AID_RATE,
+    LAUNCH_AID_ROYALTY,
+    LAUNCH_AID_PAYBACK,
+    ENGINE_DEAL_REBATE,
+    ENGINE_DEAL_QUARTERS,
+    TRADE_TARIFF_RATE,
     addTestAircraft,
     delayCertification,
     startEarlyEtops,

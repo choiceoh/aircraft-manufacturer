@@ -269,8 +269,17 @@
         render();
         break;
 
+      case 'design-dual':
+        ui.spec.dualSource = !ui.spec.dualSource;
+        render();
+        break;
+
       case 'wind-tunnel':
         act(E.investWindTunnel(s, btn.dataset.id));
+        break;
+
+      case 'launch-aid':
+        act(E.investLaunchAid(s, btn.dataset.id));
         break;
 
       case 'derive': {
