@@ -6127,7 +6127,7 @@ test('이중화 인도는 항공사가 선호하는 공급사의 실적이 된�
 test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경쟁 명단에서 빠진다', () => {
   const s = E.newGame(31, 'boeing');
   assert.strictEqual(s.company, '보잉');
-  assert.strictEqual(s.playerMaker, 'boeing');
+  assert.deepStrictEqual(s.playerMakers, ['boeing']);
   assert.strictEqual(s.programs.length, 2, '협동체·광동체 두 주력을 승계해야 한다');
   const narrow = s.programs.find((p) => p.segment === 'narrow');
   const wide = s.programs.find((p) => p.segment === 'wide');
@@ -6168,7 +6168,7 @@ test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프�
   assert.strictEqual(custom.company, '나의 회사');
   // 모달은 데네브도 프리셋 id 로 넘긴다 — 회사명이 'deneb' 문자열이 되면 안 된다.
   assert.strictEqual(E.newGame(33, 'deneb').company, '데네브 항공우주');
-  assert.strictEqual(custom.playerMaker, null);
+  assert.deepStrictEqual(custom.playerMakers, []);
   assert.strictEqual(custom.programs[0].name, 'DN-150', '이름만 바꾼 판은 기준 승계 그대로여야 한다');
   assert.strictEqual(custom.competitors.length, globalThis.AirlinerFleet.MANUFACTURERS.length, '기준 회사는 전 제조사와 경쟁한다');
 
@@ -6180,17 +6180,34 @@ test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프�
   assert.ok(em.overheadMult < 1 && boeing.overheadMult > 1, '간접비는 몸집을 따라야 한다');
   assert.ok(em.scoreMult > 1 && boeing.scoreMult < 1, '등급 환산은 출발선을 감안해야 한다');
 
-  const tu = E.newGame(33, 'tupolev');
-  assert.strictEqual(tu.company, '투폴레프');
-  assert.strictEqual(tu.programs[0].name, 'Tu-154M');
-  assert.ok((tu.fleets.kosmo || {})[tu.programs[0].id] === 74, '옛 소련권(에어아스타나) 선단을 물려받아야 한다');
-  assert.ok(!tu.competitors.some((c) => c.id === 'tupolev'), '투폴레프도 자기 자신과 겨루지 않는다');
+  // UAC — 두 제조사를 흡수한 회사. Tu-204·4발 Il-96M 에 서랍 속 SSJ-100 설계안까지.
+  const uac = E.newGame(33, 'uac');
+  assert.strictEqual(uac.company, 'UAC (통합항공기제작사)');
+  assert.deepStrictEqual(uac.playerMakers, ['tupolev', 'sukhoi']);
+  const il96 = uac.programs.find((p) => p.name === 'Il-96M');
+  assert.strictEqual(il96.engines, 4, 'Il-96 은 4발이어야 한다 — ETOPS 없이 대양을 건넌다');
+  const ssj = uac.programs.find((p) => p.name === 'SSJ-100');
+  assert.strictEqual(ssj.phase, 'dev', 'SSJ-100 은 개발 중 설계안으로 인계된다');
+  assert.strictEqual(ssj.share, 0, '동결 상태로 온다 — 밀지 말지는 플레이어의 몫');
+  assert.ok(uac.engineEarlyAccess.sam146, '수호이의 SaM146 런칭 파트너 지위를 승계해야 한다');
+  assert.ok(!uac.competitors.some((c) => c.id === 'tupolev' || c.id === 'sukhoi'), '흡수한 두 제조사 모두 경쟁에서 빠져야 한다');
+  // 수호이의 카탈로그 SSJ100(2011)이 경쟁 드라마·시장에 남으면 자기 설계안과 싸우게 된다.
+  const F2 = globalThis.AirlinerFleet;
+  for (const id of Object.keys(uac.rivalDelays)) {
+    const mk = F2.AIRCRAFT.find((t) => t.id === id).maker;
+    assert.ok(mk !== 'tupolev' && mk !== 'sukhoi', '흡수 제조사의 기종 드라마가 남았다');
+  }
 
-  // 옛 세이브 — playerMaker 가 없어도 기준 회사로 읽힌다.
+  // 옛 세이브 — 단수 문자열 playerMaker 시절 세이브는 배열로 이관된다.
   const old = E.newGame(35);
-  delete old.playerMaker;
+  delete old.playerMakers;
+  old.playerMaker = 'boeing';
   E.ensureShape(old);
-  assert.strictEqual(old.playerMaker, null);
+  assert.deepStrictEqual(old.playerMakers, ['boeing'], '옛 단수 필드가 배열로 옮겨져야 한다');
+  const older = E.newGame(35);
+  delete older.playerMakers;
+  E.ensureShape(older);
+  assert.deepStrictEqual(older.playerMakers, [], '필드가 아예 없던 세이브는 기준 회사다');
 });
 
 test('회사 환산 배수는 최종 점수에 실제로 반영된다', () => {

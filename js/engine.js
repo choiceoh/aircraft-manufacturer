@@ -66,7 +66,7 @@
    */
   const PLAYABLE_COMPANIES = [
     {
-      id: 'deneb', name: '데네브 항공우주', maker: null, difficulty: '기준',
+      id: 'deneb', name: '데네브 항공우주', makers: [], difficulty: '기준',
       desc: '가상의 중견 제조사. 낡은 주력기 하나와 20년 — 이 게임의 원래 이야기다.',
       cash: CONFIG.startCash, debt: CONFIG.startDebt, engineers: CONFIG.startEngineers,
       reputation: CONFIG.startReputation, rivalDelivered: 240, overheadMult: 1, scoreMult: 1,
@@ -77,7 +77,7 @@
       intro: '주력기 DN-150이 아직 현금을 벌어다 주지만, 설계는 이미 낡았다.',
     },
     {
-      id: 'boeing', name: '보잉', maker: 'boeing', difficulty: '쉬움',
+      id: 'boeing', name: '보잉', makers: ['boeing'], difficulty: '쉬움',
       desc: '시애틀의 거인. 협동체와 광동체 두 주력, 두터운 선단 — 대신 에어버스가 전력으로 온다.',
       cash: 9500, debt: 5200, engineers: 7800, reputation: 63, rivalDelivered: 620,
       // 거인의 값: 본사·법무·연금이 무겁고(간접비 ×1.7), 등급은 출발선을 감안해 환산된다.
@@ -91,7 +91,7 @@
       intro: '737 라인이 현금을 찍고 767이 대양을 건넌다. 다만 둘 다 설계가 한 세대 전 것이다.',
     },
     {
-      id: 'airbus', name: '에어버스', maker: 'airbus', difficulty: '쉬움',
+      id: 'airbus', name: '에어버스', makers: ['airbus'], difficulty: '쉬움',
       desc: '툴루즈의 도전자. A320의 기세와 A330의 대양 — 보잉의 아성을 허물어야 한다.',
       cash: 8800, debt: 6000, engineers: 7200, reputation: 59, rivalDelivered: 780,
       overheadMult: 1.65, scoreMult: 0.5,
@@ -104,7 +104,7 @@
       intro: 'A320은 아직 젊고 A330은 팔리는 중이다. 출발선은 좋다 — 문제는 바다 건너의 거인이다.',
     },
     {
-      id: 'embraer', name: '엠브라에르', maker: 'embraer', difficulty: '어려움',
+      id: 'embraer', name: '엠브라에르', makers: ['embraer'], difficulty: '어려움',
       desc: '상파울루의 복병. 리저널 틈새 하나로 시작해 위로 올라가야 한다.',
       cash: 4400, debt: 1300, engineers: 1800, reputation: 46, rivalDelivered: 260,
       // 복병의 위안: 몸집이 작아 간접비도 작고(×0.6), 등급 환산은 후하다.
@@ -116,18 +116,28 @@
       intro: 'ERJ가 피더 시장을 뚫었다. 리저널의 얇은 마진 위에서 다음 급을 노려야 한다.',
     },
     {
-      id: 'tupolev', name: '투폴레프', maker: 'tupolev', difficulty: '매우 어려움',
-      desc: '소비에트의 유산. 낡은 기술과 마른 곳간, 그러나 거대한 운용 기반 — 서방 시장을 뚫어야 한다.',
-      cash: 1800, debt: 3400, engineers: 2500, reputation: 38, rivalDelivered: 300,
-      overheadMult: 0.9, scoreMult: 1.15,
+      id: 'uac', name: 'UAC (통합항공기제작사)', makers: ['tupolev', 'sukhoi'], difficulty: '어려움',
+      desc: '러시아 통합 항공. Tu-204와 4발 Il-96M, 서랍 속 SSJ-100 설계안 — 다 가졌지만 전부 미완이다.',
+      cash: 2200, debt: 4200, engineers: 3800, reputation: 36, rivalDelivered: 380,
+      overheadMult: 0.9, scoreMult: 0.8,
       legacies: [
-        { name: 'Tu-154M', segment: 'narrow', seats: 158, range: 3900, tech: 34, engine: 'jt8d',
-          produced: 320, fleets: [['kosmo', 74]], backlog: [['kosmo', 18]] },
+        // 실제 러시아 라인은 연 몇 대를 겨우 냈다 — 라인 용량이 서방의 몇 분의 일이다.
+        { name: 'Tu-204', segment: 'narrow', seats: 196, range: 4300, tech: 42, engine: 'cfm56-5b',
+          produced: 40, lineCapacity: 5, fleets: [['kosmo', 24]], backlog: [['kosmo', 12]] },
+        // Il-96 은 4발이다 — ETOPS 없이 대양을 건너는, 이 게임 엔진 수 축의 산 증인.
+        { name: 'Il-96M', segment: 'wide', seats: 262, range: 11500, tech: 40, engine: 'pw4000', engines: 4,
+          produced: 24, lineCapacity: 1, fleets: [['kosmo', 10]], backlog: [['kosmo', 4]] },
       ],
-      intro: 'Tu-154가 옛 소련권 하늘을 아직 지배한다. 다만 서방 항공사는 우리 이름을 모른 척한다.',
+      // 서랍 속 설계안 — 개발 15%에서 동결된 채 인계된다. 밀지 말지는 플레이어의 몫.
+      devPrograms: [
+        { name: 'SSJ-100', segment: 'regional', seats: 98, range: 3050, tech: 58, progress: 15 },
+      ],
+      // 수호이를 품었으니 SaM146 런칭 파트너 지위도 승계한다 (2009년부터 쓸 수 있다).
+      earlyEngines: ['sam146'],
+      intro: 'Tu-204와 Il-96이 옛 소련권을 지키고, 서랍에는 SSJ-100 설계안이 잠들어 있다. 서방 시장이 숙제다.',
     },
     {
-      id: 'bombardier', name: '봉바르디에', maker: 'bombardier', difficulty: '어려움',
+      id: 'bombardier', name: '봉바르디에', makers: ['bombardier'], difficulty: '어려움',
       desc: '몬트리올의 승부사. CRJ로 버는 동안 더 큰 기체로 올라설 길을 찾아야 한다.',
       cash: 4600, debt: 1500, engineers: 1900, reputation: 47, rivalDelivered: 300,
       overheadMult: 0.62, scoreMult: 1.45,
@@ -155,8 +165,9 @@
       // 프리셋 id 로 시작하면 항상 프리셋의 회사명이다 — 'deneb' 을 넘겼는데
       // 회사명이 "deneb" 이 되면 화면·로그·점수 내역이 전부 그 문자열을 문다.
       company: isPresetId ? preset.name : companyName || preset.name,
-      // 이 회사가 실존 제조사라면 그 제조사는 경쟁 명단·시장 배분에서 빠진다.
-      playerMaker: preset.maker,
+      // 이 회사가 실존 제조사(들)라면 그 제조사는 경쟁 명단·시장 배분에서 빠진다.
+      // UAC 처럼 여러 제조사를 흡수한 회사가 있어 배열이다.
+      playerMakers: preset.makers,
       // 회사 규모의 값 — 간접비 배수. 그리고 출발선을 감안한 등급 환산 배수.
       overheadMult: preset.overheadMult,
       scoreMult: preset.scoreMult,
@@ -183,7 +194,7 @@
       relations: {},
       // 항공사별 우리 기체 보유량 (airlineId → programId → 대수). 선단 공통성 가산의 근거.
       fleets: {},
-      competitors: newCompetitors(preset.maker),
+      competitors: newCompetitors(preset.makers),
       rfps: [],
       bids: {},
       log: [],
@@ -254,7 +265,7 @@
     s.shocks = buildShockSchedule(s, rng);
     // 드라마는 **별도 난수열**로 뽑는다. 본류(rng)에 끼우면 드라마 규칙을 손볼 때마다
     // 같은 시드의 모든 전개가 통째로 갈려, 밸런스 변화와 시드 재편이 구분되지 않는다.
-    const drama = buildRivalDrama(s.seed, preset.maker);
+    const drama = buildRivalDrama(s.seed, preset.makers);
     s.rivalDrama = drama.events;
     s.rivalDelays = drama.delays;
     issueMandate(s, rng);
@@ -279,7 +290,7 @@
     // 어느 회사를 골랐든 승계라는 출발점은 같다: 이미 팔리는 기체, 이미 있는 선단.
     s.fleets = {};
     for (const leg of (preset || companyPreset('deneb')).legacies) {
-      const spec = { segment: leg.segment, seats: leg.seats, range: leg.range, tech: leg.tech, material: 'aluminum', engine: leg.engine, wing: leg.wing, year: yearOf(0) };
+      const spec = { segment: leg.segment, seats: leg.seats, range: leg.range, tech: leg.tech, material: 'aluminum', engine: leg.engine, wing: leg.wing, engines: leg.engines, year: yearOf(0) };
       const ev = evaluate(spec);
       const p = {
         id: 'prog-' + s.nextId++,
@@ -307,7 +318,7 @@
       s.lines.push({
         id: 'line-' + s.nextId++,
         programId: p.id,
-        capacity: SEGMENTS[leg.segment].lineMaxRate,
+        capacity: leg.lineCapacity || SEGMENTS[leg.segment].lineMaxRate,
         ramp: 1,
         partial: 0,
         idle: false,
@@ -340,6 +351,31 @@
         s.relations[aid] = 58;
       }
     }
+
+    // 서랍 속 설계안 — 진행 중인 개발을 동결 상태로 인계받는다 (UAC 의 SSJ-100).
+    // 밀어붙일지, 서랍에 도로 넣을지는 플레이어의 첫 결정이 된다.
+    for (const d of preset.devPrograms || []) {
+      const ev = evaluate({ segment: d.segment, seats: d.seats, range: d.range, tech: d.tech, material: 'aluminum', year: yearOf(0) });
+      s.programs.push({
+        id: 'prog-' + s.nextId++,
+        name: d.name,
+        ...ev,
+        phase: 'dev',
+        progress: d.progress,
+        spent: Math.round(ev.devCost * (d.progress / 100)),
+        certRemaining: ev.certQuarters,
+        qualityInvests: 0,
+        share: 0,
+        produced: 0,
+        delivered: 0,
+        stock: 0,
+        launchTurn: 0,
+        certTurn: null,
+        derivedFrom: null,
+      });
+    }
+    // 흡수한 제조사의 런칭 파트너 지위 — 그 엔진이 남들보다 먼저 열린다.
+    for (const engId of preset.earlyEngines || []) s.engineEarlyAccess[engId] = true;
   }
 
   /**
@@ -352,8 +388,8 @@
    * 경쟁사 상태. 세그먼트별 경쟁력 자체는 fleet 카탈로그가 시점별로 만들어 주므로
    * 여기 남는 건 이벤트가 얹는 보정치(drift)뿐이다.
    */
-  function newCompetitors(playerMaker) {
-    return MANUFACTURERS.filter((m) => m.id !== playerMaker).map((m) => ({
+  function newCompetitors(playerMakers) {
+    return MANUFACTURERS.filter((m) => !(playerMakers || []).includes(m.id)).map((m) => ({
       id: m.id,
       name: m.name,
       // drift 는 이벤트가 얹는 보정치, reaction 은 우리 성적에 대한 가격 공세다.
@@ -565,7 +601,7 @@
     // 가상 경쟁사(strength 스칼라)를 쓰던 세이브는 실존 제조사 명단으로 갈아끼운다.
     // 옛 strength 는 새 카탈로그와 척도가 달라 옮겨올 수 없으므로 보정치는 0에서 시작한다.
     if (!Array.isArray(s.competitors) || s.competitors.some((c) => !c.drift)) {
-      s.competitors = newCompetitors(s.playerMaker);
+      s.competitors = newCompetitors(s.playerMakers);
     }
     for (const c of s.competitors) {
       if (!c.reaction) c.reaction = {};
@@ -593,7 +629,11 @@
     if (s.engineDeal === undefined) s.engineDeal = null;
     if (!s.engineEarlyAccess || typeof s.engineEarlyAccess !== 'object') s.engineEarlyAccess = {};
     if (typeof s.tradeTension !== 'number') s.tradeTension = 0;
-    if (s.playerMaker === undefined) s.playerMaker = null;
+    if (!Array.isArray(s.playerMakers)) {
+      // 단수 문자열이던 시절의 세이브 — 배열로 옮긴다.
+      s.playerMakers = typeof s.playerMaker === 'string' && s.playerMaker ? [s.playerMaker] : [];
+      delete s.playerMaker;
+    }
     if (typeof s.overheadMult !== 'number') s.overheadMult = 1;
     if (typeof s.scoreMult !== 'number') s.scoreMult = 1;
     if (!Array.isArray(s.milestones)) s.milestones = [];
@@ -661,7 +701,7 @@
   const DRAMA_CRISIS_ODDS = 0.18;
   const DRAMA_ACCLAIM_ODDS = 0.25;
 
-  function buildRivalDrama(seed, playerMaker) {
+  function buildRivalDrama(seed, playerMakers) {
     // 본류 난수열과 분리한다 — 드라마 규칙을 손볼 때 같은 시드의 나머지 전개가
     // 통째로 재편되면, 밸런스 변화와 시드 재편을 구분할 수 없게 된다.
     const rng = createRng(((seed >>> 0) + 0x5eed0) >>> 0);
@@ -669,7 +709,7 @@
     const delays = {};
     for (const t of AIRCRAFT) {
       // 플레이어가 그 제조사면 자기 미래 기종의 드라마는 없다 — 그 미래는 이제 플레이어의 몫이다.
-      if (playerMaker && t.maker === playerMaker) continue;
+      if ((playerMakers || []).includes(t.maker)) continue;
       const eisTurn = Math.round((t.eis - CONFIG.startYear) * 4);
       // 시작 시점에 이미 취항(임박)했거나 게임 밖이면 드라마 없이 지나간다.
       if (eisTurn <= 2 || eisTurn >= CONFIG.totalTurns) continue;
@@ -2399,7 +2439,7 @@
     const weights = new Map();
 
     for (const seg of Object.keys(SEGMENT_UNIT_SHARE)) {
-      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => t.maker !== s.playerMaker);
+      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => !(s.playerMakers || []).includes(t.maker));
       if (!pool.length) continue;
       const segWeight = SEGMENT_UNIT_SHARE[seg];
       // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
@@ -2512,7 +2552,7 @@
       const wonUnits = recent.reduce((a, o) => a + o.qty, 0);
 
       // 그 시장에서 지금 가장 강한 제조사가 공세의 주체다. 플레이어 제조사는 뺀다.
-      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => t.maker !== s.playerMaker);
+      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => !(s.playerMakers || []).includes(t.maker));
       let leader = null;
       for (const t of pool) {
         // 입찰·인도 배분과 같은 실력(보정치 포함)으로 봐야 한다. 카탈로그 점수만
@@ -2556,7 +2596,7 @@
 
     for (const t of AIRCRAFT) {
       // 플레이어 제조사의 카탈로그 미래는 뉴스가 아니다 — 그 미래는 플레이어가 만든다.
-      if (s.playerMaker && t.maker === s.playerMaker) continue;
+      if ((s.playerMakers || []).includes(t.maker)) continue;
       const maker = MANUFACTURERS.find((m) => m.id === t.maker);
       if (!maker) continue;
       // 지연이 걸린 기종은 밀린 시점에 취항 소식이 뜬다 — 입찰 문턱과 같은 달력.
@@ -3046,7 +3086,7 @@
     // 그 시장에서 가장 약한 축이 따라잡으려 산다고 보는 편이 자연스럽다.
     const seg = p.segment;
     const year = yearOf(s.turn);
-    const active = new Set(availableTypes(seg, year).filter((t) => t.maker !== s.playerMaker).map((t) => t.maker));
+    const active = new Set(availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker)).map((t) => t.maker));
     const candidates = s.competitors.filter((c) => active.has(c.id));
     const buyer =
       (candidates.length
