@@ -696,6 +696,24 @@
       })
       .join('');
 
+    const upgradeRows = ready
+      .map((p) => {
+        const btns = Object.entries(E.UPGRADES)
+          .map(([kind, u]) => {
+            const st = p.upgrades && p.upgrades[kind];
+            if (st && st.applied) return `<span class="tag good">${esc(u.name)} 완료</span>`;
+            if (st) return `<span class="tag">${esc(u.name)} 진행 중 · ${Math.max(0, st.doneTurn - s.turn)}분기 남음</span>`;
+            const cost = Math.round(p.devCost * u.costRate);
+            return `<button data-action="upgrade" data-id="${p.id}" data-kind="${kind}" ${s.cash >= cost ? '' : 'disabled'}
+                title="${esc(u.desc)}">${esc(u.name)} · ${money(cost)}</button>`;
+          })
+          .join('');
+        return `<div class="line"><div class="row between"><b>${esc(p.name)}</b>
+            <span class="muted">연비 ${p.efficiency} · 객실 ${p.comfort} · 인도 ${p.delivered || 0}기</span></div>
+          <div class="row">${btns}</div></div>`;
+      })
+      .join('');
+
     return `
       ${servicesCard(s)}
       <section class="card"><h3>조달 전략</h3>
@@ -706,6 +724,12 @@
         <p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.
           재래식은 싸고 빨리 안정되지만 물량이 적고, 고속 자동화는 반대다 — 수요가 확실한 기종에만 값을 한다.</p>
         ${buildButtons}
+      </section>
+      <section class="card"><h3>기체 개량</h3>
+        <p class="muted">기체는 취항으로 끝나지 않는다 — PIP·윙렛·객실 리프레시가 몇 분기 뒤 신규 생산분과
+          <b>이미 인도된 선단</b>에 함께 적용된다. 기존 운용사는 개조 키트를 사 가고(인도 1기당 정가의 1.2%),
+          자기 기체가 낡게 방치되지 않는다는 신호에 신뢰가 오른다. 선단이 클수록 개량이 값을 한다.</p>
+        ${upgradeRows}
       </section>
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
@@ -773,12 +797,17 @@
 
         const options = renderBidCandidates(s, rfp, discount);
 
+        const airline = AIRLINES.find((a) => a.id === rfp.airlineId);
+        const tier = E.loyaltyTier ? E.loyaltyTier(s, rfp.airlineId) : 0;
+        const tierBadge = tier === 2 ? ' <span class="tag good">핵심 고객</span>' : tier === 1 ? ' <span class="tag">단골</span>' : '';
+
         return `<div class="card rfp">
           <div class="row between">
-            <h3>${esc(rfp.airlineName)} <span class="muted">${esc(rfp.home)}</span></h3>
+            <h3>${esc(rfp.airlineName)} <span class="muted">${esc(rfp.home)}</span>${tierBadge}</h3>
             <span class="qty">${rfp.qty}기</span>
           </div>
           <table class="spec">
+            ${airline && airline.doctrine ? `<tr><th>구매 독트린</th><td><b>${esc(airline.doctrine)}</b> — ${esc(airline.doctrineNote || '')}</td></tr>` : ''}
             <tr><th>요구 기종</th><td>${rfp.segmentName} · ${rfp.reqSeats}석급 · ${num(rfp.reqRange)}km</td></tr>
             <tr><th>발주 배경</th><td>${
               rfp.deferredQuarters
@@ -1292,6 +1321,17 @@
         <h3>남긴 기종</h3>
         ${programs}
       </section>
+
+      ${
+        (s.milestones || []).length
+          ? `<section class="career-sec">
+        <h3>이 회사의 순간들</h3>
+        <ul class="duel-list">${s.milestones
+          .map((m) => `<li><span class="muted">${esc(m.label)}</span> — ${esc(m.text)}</li>`)
+          .join('')}</ul>
+      </section>`
+          : ''
+      }
 
       <section class="career-sec">
         <h3>주요 고객</h3>

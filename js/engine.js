@@ -128,6 +128,14 @@
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
       shocks: [],
+      // 경쟁사 드라마 — 신기종 발표·개발 지연·초기 결함 파동. newGame 에서 확정된다.
+      // 지연은 조회 시점에 카탈로그 eis 에 얹고(rivalDelays), 위기는 그 기종의
+      // 수주 경쟁력을 몇 분기 깎는다(rivalCrises).
+      rivalDrama: [],
+      rivalDelays: {},
+      rivalCrises: {},
+      // 이 회사가 남긴 순간들 — 첫 인도, 100호기, 첫 광동체. 종료 회고의 연표가 된다.
+      milestones: [],
       gameOver: null,
     };
     for (const a of AIRLINES) s.relations[a.id] = 34 + (a.prestige < 0.8 ? 10 : 0);
@@ -140,6 +148,11 @@
 
     const rng = rngFor(s);
     s.shocks = buildShockSchedule(s, rng);
+    // 드라마는 **별도 난수열**로 뽑는다. 본류(rng)에 끼우면 드라마 규칙을 손볼 때마다
+    // 같은 시드의 모든 전개가 통째로 갈려, 밸런스 변화와 시드 재편이 구분되지 않는다.
+    const drama = buildRivalDrama(s.seed);
+    s.rivalDrama = drama.events;
+    s.rivalDelays = drama.delays;
     issueMandate(s, rng);
     s.rfps = generateRfps(s, rng);
     s.ratingForQuarter = creditRating(s).grade;
@@ -403,6 +416,13 @@
         if (typeof c.reaction[seg] !== 'number') c.reaction[seg] = 0;
       }
     }
+
+    // 드라마가 없던 세이브 — 남은 기간의 드라마를 새로 뽑지 않고 빈 채로 둔다.
+    // 중간부터 지연을 얹으면 이미 취항한 기종이 갑자기 미취항으로 되돌아간다.
+    if (!Array.isArray(s.rivalDrama)) s.rivalDrama = [];
+    if (!s.rivalDelays || typeof s.rivalDelays !== 'object') s.rivalDelays = {};
+    if (!s.rivalCrises || typeof s.rivalCrises !== 'object') s.rivalCrises = {};
+    if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;
   }
 
@@ -447,6 +467,78 @@
 
     schedule.sort((a, b) => a.turn - b.turn);
     return schedule;
+  }
+
+  /**
+   * 경쟁사 드라마 일정표 — 발표·지연·초기 결함 파동.
+   *
+   * 카탈로그의 취항은 조용히 일어나는 기정사실이었다. 실제 업계에서 신기종은
+   * 발표 → 지연 → 취항 → (때로) 결함 파동의 **서사**로 온다: 787 이 3년 밀리고
+   * 배터리로 다시 섰다. 그 서사가 곧 플레이어의 기회다 — 경쟁기가 밀린 몇 분기가
+   * 우리 기종의 창이고, 파동 중에는 그 기종과 붙는 수주전이 쉬워진다.
+   *
+   * 다만 한 방향이면 안 된다. 지연·위기만 넣고 재 보니 판 전체가 통째로 쉬워졌다
+   * (기준 하네스 파산 12/40 → 4/40) — 세계가 살아나는 게 아니라 상대가 약해진
+   * 것뿐이다. 그래서 **호평**이 있다: 일부 신기종은 취항하자마자 주문이 몰려
+   * 한동안 더 세다(A320neo 가 그랬다). 드라마는 시장의 결이지 난이도 조절이 아니다.
+   */
+  const DRAMA_ANNOUNCE_LEAD = 8;
+  const DRAMA_DELAY_ODDS = 0.18;
+  const DRAMA_CRISIS_ODDS = 0.18;
+  const DRAMA_ACCLAIM_ODDS = 0.25;
+
+  function buildRivalDrama(seed) {
+    // 본류 난수열과 분리한다 — 드라마 규칙을 손볼 때 같은 시드의 나머지 전개가
+    // 통째로 재편되면, 밸런스 변화와 시드 재편을 구분할 수 없게 된다.
+    const rng = createRng(((seed >>> 0) + 0x5eed0) >>> 0);
+    const events = [];
+    const delays = {};
+    for (const t of AIRCRAFT) {
+      const eisTurn = Math.round((t.eis - CONFIG.startYear) * 4);
+      // 시작 시점에 이미 취항(임박)했거나 게임 밖이면 드라마 없이 지나간다.
+      if (eisTurn <= 2 || eisTurn >= CONFIG.totalTurns) continue;
+      if (eisTurn - DRAMA_ANNOUNCE_LEAD > 0) {
+        events.push({ turn: eisTurn - DRAMA_ANNOUNCE_LEAD, kind: 'announce', typeId: t.id });
+      }
+      if (rng.chance(DRAMA_DELAY_ODDS)) {
+        const q = rng.int(2, 3);
+        delays[t.id] = q;
+        // 지연 소식은 원래 취항 예정 분기에 뜬다 — "온다던 게 안 왔다"가 뉴스다.
+        events.push({ turn: eisTurn, kind: 'delay', typeId: t.id, quarters: q });
+      }
+      const effEis = eisTurn + (delays[t.id] || 0);
+      if (rng.chance(DRAMA_CRISIS_ODDS)) {
+        if (effEis + 2 < CONFIG.totalTurns) {
+          events.push({
+            turn: effEis + rng.int(2, 5),
+            kind: 'crisis',
+            typeId: t.id,
+            quarters: rng.int(4, 6),
+            amount: rng.int(4, 5),
+          });
+        }
+      } else if (rng.chance(DRAMA_ACCLAIM_ODDS)) {
+        // 반대의 결 — 취항하자마자 호평과 주문이 몰리는 기종. 그 기간에 이
+        // 기종과 붙는 수주전은 어렵다. 위기와 같은 통로에 음수로 얹는다.
+        if (effEis + 1 < CONFIG.totalTurns) {
+          events.push({
+            turn: effEis + rng.int(1, 3),
+            kind: 'acclaim',
+            typeId: t.id,
+            quarters: rng.int(4, 7),
+            amount: -rng.int(4, 6),
+          });
+        }
+      }
+    }
+    events.sort((a, b) => a.turn - b.turn);
+    return { events, delays };
+  }
+
+  /** 초기 결함 파동 중인 기종의 경쟁력 감점. 입찰·인도 배분·반격 판정이 같이 쓴다. */
+  function crisisDip(s, typeId) {
+    const c = s.rivalCrises && s.rivalCrises[typeId];
+    return c ? c.amount : 0;
   }
 
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
@@ -1003,6 +1095,7 @@
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
+    tickUpgrades(s, report);
     tickEtopsService(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
@@ -1609,10 +1702,13 @@
       const now = balance * financing.onDelivery;
       const later = balance - now;
       const revenue = now;
+      const progBefore = p.delivered;
+      const companyBefore = s.stats.delivered;
       o.remaining -= n;
       p.stock -= n;
       p.delivered += n;
       addToFleet(s, o.airlineId, p.id, n);
+      recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
       s.cash += revenue;
       s.stats.delivered += n;
       s.stats.revenue += revenue;
@@ -1637,6 +1733,57 @@
         // 인도돼도 "10기 인도 완료"로 기록돼 경영 기록이 실적과 어긋난다.
         const shipped = o.qty - (o.cancelled || 0);
         pushLog(s, 'good', `${o.airlineName} ${o.programName} ${shipped}기 인도 완료. 잔금 정산.`);
+      }
+    }
+  }
+
+  // ─────────────────────────────── 마일스톤 ───────────────────────────────
+
+  /**
+   * 이 회사가 남긴 순간들. 숫자는 흘러가지만 1호기 인도식과 100호기 라인오프는
+   * 실제 제조사가 사진으로 남기는 날이다 — 게임에도 그 날이 있어야 20년이
+   * 손익 곡선이 아니라 역사가 된다. 종료 회고의 연표가 여기서 나온다.
+   * 보상은 소폭 평판뿐이다: 축하는 축하지, 또 하나의 최적화 대상이 아니다.
+   */
+  const PROGRAM_MILESTONES = [
+    { at: 100, rep: 1 },
+    { at: 300, rep: 1 },
+    { at: 500, rep: 2 },
+  ];
+  const COMPANY_MILESTONES = [
+    { at: 500, rep: 1 },
+    { at: 1000, rep: 2 },
+    { at: 1500, rep: 2 },
+  ];
+
+  function addMilestone(s, text, rep) {
+    if (!Array.isArray(s.milestones)) s.milestones = [];
+    s.milestones.push({ turn: s.turn, label: turnLabel(s.turn), text });
+    pushLog(s, 'good', text);
+    if (rep) adjustReputation(s, rep);
+  }
+
+  function recordDeliveryMilestones(s, p, o, progBefore, companyBefore) {
+    const n = p.delivered - progBefore;
+    if (n <= 0) return;
+    if (!p.legacy) {
+      if (progBefore === 0) {
+        addMilestone(s, `${p.name} 1호기 인도식 — ${o.airlineName}이 런치 커스터머로 이름을 남겼다.`, 1);
+        if (p.segment === 'wide' && !s.stats.firstWideDone) {
+          s.stats.firstWideDone = true;
+          addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
+        }
+      }
+      for (const m of PROGRAM_MILESTONES) {
+        if (progBefore < m.at && p.delivered >= m.at) {
+          addMilestone(s, `${p.name} ${m.at}호기 라인오프 — 공장 앞마당에서 기념식이 열렸다.`, m.rep);
+        }
+      }
+    }
+    const companyAfter = companyBefore + n;
+    for (const m of COMPANY_MILESTONES) {
+      if (companyBefore < m.at && companyAfter >= m.at) {
+        addMilestone(s, `누적 인도 ${num(m.at)}기 — 회사의 이름이 업계 연감 한 줄에서 한 장이 됐다.`, m.rep);
       }
     }
   }
@@ -1903,15 +2050,18 @@
     const weights = new Map();
 
     for (const seg of Object.keys(SEGMENT_UNIT_SHARE)) {
-      const pool = availableTypes(seg, year);
+      const pool = availableTypes(seg, year, s.rivalDelays);
       if (!pool.length) continue;
       const segWeight = SEGMENT_UNIT_SHARE[seg];
       // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
-      // 이벤트 보정치(drift)까지 얹어야 입찰과 같은 실력으로 나뉜다 — 빼면 "인도가
-      // 대거 지연됐다"는 소식이 뜬 회사의 인도량이 그대로인 모순이 생긴다.
+      // 이벤트 보정치(drift)와 결함 파동까지 얹어야 입찰과 같은 실력으로 나뉜다 —
+      // 빼면 "인도가 멈췄다"는 소식이 뜬 회사의 인도량이 그대로인 모순이 생긴다.
       const powers = pool.map((type) => ({
         maker: type.maker,
-        w: Math.pow(Math.max(0, typeScore(type, s.market.fuelIndex, null, null) + driftOf(s, type.maker, seg) - 30), 2),
+        w: Math.pow(
+          Math.max(0, typeScore(type, s.market.fuelIndex, null, null) + driftOf(s, type.maker, seg) - crisisDip(s, type.id) - 30),
+          2,
+        ),
       }));
       // 세그먼트 안에서 먼저 정규화한다. 곧바로 segWeight 를 곱해 합치면 그 세그먼트
       // 몫이 "등재된 기종 수 × 실력 합"에 비례해 버려, 선언한 30/53/17 이 지켜지지
@@ -2013,13 +2163,13 @@
       const wonUnits = recent.reduce((a, o) => a + o.qty, 0);
 
       // 그 시장에서 지금 가장 강한 제조사가 공세의 주체다.
-      const pool = availableTypes(seg, year);
+      const pool = availableTypes(seg, year, s.rivalDelays);
       let leader = null;
       for (const t of pool) {
         // 입찰·인도 배분과 같은 실력(보정치 포함)으로 봐야 한다. 카탈로그 점수만
         // 보면 "인도가 대거 지연됐다"는 악재를 맞은 회사가 반격의 주체로 뽑혀,
         // 실제로 수주전을 이기고 있는 쪽 대신 엉뚱한 회사에 공세 보너스가 붙는다.
-        const power = typeScore(t, s.market.fuelIndex, null, null) + driftOf(s, t.maker, seg);
+        const power = typeScore(t, s.market.fuelIndex, null, null) + driftOf(s, t.maker, seg) - crisisDip(s, t.id);
         if (!leader || power > leader.power) leader = { maker: t.maker, power };
       }
 
@@ -2058,7 +2208,9 @@
     for (const t of AIRCRAFT) {
       const maker = MANUFACTURERS.find((m) => m.id === t.maker);
       if (!maker) continue;
-      if (t.eis > prev && t.eis <= now) {
+      // 지연이 걸린 기종은 밀린 시점에 취항 소식이 뜬다 — 입찰 문턱과 같은 달력.
+      const eis = t.eis + ((s.rivalDelays && s.rivalDelays[t.id]) || 0) / 4;
+      if (eis > prev && eis <= now) {
         news.push({
           kind: 'eis',
           text: `${maker.name} ${t.name} 취항 — ${SEGMENTS[t.segment].name} ${t.seats}석 · ${fmtNum(t.range)}km.`,
@@ -2066,6 +2218,54 @@
       }
       if (t.end !== null && t.end > prev && t.end <= now) {
         news.push({ kind: 'end', text: `${maker.name} ${t.name} 신규 판매 종료.` });
+      }
+    }
+
+    // 위기 회복 — 새 위기를 켜기 **전에** 기존 위기를 센다. 같은 분기에 켜자마자
+    // 한 분기를 깎으면 광고한 기간보다 짧게 끝난다.
+    for (const [typeId, c] of Object.entries(s.rivalCrises || {})) {
+      c.left--;
+      if (c.left <= 0) {
+        delete s.rivalCrises[typeId];
+        const t = AIRCRAFT.find((x) => x.id === typeId);
+        if (t) {
+          news.push(
+            c.amount < 0
+              ? { kind: 'recover', text: `${t.name} 초기 호평이 사그라들었다 — 주문 대기열이 정상으로 돌아왔다.` }
+              : { kind: 'recover', text: `${t.name} 결함 파동 수습 — 인도가 재개되고 수주전 경쟁력이 돌아왔다.` },
+          );
+        }
+      }
+    }
+
+    // 경쟁사 드라마 — 발표·지연·위기. 일정표는 newGame 에서 확정됐다.
+    for (const ev of s.rivalDrama || []) {
+      if (ev.turn !== s.turn) continue;
+      const t = AIRCRAFT.find((x) => x.id === ev.typeId);
+      const maker = t && MANUFACTURERS.find((m) => m.id === t.maker);
+      if (!t || !maker) continue;
+      if (ev.kind === 'announce') {
+        news.push({
+          kind: 'announce',
+          text: `${maker.name}, 신형 ${t.name} 개발 발표 — ${SEGMENTS[t.segment].name} ${t.seats}석 · ${fmtNum(t.range)}km, ${Math.floor(t.eis)}년 취항 목표.`,
+        });
+      } else if (ev.kind === 'delay') {
+        news.push({
+          kind: 'delay',
+          text: `${maker.name} ${t.name} 개발 ${ev.quarters}분기 지연 — 취항이 밀린다. 그 사이가 우리 기종의 창이다.`,
+        });
+      } else if (ev.kind === 'crisis') {
+        s.rivalCrises[t.id] = { left: ev.quarters, amount: ev.amount };
+        news.push({
+          kind: 'crisis',
+          text: `${t.name} 초기 결함 파동 — ${maker.name}이 수습에 들어갔다. 당분간 이 기종과 붙는 수주전이 쉬워지고, 흩어지는 인력을 잡을 기회다.`,
+        });
+      } else if (ev.kind === 'acclaim') {
+        s.rivalCrises[t.id] = { left: ev.quarters, amount: ev.amount };
+        news.push({
+          kind: 'acclaim',
+          text: `${t.name} 초기 호평 — 주문이 몰리며 ${maker.name}의 기세가 올랐다. 당분간 이 기종과 붙는 수주전이 어렵다.`,
+        });
       }
     }
 
@@ -2130,6 +2330,86 @@
     return { ok: true, cost };
   }
 
+  // ─────────────────────────────── 기체 개량 ───────────────────────────────
+
+  /**
+   * 양산 기종의 중간 개량 — 기체는 취항으로 끝나지 않는다.
+   *
+   * 업게이지 추세와 경쟁사 neo 급이 시간을 등에 업고 밀려오는 게임에서, 지금까지
+   * 플레이어의 답은 "새 기체"뿐이었다. 실제 제조사의 절반짜리 답이 개량이다 —
+   * 737 은 PIP 로, A320 은 샤클릿으로 수명을 늘렸다. 개량은 파생형보다 싸고 빠르며
+   * 형식증명을 그대로 쓰지만, 올려 주는 폭도 그만큼 작다: 연장이지 세대교체가 아니다.
+   *
+   * 이미 인도한 선단에는 **개조 키트**를 판다 — 인도가 끝난 기체가 한 번 더 벌어
+   * 오고, 운용사 관계도 오른다(자기 기체가 낡게 방치되지 않는다는 신호다).
+   * 그래서 개량은 선단이 클수록 값을 하고, 많이 판 기종을 더 아끼게 만든다.
+   */
+  const UPGRADES = {
+    pip: { name: '성능 개량 패키지', costRate: 0.05, quarters: 3, eff: 4, desc: '엔진·공력 개량 — 연비 +4' },
+    winglet: { name: '윙렛 장착', costRate: 0.03, quarters: 2, eff: 3, desc: '익단 연장 — 연비 +3' },
+    cabin: { name: '객실 리프레시', costRate: 0.025, quarters: 2, comfort: 6, desc: '객실 신형화 — 객실 +6' },
+  };
+  /** 개조 키트 매출 — 인도된 1기당 정가의 이 비율. 선단이 클수록 개량이 값을 한다. */
+  const RETROFIT_KIT_RATE = 0.012;
+
+  function startUpgrade(s, programId, kind) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const spec = UPGRADES[kind];
+    if (!spec) return { ok: false, error: '없는 개량 항목입니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'production') return { ok: false, error: '양산 중인 기종만 개량할 수 있습니다.' };
+    if (p.upgrades && p.upgrades[kind]) return { ok: false, error: '이미 진행했거나 완료한 개량입니다.' };
+
+    const cost = Math.round(p.devCost * spec.costRate);
+    if (s.cash < cost) return { ok: false, error: `개량 개발비 ${fmtMoney(cost)}이 부족합니다.` };
+    ensureShape(s);
+    s.cash -= cost;
+    s.pending.rdCost += cost;
+    p.spent += cost;
+    if (!p.upgrades) p.upgrades = {};
+    p.upgrades[kind] = { doneTurn: s.turn + spec.quarters };
+    pushLog(s, 'program', `${p.name} ${spec.name} 착수 (${fmtMoney(cost)}). ${spec.quarters}분기 뒤 신규 생산분과 기존 선단에 함께 적용된다.`);
+    return { ok: true, cost };
+  }
+
+  /** 개량 완성 정산 — 성능 반영, 기존 선단 개조 키트 매출, 운용사 관계. */
+  function tickUpgrades(s, report) {
+    for (const p of s.programs) {
+      if (!p.upgrades) continue;
+      for (const [kind, u] of Object.entries(p.upgrades)) {
+        if (u.applied || s.turn < u.doneTurn) continue;
+        const spec = UPGRADES[kind];
+        if (!spec) continue;
+        u.applied = true;
+        if (spec.eff) p.efficiency = Math.min(99, Math.round(p.efficiency + spec.eff));
+        if (spec.comfort) p.comfort = Math.min(99, Math.round(p.comfort + spec.comfort));
+
+        // 이미 하늘에 있는 기체에 키트를 판다. endTurn 안에서 완성되므로
+        // pending 이 아니라 이번 분기 리포트에 직접 적는다.
+        const kits = Math.round((p.delivered || 0) * p.listPrice * RETROFIT_KIT_RATE);
+        if (kits > 0) {
+          s.cash += kits;
+          report.revenue += kits;
+          s.stats.revenue += kits;
+        }
+        const operators = [];
+        for (const [airlineId, byProgram] of Object.entries(s.fleets || {})) {
+          if ((byProgram[p.id] || 0) > 0) {
+            s.relations[airlineId] = clamp((s.relations[airlineId] ?? 40) + 2, 0, 100);
+            operators.push(airlineId);
+          }
+        }
+        pushLog(
+          s,
+          'good',
+          `${p.name} ${spec.name} 완성 — ${spec.desc.split(' — ')[1] || spec.desc}.` +
+            (kits > 0 ? ` 기존 선단 ${num(p.delivered)}기 개조 키트로 ${fmtMoney(kits)}을 벌었고, 운용사 ${operators.length}곳의 신뢰가 올랐다.` : ''),
+        );
+      }
+    }
+  }
+
   /**
    * 서비스 사업 정산 — 부품·정비와 화물 개조.
    *
@@ -2161,11 +2441,39 @@
   }
 
   /** 급별 단가로 계산한 선단의 분기 기본 서비스 수익 (투자 배수 적용 전). */
+  /**
+   * 단골 등급 — 그 항공사에 인도한 누적 대수로 잰다. 관계 점수는 오르내리지만
+   * 인도 실적은 지워지지 않는다: 한 번 쌓은 단골은 유지된다.
+   *   0 거래처 · 1 단골(20기+) · 2 핵심 고객(60기+)
+   * 승계 선단의 판아메르(62기)가 시작부터 핵심 고객이다 — 물려받은 것은 기체만이
+   * 아니라 계정이고, 그 계정을 지키는 것이 초반 전략의 한 축이 된다.
+   */
+  function loyaltyTier(s, airlineId) {
+    const fleet = (s.fleets && s.fleets[airlineId]) || {};
+    const units = Object.values(fleet).reduce((a, b) => a + b, 0);
+    if (units >= 60) return 2;
+    if (units >= 20) return 1;
+    return 0;
+  }
+
+  /** 핵심 고객 선단의 전속 정비 계약 — 그 대수만큼 애프터마켓 단가가 오른다. */
+  const LOYAL_SERVICE_BONUS = 0.15;
+
   function aftermarketBase(s) {
-    return s.programs.reduce(
+    let base = s.programs.reduce(
       (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT),
       0,
     );
+    // 핵심 고객은 정비를 우리에게 전속으로 맡긴다 — 단골의 보상은 입찰 점수가
+    // 아니라(공통성 가산이 이미 그 역할이다) 인도 뒤의 현금흐름으로 돌아온다.
+    for (const [airlineId, byProgram] of Object.entries(s.fleets || {})) {
+      if (loyaltyTier(s, airlineId) < 2) continue;
+      for (const [pid, n] of Object.entries(byProgram)) {
+        const p = s.programs.find((x) => x.id === pid);
+        if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * LOYAL_SERVICE_BONUS;
+      }
+    }
+    return base;
   }
 
   /** 화면이 읽는 서비스 수익 내역. */
@@ -3023,6 +3331,9 @@
     setOutsourcing,
     upgradeAftermarket,
     startFreighter,
+    startUpgrade,
+    UPGRADES,
+    loyaltyTier,
     serviceIncome,
     closeLine,
     toggleLine,
