@@ -36,6 +36,8 @@
     // 출발점이라 사실상 새 기체다. 이게 패밀리 전략의 근거이기도 하다:
     // 단면을 한 번 정하면 그 위에서만 싸게 늘리고 줄일 수 있다.
     if (d.abreast !== undefined && spec.abreast !== undefined && d.abreast !== spec.abreast) return false;
+    // 엔진 수를 바꾸면 날개·파일런·계통이 통째로 다시다 — 형식증명을 물려받을 수 없다.
+    if (((d.engines || 2) === 4) !== ((spec.engines || 2) === 4)) return false;
     // 날개를 다시 그리면 이착륙 성능·순항 연비·구조 원가가 통째로 달라진다.
     // 형상이 그만큼 바뀌었으면 원형의 시험비행 결과를 물려받을 수 없다.
     if (d.wing !== undefined && spec.wing !== undefined && Math.abs(spec.wing - d.wing) > DERIVATIVE_TOLERANCE.wing) return false;
@@ -67,6 +69,15 @@
     // 있는데, 원형을 완성했다는 사실이 경험으로도 잡히므로 겹치면 이중 할인이다.
     // 광고된 파생 비율보다 훨씬 싸지고, 싼 파생형이 경험을 또 낳는 복리가 돈다.
     const derivative = isCompatibleDerivative(spec, range, tech);
+
+    // ── 설계 심화 세 축 — 성장 여유 · 정비성 · 엔진 수 ──
+    // 셋 다 구조 설계의 일부라 파생형은 원형 것을 물려받는다. 엔진 수가 다르면
+    // 애초에 파생형이 아니다(호환 판정에서 걸러진다).
+    const growth = derivative ? !!(spec.derivedFrom && spec.derivedFrom.growth) : !!spec.growth;
+    const maintainable = derivative ? !!(spec.derivedFrom && spec.derivedFrom.maintainable) : !!spec.maintainable;
+    const engines = derivative ? (spec.derivedFrom && spec.derivedFrom.engines) || 2 : spec.engines === 4 ? 4 : 2;
+    // 4발은 광동체에서만 의미가 있다 — 리저널에 4발을 다는 선택지는 함정일 뿐이다.
+    const quad = engines === 4 && seg.id === 'wide';
 
     // 조직 경험 — 완성해 본 프로그램이 많을수록 다음 **신규** 개발이 빠르고 작은
     // 팀으로 된다. 767→777→787 이 그 계보다: 같은 회사가 다음 기체를 만들 때는
@@ -125,6 +136,21 @@
 
     let engineersNeeded = seg.engineersNeeded * Math.pow(seatRatio, 0.5) * (1 + (tech / 100) * 0.4) * expEng;
 
+    // 성장 여유 — 미래의 파생형을 위해 지금 무게와 돈을 태운다. A320 은 다리가
+    // 길어 neo 가 쉬웠고, 737 은 짧아 MAX 가 고생했다. 그 차이를 여기서 산다.
+    if (growth) {
+      devCost *= 1.06;
+      engineersNeeded *= 1.03;
+    }
+    // 정비성 설계 — 접근 패널·모듈화 부품. 개발이 비싸지고 기체도 조금 비싸지지만,
+    // 항공사의 편당 고정비(정비·지상 시간)가 내려가고 결함도 덜 곪는다.
+    if (maintainable) devCost *= 1.05;
+    // 4발 — 엔진·나셀·계통이 두 벌 더 붙는다.
+    if (quad) {
+      devCost *= 1.12;
+      engineersNeeded *= 1.05;
+    }
+
     // 파생형: 기존 형식증명을 물려받아 개발비·기간이 크게 준다 (판정은 위에서).
     // 단, 원형의 형식증명을 실제로 재사용할 수 있는 변경일 때만 인정한다.
     // 딱지만 붙인 채 소재·기술·항속을 갈아엎으면 신규 설계를 34% 가격에 사는 셈이라
@@ -136,6 +162,9 @@
     const reEngined = derivative && spec.derivedFrom.engine !== eng.id;
     // 원형이 패밀리로 개발됐으면 파생형이 훨씬 싸다 — 패밀리 선투자의 회수 지점.
     const inFamily = derivative && spec.derivedFrom.family === true;
+    // 재장착 파생 — 원형에 성장 여유가 없으면 신형 대구경 팬이 제대로 안 들어간다.
+    // 737 MAX 가 그 타협의 이름이다: 엔진을 위로 앞으로 밀어 달았고 값을 치렀다.
+    const reEngineSqueeze = derivative && reEngined && !(spec.derivedFrom && spec.derivedFrom.growth) ? 3 : 0;
 
     // 패밀리로 개발하면 공통 구조·조종석 설계에 선투자한다.
     // 선투자는 계보의 뿌리에서 **한 번만** 한다 — 이미 패밀리를 물려받는 파생형은
@@ -150,14 +179,17 @@
     // ETOPS 요구 노선(9,000km~)에 애초에 응찰할 수 없으므로, 인증을 켜도 개발비만
     // 늘고 얻는 게 없는 한 방향 지출이 된다 — 그런 결정은 아예 청구하지 않는다.
     const etopsUsable = range >= ETOPS_USEFUL_RANGE;
-    const etops = !!spec.etops && etopsUsable;
+    // 4발은 ETOPS 자체가 필요 없다 — 규정이 쌍발에만 걸린다. 그게 4발의 존재 이유다.
+    const etops = !!spec.etops && etopsUsable && !quad;
     if (etops) devCost *= CONFIG.etopsDevMult;
 
     if (derivative) {
       const key = reEngined ? (inFamily ? 'familyReEngined' : 'reEngined') : inFamily ? 'family' : 'plain';
       const rate = CONFIG.derivRates[key];
-      devCost *= rate.cost;
-      devQuarters *= rate.time;
+      // 성장 여유를 산 원형은 개조가 싸고 빠르다 — 그 여유가 정확히 이 순간의 값이다.
+      const growthEase = spec.derivedFrom && spec.derivedFrom.growth ? 0.85 : 1;
+      devCost *= rate.cost * growthEase;
+      devQuarters *= rate.time * growthEase;
       engineersNeeded *= rate.eng;
     }
 
@@ -170,8 +202,11 @@
     // 조용히 연비를 잃어, 이 축을 건드리지 않은 플레이어까지 일괄로 약해진다.
     // 기본보다 줄이면 이득, 늘리면 손해 — 그래야 양방향 축이 된다.
     const marginPenalty = (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 8;
+    // 성장 여유는 상시 구조 중량이고, 4발은 항력·중량·연료 소모 그 자체다.
+    // 유가가 오르면 이 감점이 casm 에서 몇 배로 되돌아온다 — 4발이 시대를 타는 이유.
     const efficiency = clamp(
-      (22 + tech * 0.62 + fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff - rangePenalty - marginPenalty) *
+      (22 + tech * 0.62 + fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff - rangePenalty - marginPenalty -
+        (growth ? 1 : 0) - (quad ? 7 : 0) - reEngineSqueeze) *
         sec.effPerSeat *
         (0.72 + secFit * 0.28) +
         wingP.cruiseGain,
@@ -193,7 +228,10 @@
       eng.costMult *
       sec.costPerSeat *
       wingP.costMult *
-      (1 + (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 0.1);
+      (1 + (fm - Airframe.DEFAULT_FUEL_MARGIN / 100) * 0.1) *
+      (growth ? 1.03 : 1) *
+      (maintainable ? 1.02 : 1) *
+      (quad ? 1.08 : 1);
 
     // 정가: 원가가 아니라 "시장이 값을 쳐주는 가치" 기준으로 만든다.
     const listPrice =
@@ -206,7 +244,7 @@
     // 개발 리스크: 기술을 밀어붙이고 복합재를 쓸수록 결함 확률이 오른다.
     // 엔진 신뢰성과 성숙도가 곱으로 얹힌다 — 신형 엔진 초도 채택이 실제로 위험한 이유.
     const defectRisk = clamp(
-      (0.05 + (tech / 100) * 0.22 + fus.riskBonus + wmat.riskBonus) * eng.riskMult * engMaturity * expRisk,
+      (0.05 + (tech / 100) * 0.22 + fus.riskBonus + wmat.riskBonus) * eng.riskMult * engMaturity * expRisk * (maintainable ? 0.9 : 1),
       0.03,
       CONFIG.defectRiskMax,
     );
@@ -260,6 +298,13 @@
       // UI가 "파생형 할인이 적용됐는지"를 그대로 보여줄 수 있게 노출한다.
       derivative,
       reEngined,
+      growth,
+      maintainable,
+      // 광동체가 아니면 4발을 무시하고 2발로 접는다 — 감점 없이 엔진 수 딱지만
+      // 얻어 ETOPS 면제(엔진 수 게이트)를 공짜로 누리는 스펙 조작을 막는다.
+      engines: quad ? 4 : 2,
+      // 화면이 "왜 연비가 깎였나"를 설명할 수 있게 타협 폭을 노출한다.
+      reEngineSqueeze,
     };
   }
 

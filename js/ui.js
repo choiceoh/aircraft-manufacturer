@@ -254,6 +254,25 @@
         render();
         break;
 
+      case 'design-growth':
+        ui.spec.growth = !ui.spec.growth;
+        render();
+        break;
+
+      case 'design-maintainable':
+        ui.spec.maintainable = !ui.spec.maintainable;
+        render();
+        break;
+
+      case 'design-engines':
+        ui.spec.engines = ui.spec.engines === 4 ? 2 : 4;
+        render();
+        break;
+
+      case 'wind-tunnel':
+        act(E.investWindTunnel(s, btn.dataset.id));
+        break;
+
       case 'derive': {
         const base = s.programs.find((p) => p.id === btn.dataset.id);
         if (base) {
