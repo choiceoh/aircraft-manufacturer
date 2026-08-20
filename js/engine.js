@@ -135,12 +135,15 @@
   function newGame(seed, companyName) {
     // companyName 이 프리셋 id 면 그 회사로 시작한다. 아니면 기준 회사에 그 이름을 붙인다
     // (옛 호출·테스트 호환 — newGame(seed) / newGame(seed, '내 회사') 모두 그대로 돈다).
-    const preset = PLAYABLE_COMPANIES.some((c) => c.id === companyName) ? companyPreset(companyName) : companyPreset('deneb');
+    const isPresetId = PLAYABLE_COMPANIES.some((c) => c.id === companyName);
+    const preset = isPresetId ? companyPreset(companyName) : companyPreset('deneb');
     const s = {
       version: 1,
       seed: seed >>> 0,
       rngState: seed >>> 0,
-      company: preset.id !== 'deneb' ? preset.name : companyName || '데네브 항공우주',
+      // 프리셋 id 로 시작하면 항상 프리셋의 회사명이다 — 'deneb' 을 넘겼는데
+      // 회사명이 "deneb" 이 되면 화면·로그·점수 내역이 전부 그 문자열을 문다.
+      company: isPresetId ? preset.name : companyName || preset.name,
       // 이 회사가 실존 제조사라면 그 제조사는 경쟁 명단·시장 배분에서 빠진다.
       playerMaker: preset.maker,
       // 회사 규모의 값 — 간접비 배수. 그리고 출발선을 감안한 등급 환산 배수.
@@ -232,7 +235,8 @@
     markDebtPeak(s);
 
     seedLegacyProgram(s, preset);
-    // 승계 선단(186기)이 들어온 **뒤에** 재야 시작 점유율(43.7%)이 잡힌다.
+    // 승계 선단이 들어온 **뒤에** 재야 시작 점유율이 잡힌다 — 규모는 회사마다 다르다
+    // (데네브 186기·43.7%, 보잉 730기, 복병은 140~170기).
     s.stats.peakShare = marketShare(s);
 
     const rng = rngFor(s);

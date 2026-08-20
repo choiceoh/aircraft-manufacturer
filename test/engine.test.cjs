@@ -6159,6 +6159,8 @@ test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경
 test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프리셋 id 는 그 회사', () => {
   const custom = E.newGame(33, '나의 회사');
   assert.strictEqual(custom.company, '나의 회사');
+  // 모달은 데네브도 프리셋 id 로 넘긴다 — 회사명이 'deneb' 문자열이 되면 안 된다.
+  assert.strictEqual(E.newGame(33, 'deneb').company, '데네브 항공우주');
   assert.strictEqual(custom.playerMaker, null);
   assert.strictEqual(custom.programs[0].name, 'DN-150', '이름만 바꾼 판은 기준 승계 그대로여야 한다');
   assert.strictEqual(custom.competitors.length, globalThis.AirlinerFleet.MANUFACTURERS.length, '기준 회사는 전 제조사와 경쟁한다');
