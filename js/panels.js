@@ -403,16 +403,48 @@
       : `<button class="mat ${spec.family ? 'on' : ''}" data-action="design-family">
           <b>패밀리로 개발</b><span>개발비 +22% · 기간 +8%. 이후 같은 단면의 파생형이 신규 설계 대비 22%(일반 34%)로 떨어지고, 항공사 공통성도 패밀리 단위로 쌓인다.</span>
         </button>`;
-    const etops = ev.etopsUsable
-      ? `<button class="mat ${ev.etops ? 'on' : ''}" data-action="design-etops">
+    // 4발이면 ETOPS 는 살 것이 없다 — 켜진 채 두면 숨은 spec.etops 만 토글돼,
+    // 나중에 쌍발로 되돌렸을 때 개발비 +8%·인증 +1분기가 몰래 붙는다.
+    const etops = ev.engines === 4
+      ? `<button class="mat" disabled>
+          <b>ETOPS 인증</b><span>4발은 ETOPS 규정 밖이다 — 인증 없이 대양 노선에 응찰·인도하므로 여기서 살 것이 없다.</span>
+        </button>`
+      : ev.etopsUsable
+        ? `<button class="mat ${ev.etops ? 'on' : ''}" data-action="design-etops">
           <b>ETOPS 인증</b><span>개발비 +8% · 인증 +1분기. 없으면 ${num(ETOPS_RANGE_KM)}km 이상 노선은 응찰 자체가 불가능하다.</span>
         </button>`
-      : `<button class="mat" disabled>
+        : `<button class="mat" disabled>
           <b>ETOPS 인증</b><span>이 항속(${num(ev.range)}km)으로는 ${num(ETOPS_RANGE_KM)}km 노선에 닿지 않는다. <b>${num(
-          Math.ceil(ETOPS_USEFUL_RANGE),
-        )}km 이상</b>부터 값을 한다.</span>
+            Math.ceil(ETOPS_USEFUL_RANGE),
+          )}km 이상</b>부터 값을 한다.</span>
         </button>`;
-    return family + etops;
+    // 파생형은 구조(성장 여유·정비성·엔진 수)를 원형에서 물려받는다 — 토글이 아니라 사실이다.
+    const inherit = ev.derivative;
+    const growth = inherit
+      ? `<button class="mat ${ev.growth ? 'on' : ''}" disabled>
+          <b>성장 여유</b><span>원형에서 승계한다 — ${ev.growth ? '여유 있는 구조라 이 개조가 15% 싸고 빠르다' : '원형에 여유가 없어 재장착 시 연비 타협(−3)을 문다'}.</span>
+        </button>`
+      : `<button class="mat ${spec.growth ? 'on' : ''}" data-action="design-growth">
+          <b>성장 여유</b><span>개발비 +6% · 원가 +3% · 연비 −1. 대신 이후 <b>파생형·재장착이 15% 싸고 빨라지고</b>, 재장착 때 신형 엔진의 연비를 온전히 받는다. A320 의 긴 다리가 neo 를 쉽게 만든 이야기다.</span>
+        </button>`;
+    const maintainable = inherit
+      ? `<button class="mat ${ev.maintainable ? 'on' : ''}" disabled>
+          <b>정비성 설계</b><span>원형에서 승계한다.</span>
+        </button>`
+      : `<button class="mat ${spec.maintainable ? 'on' : ''}" data-action="design-maintainable">
+          <b>정비성 설계</b><span>개발비 +5% · 원가 +2%. 편당 고정비 −12%(운용경제 점수), 결함 위험 ×0.9, 운항 정지가 걸려도 1분기 짧다. 수수한 기체가 오래 팔리는 이유.</span>
+        </button>`;
+    const engines =
+      spec.segment !== 'wide'
+        ? ''
+        : inherit
+          ? `<button class="mat ${ev.engines === 4 ? 'on' : ''}" disabled>
+              <b>${ev.engines === 4 ? '4발' : '쌍발'}</b><span>엔진 수는 원형에서 승계한다 — 바꾸면 새 기체다.</span>
+            </button>`
+          : `<button class="mat ${spec.engines === 4 ? 'on' : ''}" data-action="design-engines">
+              <b>4발</b><span>ETOPS 가 <b>아예 필요 없다</b> — 인증 없이 대양 노선에 응찰·인도한다. 대신 개발비 +12% · 원가 +8% · 연비 −7: 유가가 오르면 그 감점이 몇 배로 돌아온다. 747 의 흥망이 이 트레이드다.</span>
+            </button>`;
+    return family + etops + growth + maintainable + engines;
   }
 
   function slider(key, label, value, min, max, step, unit) {
@@ -519,13 +551,17 @@
         }
         // ETOPS 는 되돌릴 수 없고 9,000km 이상 노선의 응찰 자격을 좌우한다.
         rows.push(
-          `<tr><th>인증 / 계보</th><td>${p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'}${
+          `<tr><th>인증 / 계보</th><td>${
+            p.engines === 4 ? '4발 ✓' : p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'
+          }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${
             p.familyId ? ' · 패밀리' : ''
           }${p.derivative ? ' · 파생형' : ''}</td></tr>`,
         );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
-        rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%</td></tr>`);
+        // 개발 중에는 인증 진입 때 실측치로 재확정되므로 불확실성 밴드를 함께 보여준다.
+        const riskBand = p.phase === 'dev' ? ` <span class="muted">±${p.windTunnel ? 8 : 30}%</span>` : '';
+        rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%${riskBand}</td></tr>`);
         if (p.phase === 'production') {
           rows.push(`<tr><th>생산 / 인도</th><td>${num(p.produced)}기 / ${num(p.delivered)}기</td></tr>`);
           rows.push(`<tr><th>현재 대당 원가</th><td>${money(E.currentUnitCost(s, p))} <span class="muted">(학습곡선·조달)</span></td></tr>`);
@@ -549,6 +585,9 @@
               <div class="row">
                 <button data-action="quality" data-id="${p.id}" ${p.qualityInvests >= 3 ? 'disabled' : ''}>
                   품질 강화 (${p.qualityInvests}/3) · ${money(p.devCost * CONFIG.qualityInvestRate)}
+                </button>
+                <button data-action="wind-tunnel" data-id="${p.id}" ${p.windTunnel || p.progress >= 50 ? 'disabled' : ''}>
+                  풍동·목업 ${p.windTunnel ? '완료 (±8%)' : p.progress >= 50 ? '시기 지남' : `· ${money(p.devCost * E.WIND_TUNNEL_COST_RATE)}`}
                 </button>
                 <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
               </div>

@@ -283,10 +283,12 @@
    * 감톤 운항이 여기서 제값을 한다: 연료는 기체 크기대로 태우는데 태울 수 있는
    * 승객은 줄어드니, 좌석마일 원가가 그만큼 나빠진다.
    */
-  function tripCostOf(seats, distance, efficiency, fuelIndex) {
+  function tripCostOf(seats, distance, efficiency, fuelIndex, maintFactor = 1) {
     const eff = clamp(efficiency, 5, 99);
     const fuel = Math.pow(seats, 0.9) * distance * (60 / eff) * clamp(fuelIndex, 0.4, 2.4);
-    const fixed = Math.pow(seats, 0.7) * (900 + distance * 0.22);
+    // fixed 는 정비·승무·지상 처리 같은 편당 고정비다. 정비성 설계는 여기가 내려간다 —
+    // 연비(연료 항)와 다른 축이라, 유가가 낮은 시대에도 제값을 한다.
+    const fixed = Math.pow(seats, 0.7) * (900 + distance * 0.22) * maintFactor;
     return fuel + fixed;
   }
 
@@ -342,7 +344,9 @@
     // 선주문(인증 심사 중)은 예외다: 항공사는 "취항 시점에 인증이 있을 것"을 믿고
     // 미리 계약한다. 못 지키면 인도 지연 위약금이 그 믿음의 값을 청구한다.
     const preorder = program.phase !== 'production';
-    if (rfp.reqEtops && !program.etopsCertified && !(preorder && program.etops)) {
+    // 4발은 ETOPS 규정 밖이다 — 인증 없이 대양 노선에 응찰한다. 그게 4발의 값이고,
+    // 그 값을 연비 감점(설계)과 유가 민감도(casm)로 치른다.
+    if (rfp.reqEtops && !program.etopsCertified && program.engines !== 4 && !(preorder && program.etops)) {
       return { total: 0, parts: {}, blocked: 'ETOPS 미인증', price: 0 };
     }
 
@@ -389,7 +393,7 @@
     // ── 운용 경제성 ──
     // 편당 원가와 좌석마일 원가를 따로 잰다. 어느 쪽이 중요한지는 노선이 정한다.
     const fuelIndex = state.market.fuelIndex;
-    const tripCost = tripCostOf(program.seats, rfp.reqRange, program.efficiency, fuelIndex);
+    const tripCost = tripCostOf(program.seats, rfp.reqRange, program.efficiency, fuelIndex, program.maintainable ? 0.88 : 1);
     const refTrip = tripCostOf(rfp.reqSeats, rfp.reqRange, REF_EFFICIENCY, fuelIndex);
     const tripScore = clamp(1.6 - tripCost / refTrip, 0, 1);
 

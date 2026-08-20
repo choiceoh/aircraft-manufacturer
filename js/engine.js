@@ -664,6 +664,10 @@
       wing: base.wing,
       fuelMargin: base.fuelMargin,
       etops: base.etops,
+      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수.
+      growth: !!base.growth,
+      maintainable: !!base.maintainable,
+      engines: base.engines || 2,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
         id: base.id,
@@ -680,6 +684,9 @@
         // familyId 를 물려받지만 family 플래그는 물려받지 않아서, 2대째 파생형이
         // 같은 패밀리인데도 일반 요율을 물게 된다.
         family: !!base.familyId,
+        growth: !!base.growth,
+        maintainable: !!base.maintainable,
+        engines: base.engines || 2,
       },
     };
   }
@@ -701,6 +708,38 @@
     p.defectRisk = Math.round(p.defectRisk * CONFIG.qualityRiskMult * 1000) / 1000;
     pushLog(s, 'program', `${p.name} 추가 시험·검증에 ${fmtMoney(cost)} 투입. 결함 위험 ${(p.defectRisk * 100).toFixed(1)}%로 하락.`);
     return { ok: true };
+  }
+
+  /**
+   * 풍동·목업 투자 — 결함 위험의 **불확실성**을 산다.
+   *
+   * 설계 화면의 결함 위험은 종이 위의 추정치다. 실기 시험(설계 동결)에서
+   * 실측치가 확정되는데, 그 주사위의 폭이 풍동을 산 팀은 훨씬 좁다(±30% → ±8%).
+   * investQuality(위험 수준 자체를 낮춤)와 다른 축이다 — 이건 모르는 것을
+   * 아는 것으로 바꾸는 돈이고, 그래서 개발 초반(50% 전)에만 의미가 있다.
+   */
+  const WIND_TUNNEL_COST_RATE = 0.02;
+  const RISK_UNCERTAINTY_BASE = 0.3;
+  const RISK_UNCERTAINTY_TUNNEL = 0.08;
+
+  function investWindTunnel(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'dev') return { ok: false, error: '개발 중에만 풍동 시험을 늘릴 수 있습니다.' };
+    if (p.progress >= 50) return { ok: false, error: '설계가 절반을 넘었다 — 이제 와서 풍동을 돌려도 도면이 안 바뀝니다.' };
+    if (p.windTunnel) return { ok: false, error: '이미 확장 풍동·목업 프로그램을 돌리고 있습니다.' };
+    const cost = Math.round(p.devCost * WIND_TUNNEL_COST_RATE);
+    if (s.cash < cost) return { ok: false, error: `풍동·목업 비용 ${fmtMoney(cost)}이 부족합니다.` };
+    ensureShape(s);
+    s.cash -= cost;
+    s.pending.rdCost += cost;
+    p.spent += cost;
+    p.windTunnel = true;
+    // 미리 찾은 문제는 미리 고친다 — 위험 자체도 조금 내려간다.
+    p.defectRisk = Math.round(p.defectRisk * 0.92 * 1000) / 1000;
+    pushLog(s, 'program', `${p.name} 확장 풍동·목업 시험에 ${fmtMoney(cost)} 투입. 결함 위험 추정이 ±${Math.round(RISK_UNCERTAINTY_TUNNEL * 100)}% 폭으로 좁혀졌다.`);
+    return { ok: true, cost };
   }
 
   /** 개발 취소 — 투입 비용은 돌아오지 않는다. */
@@ -1182,7 +1221,7 @@
         // 양산에는 갔지만 ETOPS 를 못 딴 기종의 대양 노선 주문도 같은 귀책이다 —
         // 약속한 능력(인증)이 끝내 없어서 인도 게이트에 막힌 채 판이 끝났다.
         // 같은 기종의 일반 주문은 인도 가능한 물량이므로 건드리지 않는다.
-        if (!p.etopsCertified) {
+        if (!p.etopsCertified && p.engines !== 4) {
           const blocked = s.backlog.filter((o) => o.programId === p.id && o.remaining > 0 && o.reqEtops);
           voidOrderList(s, p, blocked, 'ETOPS 미인증');
         }
@@ -1504,7 +1543,20 @@
   }
 
   /** 설계 동결 — 시험비행 단계로 넘어간다. */
-  function enterCertification(s, p, report) {
+  function enterCertification(s, p, report, rng) {
+    // 설계 동결 — 종이 위의 결함 위험이 실기로 확정되는 순간. 풍동을 산 팀은
+    // 주사위가 작다. 여기서 뽑는 난수는 본류 rng 라 시드 재현이 유지된다.
+    if (rng) {
+      const u = p.windTunnel ? RISK_UNCERTAINTY_TUNNEL : RISK_UNCERTAINTY_BASE;
+      const draw = (rng.next() * 2 - 1) * u;
+      const before = p.defectRisk;
+      p.defectRisk = Math.round(clamp(before * (1 + draw), 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
+      if (p.defectRisk > before + 0.005) {
+        pushLog(s, 'bad', `${p.name} 실기 구조 시험 — 종이보다 나쁘다. 결함 위험 ${(before * 100).toFixed(1)}% → ${(p.defectRisk * 100).toFixed(1)}%.`);
+      } else if (p.defectRisk < before - 0.005) {
+        pushLog(s, 'good', `${p.name} 실기 구조 시험 — 추정보다 깨끗하다. 결함 위험 ${(before * 100).toFixed(1)}% → ${(p.defectRisk * 100).toFixed(1)}%.`);
+      }
+    }
     p.phase = 'cert';
     p.testHours = 0;
     p.testHoursNeeded = Math.round(p.certQuarters * DEFAULT_TEST_FLEET * TEST_HOURS_PER_QUARTER);
@@ -1569,7 +1621,7 @@
       s.cash -= spend;
       report.rdCost += spend;
 
-      if (p.progress >= 100) enterCertification(s, p, report);
+      if (p.progress >= 100) enterCertification(s, p, report, rng);
     }
 
     // 개발 루프에서 방금 cert로 전환된 프로그램은 제외한다. 포함하면 개발에 그 분기를
@@ -1707,7 +1759,7 @@
       // 대양 노선 주문은 ETOPS 인증이 나와야 인도된다. 조기 취득을 건너뛰었으면
       // 운항 실적 4분기 동안 이 주문들이 기다린다 — 조기 인도 약속을 걸어 뒀다면
       // 그 지연의 위약금이 정확히 "1년을 기다리는" 선택의 값이다.
-      if (o.reqEtops && !p.etopsCertified) continue;
+      if (o.reqEtops && !p.etopsCertified && p.engines !== 4) continue;
 
       const n = Math.min(o.remaining, p.stock);
       // 선수금을 이미 받은 만큼을 뺀 잔금이 인도 대금이다.
@@ -2489,8 +2541,9 @@
   const LOYAL_SERVICE_BONUS = 0.15;
 
   function aftermarketBase(s) {
+    // 4발은 엔진 정비 계약이 두 벌 더다 — 항공사에는 짐이지만 제조사에는 수익이다.
     let base = s.programs.reduce(
-      (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT),
+      (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1),
       0,
     );
     // 핵심 고객은 정비를 우리에게 전속으로 맡긴다 — 단골의 보상은 입찰 점수가
@@ -2499,7 +2552,7 @@
       if (loyaltyTier(s, airlineId) < 2) continue;
       for (const [pid, n] of Object.entries(byProgram)) {
         const p = s.programs.find((x) => x.id === pid);
-        if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * LOYAL_SERVICE_BONUS;
+        if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1) * LOYAL_SERVICE_BONUS;
       }
     }
     return base;
@@ -2805,7 +2858,10 @@
       /** 기종을 몇 분기 세운다 — 인도가 밀린다고 광고한 선택지가 실제로 밀리도록. */
       ground: (programId, quarters) => {
         if (!programId || !(quarters > 0)) return;
-        s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, quarters);
+        // 정비성 설계는 정지도 짧다 — 접근 패널이 있는 기체는 고치기도 빠르다.
+        const p = s.programs.find((x) => x.id === programId);
+        const dur = p && p.maintainable ? Math.max(1, quarters - 1) : quarters;
+        s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, dur);
       },
       /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
       order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops }) => {
@@ -3349,6 +3405,8 @@
     companyExperience,
     derivativeSpec,
     investQuality,
+    investWindTunnel,
+    WIND_TUNNEL_COST_RATE,
     addTestAircraft,
     delayCertification,
     startEarlyEtops,

@@ -584,7 +584,9 @@
           // 기종별로 기록하고, 이미 정지 중이면 더 긴 쪽을 남긴다
           // (단일 슬롯이면 다른 기종의 정지가 기존 정지를 조기 해제해 버린다).
           const q = h.rng.int(1, 3);
-          s.effects.grounded[p.id] = Math.max(s.effects.grounded[p.id] || 0, q);
+          // 정비성 설계는 정지도 짧다 — 같은 결함이라도 고치는 데 덜 걸린다.
+          const dur = p.maintainable ? Math.max(1, q - 1) : q;
+          s.effects.grounded[p.id] = Math.max(s.effects.grounded[p.id] || 0, dur);
           return `${p.name}에서 중대 결함이 발견돼 전 기체가 운항 정지됐다. 수리·보상에 ${h.fmt(cost)} 소요, 인도도 멈춘다.`;
         }
         const cost = Math.round(p.delivered * h.rng.range(0.15, 0.5));
