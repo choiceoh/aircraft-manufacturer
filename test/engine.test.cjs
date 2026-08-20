@@ -6150,8 +6150,15 @@ test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경
       assert.notStrictEqual(F.AIRCRAFT.find((t) => t.id === id).maker, 'boeing', `시드 ${seed}: 자기 미래 기종의 지연 드라마가 잡혔다`);
     }
   }
+  // 767을 30기 굴리는 영국항공은 열린 주문이 없어도 초면일 수 없다 (관계는 입찰 점수다).
+  assert.strictEqual(s.relations.albion, 58, '승계 선단 고객의 관계가 시딩돼야 한다');
+
   s.cash = 60000;
-  for (let i = 0; i < 8; i++) E.endTurn(s);
+  for (let i = 0; i < 8; i++) {
+    E.endTurn(s);
+    // 737-800(1998.25) 취항 뉴스가 업계 동향으로 뜨면 안 된다 — 그 미래는 플레이어의 것.
+    assert.ok(!s.news.some((n) => /보잉/.test(n.text)), `t${i}: 자기 카탈로그가 업계 뉴스로 떴다`);
+  }
   assert.ok(!(s.stats.rivalByMaker.boeing > 0), '경쟁 인도 배분에 플레이어 제조사가 섞였다');
   assert.ok(s.stats.rivalByMaker.airbus > 0, '나머지 경쟁사 배분은 돌아야 한다');
 });
@@ -6172,6 +6179,12 @@ test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프�
   assert.ok(em.engineers < custom.engineers && em.engineers < boeing.engineers, '복병은 몸집이 작아야 한다');
   assert.ok(em.overheadMult < 1 && boeing.overheadMult > 1, '간접비는 몸집을 따라야 한다');
   assert.ok(em.scoreMult > 1 && boeing.scoreMult < 1, '등급 환산은 출발선을 감안해야 한다');
+
+  const tu = E.newGame(33, 'tupolev');
+  assert.strictEqual(tu.company, '투폴레프');
+  assert.strictEqual(tu.programs[0].name, 'Tu-154M');
+  assert.ok((tu.fleets.kosmo || {})[tu.programs[0].id] === 74, '옛 소련권(에어아스타나) 선단을 물려받아야 한다');
+  assert.ok(!tu.competitors.some((c) => c.id === 'tupolev'), '투폴레프도 자기 자신과 겨루지 않는다');
 
   // 옛 세이브 — playerMaker 가 없어도 기준 회사로 읽힌다.
   const old = E.newGame(35);

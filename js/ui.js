@@ -672,7 +672,7 @@
   }
 
   /** 새 게임 — 어느 회사로 20년을 시작할지 고른다. 실존 제조사는 경쟁 명단에서 빠진다. */
-  function openCompanyPicker() {
+  function openCompanyPicker(firstRun) {
     const cards = E.PLAYABLE_COMPANIES.map((c) => {
       const legacies = c.legacies.map((l) => l.name).join(' · ');
       return `<button class="mat" data-action="new-game-as" data-company="${c.id}">
@@ -683,7 +683,7 @@
     }).join('');
     openModal(
       `<h2 id="modal-title">어느 회사로 시작할까</h2>
-       <p class="muted">현재 진행 상황은 사라진다. 실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
+       <p class="muted">${firstRun ? '' : '현재 진행 상황은 사라진다. '}실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
        <div class="mats">${cards}</div>
        <div class="row"><button class="ghost" data-action="close-modal">취소</button></div>`,
       true,
@@ -704,6 +704,9 @@
     render();
     if (ui.state.gameOver) showGameOver(ui.state);
     else if (saved) toast('저장된 경영을 이어서 진행한다.');
+    // 첫 방문이면 회사 선택부터 — 기본 판을 조용히 깔아 두는 대신 물어본다.
+    // 모달을 닫으면 깔아 둔 데네브 판이 그대로 시작이다.
+    else openCompanyPicker(true);
   }
 
   root.AirlinerUI = { boot, ui };

@@ -116,6 +116,17 @@
       intro: 'ERJ가 피더 시장을 뚫었다. 리저널의 얇은 마진 위에서 다음 급을 노려야 한다.',
     },
     {
+      id: 'tupolev', name: '투폴레프', maker: 'tupolev', difficulty: '매우 어려움',
+      desc: '소비에트의 유산. 낡은 기술과 마른 곳간, 그러나 거대한 운용 기반 — 서방 시장을 뚫어야 한다.',
+      cash: 1800, debt: 3400, engineers: 2500, reputation: 38, rivalDelivered: 300,
+      overheadMult: 0.9, scoreMult: 1.15,
+      legacies: [
+        { name: 'Tu-154M', segment: 'narrow', seats: 158, range: 3900, tech: 34, engine: 'jt8d',
+          produced: 320, fleets: [['kosmo', 74]], backlog: [['kosmo', 18]] },
+      ],
+      intro: 'Tu-154가 옛 소련권 하늘을 아직 지배한다. 다만 서방 항공사는 우리 이름을 모른 척한다.',
+    },
+    {
       id: 'bombardier', name: '봉바르디에', maker: 'bombardier', difficulty: '어려움',
       desc: '몬트리올의 승부사. CRJ로 버는 동안 더 큰 기체로 올라설 길을 찾아야 한다.',
       cash: 4600, debt: 1500, engineers: 1900, reputation: 47, rivalDelivered: 300,
@@ -309,6 +320,9 @@
       for (const [aid, units] of leg.fleets) {
         s.fleets[aid] = s.fleets[aid] || {};
         s.fleets[aid][p.id] = units;
+        // 우리 기체를 수십 기 굴리는 항공사가 초면일 리 없다 — 열린 주문이
+        // 없어도 관계는 승계된다. 관계는 입찰 점수에 직접 들어간다.
+        s.relations[aid] = Math.max(s.relations[aid] || 0, 58);
       }
       for (const [aid, qty] of leg.backlog) {
         const a = AIRLINES.find((x) => x.id === aid);
@@ -2541,6 +2555,8 @@
     const news = [];
 
     for (const t of AIRCRAFT) {
+      // 플레이어 제조사의 카탈로그 미래는 뉴스가 아니다 — 그 미래는 플레이어가 만든다.
+      if (s.playerMaker && t.maker === s.playerMaker) continue;
       const maker = MANUFACTURERS.find((m) => m.id === t.maker);
       if (!maker) continue;
       // 지연이 걸린 기종은 밀린 시점에 취항 소식이 뜬다 — 입찰 문턱과 같은 달력.
