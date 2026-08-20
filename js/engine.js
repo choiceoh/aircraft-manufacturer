@@ -364,7 +364,11 @@
     if (d && d.memo && d.memo.airline) {
       const a = AIRLINES.find((x) => x.id === d.memo.airline);
       const old = LEGACY_AIRLINE_NAMES[d.memo.airline];
-      if (a && old && a.name !== old) {
+      // 어느 기체의 이름이 그 옛 표기를 품고 있으면 본문 치환을 통째로 건너뛴다 —
+      // 문자열만으로는 항공사와 기체를 구분할 수 없고, 플레이어가 지은 이름을
+      // 덮어쓰는 쪽이 옛 항공사 이름이 카드에 한 번 더 보이는 쪽보다 나쁘다.
+      const collides = s.programs.some((p) => typeof p.name === 'string' && old && p.name.includes(old));
+      if (a && old && a.name !== old && !collides) {
         if (typeof d.text === 'string' && d.text.includes(old)) d.text = d.text.split(old).join(a.name);
         if (typeof d.name === 'string' && d.name.includes(old)) d.name = d.name.split(old).join(a.name);
       }

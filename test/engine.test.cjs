@@ -5669,6 +5669,19 @@ test('가상 이름 시절 세이브의 열린 주문·공고는 현재 항공�
   assert.ok(s.decision.text.includes('카르타 에어'), '기체 이름이 항공사 이름으로 오인돼 덮어써졌다');
   assert.ok(s.decision.text.includes('비데뢰에'), '정작 그 사건의 항공사 이름은 바뀌어야 한다');
 
+  // 기체 이름이 **그 사건의 항공사** 옛 이름과 같으면 문자열로는 구분할 수 없다 —
+  // 그때는 본문을 건드리지 않는다. 플레이어의 이름을 덮어쓰는 쪽이 더 나쁘다.
+  s.programs[0].name = '노르딕윙스';
+  s.decision = {
+    id: 'launch_customer', name: '런치 커스터머 제안', turn: s.turn,
+    text: '노르딕윙스가 개발 중인 <b>노르딕윙스</b>의 런치 커스터머를 자청했다.',
+    memo: { program: s.programs[0].id, airline: 'nordic', airlineName: '노르딕윙스' }, options: [],
+  };
+  E.ensureShape(s);
+  assert.ok(s.decision.text.includes('<b>노르딕윙스</b>'), '기체 이름과 충돌하는데 본문이 치환됐다');
+  assert.strictEqual(s.decision.memo.airlineName, '비데뢰에', '구조화된 memo 는 충돌과 무관하게 맞춰져야 한다');
+  s.programs[0].name = 'DN-150';
+
   // 예약된 후속 결과의 memo 도 몇 분기 뒤 그 이름으로 발화한다.
   s.pendingOutcomes.push({ turn: s.turn + 2, id: 'delivery_slip', optionId: 'overtime', memo: { airline: 'hanul', airlineName: '한울항공', orderId: 'x' } });
   E.ensureShape(s);
