@@ -6160,6 +6160,7 @@ test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경
   // 730기를 인도한 회사가 "거래 이력 없음"으로 시작할 수는 없다 — 공급사 관계 승계.
   assert.ok(s.engineRelations.CFM >= 60, '737 인도 실적이 CFM 관계로 승계돼야 한다');
   assert.ok(s.engineRelations.GE >= 20, '767 인도 실적이 GE 관계로 승계돼야 한다');
+  assert.strictEqual(s.stats.firstWideDone, true, '767을 물려받았으면 첫 광동체는 이미 지난 일이다');
 
   s.cash = 60000;
   for (let i = 0; i < 8; i++) {
@@ -6199,6 +6200,12 @@ test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프�
   const ssj = uac.programs.find((p) => p.name === 'SSJ-100');
   assert.strictEqual(ssj.phase, 'dev', 'SSJ-100 은 개발 중 설계안으로 인계된다');
   assert.strictEqual(ssj.engine, 'cf34-3', 'SSJ 는 제트로 설계돼야 한다 — 기본값이면 터보프롭이 박힌다');
+  // 상속 진행분의 원가 기준 — 착수금 몫을 포함해야 완성 총액이 광고한 개발비와 맞는다.
+  const CONFIG2 = globalThis.AirlinerData.CONFIG;
+  const expectedSpent = Math.round(ssj.devCost * (CONFIG2.launchUpfrontRate + 0.15 * (1 - CONFIG2.launchUpfrontRate)));
+  assert.strictEqual(ssj.spent, expectedSpent, '상속 SSJ 를 완성하면 개발비 총액이 어긋난다');
+  // 767·Il-96 을 물려받은 회사가 다음 광동체에서 "첫 광동체"를 축하받으면 안 된다.
+  assert.strictEqual(uac.stats.firstWideDone, true, '승계 광동체가 첫 광동체 깃발을 세워야 한다');
   // 저율 라인의 핸디캡은 전환해도 따라간다 — 35% 전환비로 세그 기준 용량을 얻으면 안 된다.
   const il96Line = uac.lines.find((l) => l.programId === il96.id);
   assert.strictEqual(il96Line.capacity, 1, 'Il-96 라인은 분기 1기여야 한다');

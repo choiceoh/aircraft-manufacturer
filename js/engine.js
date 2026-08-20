@@ -317,6 +317,8 @@
       // 오랜 운용으로 초기 결함은 대부분 잡혔다. 광동체 승계기는 ETOPS 실적도 있다.
       p.defectRisk = Math.round(p.defectRisk * 0.7 * 1000) / 1000;
       if (leg.etopsCertified) p.etopsCertified = true;
+      // 767을 물려받은 회사가 다음 광동체에서 "첫 광동체 인도"를 축하받으면 안 된다.
+      if (leg.segment === 'wide') s.stats.firstWideDone = true;
       s.programs.push(p);
 
       s.lines.push({
@@ -378,7 +380,10 @@
         ...ev,
         phase: 'dev',
         progress: d.progress,
-        spent: Math.round(ev.devCost * (d.progress / 100)),
+        // advanceDevelopment 는 매 진행분에서 착수금(8%) 몫을 뺀 값을 청구한다 —
+        // 진행률만큼만 시딩하면 완성 총액이 광고한 개발비보다 싸진다. 전 소유자가
+        // 착수금을 이미 낸 것으로 본다: 착수금 + 진행분×(1−착수율).
+        spent: Math.round(ev.devCost * (CONFIG.launchUpfrontRate + (d.progress / 100) * (1 - CONFIG.launchUpfrontRate))),
         certRemaining: ev.certQuarters,
         qualityInvests: 0,
         share: 0,

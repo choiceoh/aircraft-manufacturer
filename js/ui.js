@@ -426,6 +426,10 @@
         break;
 
       case 'close-modal':
+        if (ui.state && ui.state.pendingCompanyChoice) {
+          delete ui.state.pendingCompanyChoice;
+          save();
+        }
         closeModal();
         break;
     }
@@ -661,6 +665,7 @@
   function startNewGame(companyId) {
     const seed = randomSeed();
     ui.state = E.newGame(seed, companyId);
+    delete ui.state.pendingCompanyChoice;
     ui.tab = 'overview';
     ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
     ui.discountDraft = {};
@@ -703,10 +708,18 @@
     document.addEventListener('keydown', onKeydown);
     render();
     if (ui.state.gameOver) showGameOver(ui.state);
-    else if (saved) toast('저장된 경영을 이어서 진행한다.');
+    else if (saved && !saved.pendingCompanyChoice) toast('저장된 경영을 이어서 진행한다.');
     // 첫 방문이면 회사 선택부터 — 기본 판을 조용히 깔아 두는 대신 물어본다.
-    // 모달을 닫으면 깔아 둔 데네브 판이 그대로 시작이다.
-    else openCompanyPicker(true);
+    // 모달을 닫으면 깔아 둔 데네브 판이 그대로 시작이다. render() 가 그 기본 판을
+    // 즉시 저장하므로, 모달이 열린 채 새로고침해도 선택이 조용히 확정되지 않도록
+    // "아직 고르는 중" 표식을 세이브에 남겨 두고 다시 물어본다.
+    else {
+      if (!saved || saved.pendingCompanyChoice) {
+        ui.state.pendingCompanyChoice = true;
+        save();
+        openCompanyPicker(true);
+      }
+    }
   }
 
   root.AirlinerUI = { boot, ui };
