@@ -6108,14 +6108,16 @@ test('이중화 인도는 항공사가 선호하는 공급사의 실적이 된�
       });
       return st;
     };
-    // 에어아스타나(IAE 선호) — 대안 쪽을 달아 나간다.
+    // 에어아스타나(IAE 선호) — 대안 쪽을 달아 나간다. (승계 시딩분이 있으므로 증가분으로 잰다.)
     const a = mk('kosmo', '에어아스타나');
+    const aIae = a.engineRelations.IAE || 0;
     E.endTurn(a);
-    assert.strictEqual(a.engineRelations.IAE || 0, 4, 'IAE 실적으로 쌓여야 한다');
+    assert.strictEqual((a.engineRelations.IAE || 0) - aIae, 4, 'IAE 실적으로 쌓여야 한다');
     // 라이언에어(CFM 선호) — 주엔진 그대로.
     const b = mk('vertex', '라이언에어');
+    const bCfm = b.engineRelations.CFM || 0;
     E.endTurn(b);
-    assert.strictEqual(b.engineRelations.CFM || 0, 4, 'CFM 실적으로 쌓여야 한다');
+    assert.strictEqual((b.engineRelations.CFM || 0) - bCfm, 4, 'CFM 실적으로 쌓여야 한다');
   } finally {
     Data.EVENTS.push(...savedEvents);
     Dec.DECISIONS.push(...savedDecisions);
@@ -6152,6 +6154,12 @@ test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경
   }
   // 767을 30기 굴리는 영국항공은 열린 주문이 없어도 초면일 수 없다 (관계는 입찰 점수다).
   assert.strictEqual(s.relations.albion, 58, '승계 선단 고객의 관계가 시딩돼야 한다');
+  // 승계기의 ETOPS 실적은 설계 플래그로도 남는다 — 화면과 파생형 시드가 이걸 읽는다.
+  assert.strictEqual(wide.etops, true, '767의 ETOPS 설계 플래그가 서야 한다');
+  assert.strictEqual(E.derivativeSpec(wide, 20).etops, true, '파생형 시드가 ETOPS 자격을 물려받아야 한다');
+  // 730기를 인도한 회사가 "거래 이력 없음"으로 시작할 수는 없다 — 공급사 관계 승계.
+  assert.ok(s.engineRelations.CFM >= 60, '737 인도 실적이 CFM 관계로 승계돼야 한다');
+  assert.ok(s.engineRelations.GE >= 20, '767 인도 실적이 GE 관계로 승계돼야 한다');
 
   s.cash = 60000;
   for (let i = 0; i < 8; i++) {
@@ -6166,6 +6174,8 @@ test('보잉으로 시작하면 보잉의 1998년을 물려받고, 보잉은 경
 test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프리셋 id 는 그 회사', () => {
   const custom = E.newGame(33, '나의 회사');
   assert.strictEqual(custom.company, '나의 회사');
+  // 가상 데네브는 공급사 협상 테이블이 아직 없다 — 그게 기준 난이도의 일부다.
+  assert.deepStrictEqual(custom.engineRelations, {}, '데네브가 거래 이력을 들고 시작하면 기준 밸런스가 흔들린다');
   // 모달은 데네브도 프리셋 id 로 넘긴다 — 회사명이 'deneb' 문자열이 되면 안 된다.
   assert.strictEqual(E.newGame(33, 'deneb').company, '데네브 항공우주');
   assert.deepStrictEqual(custom.playerMakers, []);
@@ -6188,6 +6198,20 @@ test('회사 선택의 하위 호환 — 이름 문자열은 기준 회사, 프�
   assert.strictEqual(il96.engines, 4, 'Il-96 은 4발이어야 한다 — ETOPS 없이 대양을 건넌다');
   const ssj = uac.programs.find((p) => p.name === 'SSJ-100');
   assert.strictEqual(ssj.phase, 'dev', 'SSJ-100 은 개발 중 설계안으로 인계된다');
+  assert.strictEqual(ssj.engine, 'cf34-3', 'SSJ 는 제트로 설계돼야 한다 — 기본값이면 터보프롭이 박힌다');
+  // 저율 라인의 핸디캡은 전환해도 따라간다 — 35% 전환비로 세그 기준 용량을 얻으면 안 된다.
+  const il96Line = uac.lines.find((l) => l.programId === il96.id);
+  assert.strictEqual(il96Line.capacity, 1, 'Il-96 라인은 분기 1기여야 한다');
+  assert.ok(il96Line.capMult < 1, '저율 핸디캡이 라인에 각인돼야 한다');
+  // 전환으로 핸디캡을 벗을 수 없다 — Tu-204 파생으로 갈아타도 저율은 저율이다.
+  const tu204 = uac.programs.find((p) => p.name === 'Tu-204');
+  uac.cash = 90000;
+  assert.ok(E.launchProgram(uac, E.derivativeSpec(tu204, 18), 'Tu-204-ST').ok);
+  const st = uac.programs[uac.programs.length - 1];
+  st.phase = 'production';
+  const tuLine = uac.lines.find((l) => l.programId === tu204.id);
+  assert.ok(E.retoolLine(uac, tuLine.id, st.id).ok, '호환 파생 전환이 가능해야 한다');
+  assert.strictEqual(tuLine.capacity, 5, `전환해도 저율(5기)이어야 한다 — 지금 ${tuLine.capacity}기`);
   assert.strictEqual(ssj.share, 0, '동결 상태로 온다 — 밀지 말지는 플레이어의 몫');
   assert.ok(uac.engineEarlyAccess.sam146, '수호이의 SaM146 런칭 파트너 지위를 승계해야 한다');
   assert.ok(!uac.competitors.some((c) => c.id === 'tupolev' || c.id === 'sukhoi'), '흡수한 두 제조사 모두 경쟁에서 빠져야 한다');

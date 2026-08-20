@@ -130,7 +130,9 @@
       ],
       // 서랍 속 설계안 — 개발 15%에서 동결된 채 인계된다. 밀지 말지는 플레이어의 몫.
       devPrograms: [
-        { name: 'SSJ-100', segment: 'regional', seats: 98, range: 3050, tech: 58, progress: 15 },
+          // 1998년엔 SaM146 이 없다 — CF34 로 설계를 시작하고, SaM146(조기 접근으로
+        // 2009년부터)은 나중에 재장착 파생으로 다는 것이 이 회사의 실제 항로다.
+        { name: 'SSJ-100', segment: 'regional', seats: 98, range: 3050, tech: 58, engine: 'cf34-3', progress: 15 },
       ],
       // 수호이를 품었으니 SaM146 런칭 파트너 지위도 승계한다 (2009년부터 쓸 수 있다).
       earlyEngines: ['sam146'],
@@ -290,7 +292,9 @@
     // 어느 회사를 골랐든 승계라는 출발점은 같다: 이미 팔리는 기체, 이미 있는 선단.
     s.fleets = {};
     for (const leg of (preset || companyPreset('deneb')).legacies) {
-      const spec = { segment: leg.segment, seats: leg.seats, range: leg.range, tech: leg.tech, material: 'aluminum', engine: leg.engine, wing: leg.wing, engines: leg.engines, year: yearOf(0) };
+      // ETOPS 실적이 있는 승계기는 설계 플래그도 켠다 — 안 켜면 화면이 "ETOPS 없음"을
+      // 보여주고 파생형 시드가 그 자격을 잃는다 (4발은 evaluate 가 알아서 끈다).
+      const spec = { segment: leg.segment, seats: leg.seats, range: leg.range, tech: leg.tech, material: 'aluminum', engine: leg.engine, wing: leg.wing, engines: leg.engines, etops: !!leg.etopsCertified, year: yearOf(0) };
       const ev = evaluate(spec);
       const p = {
         id: 'prog-' + s.nextId++,
@@ -319,12 +323,24 @@
         id: 'line-' + s.nextId++,
         programId: p.id,
         capacity: leg.lineCapacity || SEGMENTS[leg.segment].lineMaxRate,
+        // 저율 생산 라인의 핸디캡은 설비의 성질이다 — 전환해도 따라간다.
+        // 새 라인을 제값 주고 세우는 것이 이 핸디캡을 벗는 유일한 길이다.
+        capMult: leg.lineCapacity ? leg.lineCapacity / SEGMENTS[leg.segment].lineMaxRate : 1,
         ramp: 1,
         partial: 0,
         idle: false,
         builtTurn: -8,
       });
       s.stats.delivered += p.delivered;
+      // 물려받은 것은 기체만이 아니라 엔진 공급사와의 거래다 — 730기를 인도한
+      // 보잉이 "거래 이력 없음"으로 시작하면 독점 계약·런칭 파트너 제안이
+      // 몇 년간 잠긴다. 실존 제조사만 승계한다: 가상 데네브는 협상 테이블이
+      // 아직 없는 중견사라는 것이 기준 난이도의 일부다 (넣어 보니 결정 순환이
+      // 흔들려 40시드 파산 11→15로 굳었다 — 의도한 기준이 아니다).
+      const legMaker = (root.AirlinerEngines.get(p.engine) || {}).maker;
+      if (legMaker && preset.makers.length) {
+        s.engineRelations[legMaker] = (s.engineRelations[legMaker] || 0) + p.delivered;
+      }
 
       // 인계받은 선단과 수주 잔고 — 선단 공통성 가산이 여기서 시작되므로
       // 이 계정들은 지켜야 할 자산이고 나머지는 새로 뚫어야 할 시장이다.
@@ -355,7 +371,7 @@
     // 서랍 속 설계안 — 진행 중인 개발을 동결 상태로 인계받는다 (UAC 의 SSJ-100).
     // 밀어붙일지, 서랍에 도로 넣을지는 플레이어의 첫 결정이 된다.
     for (const d of preset.devPrograms || []) {
-      const ev = evaluate({ segment: d.segment, seats: d.seats, range: d.range, tech: d.tech, material: 'aluminum', year: yearOf(0) });
+      const ev = evaluate({ segment: d.segment, seats: d.seats, range: d.range, tech: d.tech, material: 'aluminum', engine: d.engine, year: yearOf(0) });
       s.programs.push({
         id: 'prog-' + s.nextId++,
         name: d.name,
@@ -1214,7 +1230,9 @@
     // 이 라인은 "그 급 그 등급의 라인" 그대로고, 새로 세우는 값도 같다. 전환비는
     // 그 분기의 capex 로 끝나는 지출이지 라인 가치를 올리는 돈이 아니다.
     line.programId = to.id;
-    line.capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult));
+    // 저율 승계 라인(capMult<1)은 전환해도 저율이다 — 35% 전환비로 세그 기준
+    // 용량을 얻으면 명시적으로 모델링한 핸디캡이 공짜로 사라진다.
+    line.capacity = Math.max(1, Math.round(seg.lineMaxRate * grade.rateMult * (line.capMult || 1)));
     line.ramp = 0.15; // 전환 후에는 램프업을 다시 올린다
     line.partial = 0;
     pushLog(s, 'info', `${from ? from.name : '라인'} → ${to.name} 라인 전환 (${fmtMoney(cost)}). 램프업을 다시 올린다.`);
