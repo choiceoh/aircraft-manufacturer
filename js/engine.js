@@ -1092,9 +1092,6 @@
     };
     s.pending = { revenue: 0, delivered: 0, rdCost: 0, capex: 0, overhead: 0, ordersWon: 0, productionCost: 0 };
 
-    // 개량 완성은 이 분기의 첫 사건이다. 뒤에 두면 화면이 "0분기 남음"이라
-    // 말한 분기의 입찰이 여전히 옛 연비로 나간다 — 광고와 게임이 어긋난다.
-    tickUpgrades(s, report);
     resolveBids(s, rng, report);
     advanceDevelopment(s, rng, report);
     runProduction(s, report);
@@ -1103,6 +1100,7 @@
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
+    tickUpgrades(s, report);
     tickEtopsService(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
@@ -2391,7 +2389,12 @@
     for (const p of s.programs) {
       if (!p.upgrades) continue;
       for (const [kind, u] of Object.entries(p.upgrades)) {
-        if (u.applied || s.turn < u.doneTurn) continue;
+        // doneTurn 은 "이 분기부터 적용"이다. 적용은 그 직전 분기 정산의 끝 —
+        // 입찰 판정(resolveBids) **뒤** — 에서 일어난다. 판정 전에 적용하면 화면이
+        // 보여 준 점수와 판정 점수가 갈라지고(분기 시작 상태로 채점한다는 불변식
+        // 위반), 판정 후 적용하면서 doneTurn 을 한 분기 뒤로 두면 "0분기 남음"
+        // 인데 효과가 없는 분기가 생긴다. 이 배치가 둘 다 지키는 유일한 자리다.
+        if (u.applied || s.turn < u.doneTurn - 1) continue;
         const spec = UPGRADES[kind];
         if (!spec) continue;
         u.applied = true;

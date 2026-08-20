@@ -5066,21 +5066,18 @@ test('기체 개량 — 완성되면 성능·키트 매출·운용사 신뢰가 
     assert.ok(r.ok, r.error);
     assert.strictEqual(E.startUpgrade(s, p.id, 'pip').ok, false, '같은 개량이 중복되면 안 된다');
 
-    // doneTurn 은 "그 분기부터 적용"이다 — 완성은 doneTurn 분기 정산의 첫 사건이라
-    // 그 분기의 입찰부터 새 성능을 쓴다. 키트 매출은 완성 시점(직전 분기까지의
-    // 인도분)으로 계산되므로 마지막 정산 직전 값을 잡아 둔다.
+    // doneTurn 은 "그 분기부터 적용"이다 — 완성은 직전 분기 정산의 끝(입찰 판정
+    // 뒤)에서 일어나, quarters 번째 정산에서 성능이 붙고 다음 분기 입찰부터 쓴다.
     const spec = E.UPGRADES.pip;
     for (let i = 0; i < spec.quarters; i++) {
       E.endTurn(ctrl);
       E.endTurn(s);
     }
-    const deliveredAtTick = p.delivered;
-    E.endTurn(ctrl);
-    E.endTurn(s);
     assert.strictEqual(p.efficiency, effBefore + spec.eff, '완성 후 연비가 올라야 한다');
 
     // 현금 차이 = 키트 매출 − 개량비. (완성 분기까지는 성능이 같아 나머지 전개가 동일하다)
-    const kits = Math.round(deliveredAtTick * p.listPrice * 0.012);
+    // 완성 정산의 인도가 tick 보다 먼저이므로, 루프 종료 시점 delivered 가 곧 키트 기준이다.
+    const kits = Math.round(p.delivered * p.listPrice * 0.012);
     assert.strictEqual(Math.round(s.cash - ctrl.cash), kits - r.cost, '키트 매출과 개량비가 장부와 어긋난다');
     // 운용사(판아메르·한울) 신뢰 +2.
     assert.strictEqual(s.relations.panamer - ctrl.relations.panamer, 2, '운용사 신뢰가 올라야 한다');
