@@ -31,6 +31,31 @@
     return `<div class="bar"><span class="${cls || ''}" style="width:${v}%"></span></div>`;
   }
 
+  /**
+   * 접이 섹션 — 열려 있는지는 ui.folds 가 기억한다.
+   *
+   * folds 는 "기본값과 다른 것"만 담는 토글 집합이다. 그래야 기본 펼침 섹션(접어 둔 것을
+   * 기억해야 한다)과 기본 접힘 섹션(펼쳐 둔 것을 기억해야 한다)이 집합 하나로 굴러간다.
+   */
+  function foldOpen(folds, id, defaultOpen) {
+    const toggled = !!(folds && folds.has(id));
+    return defaultOpen ? !toggled : toggled;
+  }
+
+  /**
+   * 카드 한 장을 통째로 접는다 — 제목 줄이 그대로 여닫이가 된다.
+   * 접어도 **지금 고른 값은 제목 옆에 남긴다**. 접힌 섹션이 무엇을 감추고 있는지
+   * 모르면 열어 보는 것 말고는 확인할 방법이 없고, 그러면 접은 의미가 없다.
+   */
+  function foldCard(folds, id, title, value, body, defaultOpen) {
+    return `<section class="card fold-card">
+        <details class="fold"${foldOpen(folds, id, defaultOpen) ? ' open' : ''}>
+          <summary data-fold="${id}"><b>${title}</b>${value ? `<span class="fold-val">${value}</span>` : ''}</summary>
+          <div class="fold-body">${body}</div>
+        </details>
+      </section>`;
+  }
+
   function phaseLabel(p) {
     return { dev: '개발 중', cert: '형식증명 심사', production: '양산', cancelled: '중단', sold: '매각' }[p.phase] || p.phase;
   }
@@ -92,13 +117,52 @@
   }
 
   /**
+   * 지금 손봐야 할 일 — 탭 배지와 하단 액션 바가 이 목록 하나를 같이 쓴다.
+   *
+   * 개요의 "경영 경고"와 내용이 겹치지만 이쪽에는 **어느 탭으로 가야 하는지**가 붙어 있다.
+   * 좁은 화면에서는 경고를 읽으러 개요까지 스크롤하는 것 자체가 비용이라, 화면 어디에
+   * 있든 남은 일의 개수가 보이고 눌러서 그 탭으로 바로 건너뛸 수 있어야 한다.
+   */
+  function todoList(s) {
+    if (!s || s.gameOver) return [];
+    const out = [];
+    if (s.decision) out.push({ tab: 'overview', text: `"${s.decision.name}" 결정에 답하지 않았다` });
+
+    // 응찰 가능한 공고만 센다 — 엔진의 무응찰 감점과 같은 기준이다. 초반처럼 고를 기종이
+    // 없는 공고까지 세면 매 분기 손댈 수 없는 할 일이 배지에 남는다.
+    const unbid = (s.rfps || []).filter((r) => !s.bids[r.id] && E.canBid(s, r)).length;
+    if (unbid) out.push({ tab: 'rfps', text: `응찰할 수 있는 공고 ${unbid}건이 비어 있다` });
+
+    for (const p of s.programs.filter((x) => x.phase === 'production')) {
+      if (orderedBy(s, p.id) > 0 && !s.lines.some((l) => l.programId === p.id)) {
+        out.push({ tab: 'production', text: `${p.name} 수주 잔고가 있는데 조립 라인이 없다` });
+      }
+    }
+    for (const p of s.programs.filter((x) => x.phase === 'dev' && x.share <= 0)) {
+      out.push({ tab: 'programs', text: `${p.name} 개발이 동결됐다 — 인력을 배분하라` });
+    }
+    const idle = s.lines.filter((l) => l.idle).length;
+    if (idle) out.push({ tab: 'production', text: `가동 중지된 라인이 ${idle}개 — 유지비는 계속 나간다` });
+
+    const runway = E.cashRunway(s);
+    if (runway !== null && runway <= 4) {
+      out.push({
+        tab: 'finance',
+        text: runway <= 0 ? '이번 분기 지출을 감당할 현금이 없다' : `${runway}분기 뒤 현금이 마른다`,
+      });
+    }
+    if (s.debt >= CONFIG.maxDebt * 0.9) out.push({ tab: 'finance', text: '차입이 한도에 근접했다' });
+    return out;
+  }
+
+  /**
    * 회사 특성(사풍) — 이 회사가 남들과 다르게 적용받는 규칙들.
    *
    * 값이 화면에 없으면 없는 규칙이나 마찬가지다: 개발비가 왜 싼지, 왜 저 항공사에서만
    * 점수가 잘 나오는지 플레이어가 설명할 수 없으면 그건 특색이 아니라 잡음이다.
    * 그래서 프리셋의 배수를 그대로 문장으로 풀어 쓴다 — 숫자가 바뀌면 문장도 바뀐다.
    */
-  function houseCard(s) {
+  function houseCard(s, folds) {
     const t = s.trait || {};
     if (!t.name) return '';
 
@@ -166,14 +230,19 @@
           .join('')}</ul>`
       : '<p class="muted">보정 없는 기준선이다 — 모든 규칙이 표준값 그대로 적용된다.</p>';
 
-    return `<section class="card">
-        <h3>회사 특성 <span class="muted">— ${esc(t.name)}</span></h3>
-        <p class="muted">${esc(t.note || '')}</p>
-        ${list}
-      </section>`;
+    // 사풍은 한 판 내내 바뀌지 않는 규칙이라 매 분기 스크롤로 지나칠 이유가 없다.
+    // 대신 어느 회사로 굴리는 중인지는 접힌 제목에 그대로 남는다.
+    return foldCard(
+      folds,
+      'ov-house',
+      '회사 특성',
+      esc(t.name),
+      `<p class="muted">${esc(t.note || '')}</p>
+       ${list}`,
+    );
   }
 
-  function renderOverview(s) {
+  function renderOverview(s, folds) {
     const warnings = [];
 
     for (const p of s.programs.filter((x) => x.phase === 'production')) {
@@ -218,29 +287,38 @@
       ${decisionCard(s)}
       ${settlementCard(last, prev)}
 
-      ${houseCard(s)}
+      ${houseCard(s, folds)}
 
-      <section class="card">
-        <h3>항공사 수요 프로필</h3>
-        <p class="muted">각 항공사는 자기 노선망 안에서 발주한다. 설계를 어느 대역에 맞출지가 곧 누구를 고객으로 삼을지다.</p>
-        ${airlineDemandTable(s)}
-      </section>
+      ${foldCard(
+        folds,
+        'ov-airlines',
+        '항공사 수요 프로필',
+        `${AIRLINES.length}개사`,
+        `<p class="muted">각 항공사는 자기 노선망 안에서 발주한다. 설계를 어느 대역에 맞출지가 곧 누구를 고객으로 삼을지다.</p>
+         ${airlineDemandTable(s)}`,
+      )}
 
       <section class="grid2">
         <div class="card">
           <h3>이번 분기 소식</h3>
           <ul class="events">${events}</ul>
-          <h3 class="sub">업계 동향</h3>
-          <ul class="events news">${news}</ul>
+          <details class="fold"${foldOpen(folds, 'ov-news', false) ? ' open' : ''}>
+            <summary data-fold="ov-news"><b>업계 동향</b><span class="fold-val">${
+              (s.news || []).length ? `${(s.news || []).length}건` : '변동 없음'
+            }</span></summary>
+            <ul class="events news">${news}</ul>
+          </details>
         </div>
-        <div class="card">
-          <h3>경영 경고</h3>
-          ${
-            warnings.length
-              ? `<ul class="warns">${warnings.map((w) => `<li>${w}</li>`).join('')}</ul>`
-              : '<p class="muted">지금 당장 손봐야 할 문제는 없다.</p>'
-          }
-        </div>
+        ${
+          // 손볼 게 없으면 "없다"고 적힌 카드를 세우지 않는다 — 빈 카드도 스크롤이다.
+          // 남은 일은 하단 액션 바의 할 일 배지가 늘 세고 있다.
+          warnings.length
+            ? `<div class="card">
+                 <h3>경영 경고</h3>
+                 <ul class="warns">${warnings.map((w) => `<li>${w}</li>`).join('')}</ul>
+               </div>`
+            : ''
+        }
       </section>
 
       <section class="cards">
@@ -262,11 +340,12 @@
         ${statCard('보유 기종', s.programs.filter((p) => p.phase === 'production').length + '종', s.lines.length + '개 라인 가동')}
       </section>
 
-      ${rivalCard(s)}
+      ${rivalCard(s, folds)}
 
       <section class="card">
         <h3>최근 기록</h3>
-        <ul class="log">${s.log.slice(0, 6).map(logItem).join('')}</ul>
+        <ul class="log">${s.log.slice(0, 4).map(logItem).join('')}</ul>
+        <p class="hint">전체 기록은 <b>기록</b> 탭에 있다.</p>
       </section>`;
   }
 
@@ -370,7 +449,7 @@
 
   // ─────────────────────────────── 설계 ───────────────────────────────
 
-  function renderDesign(s, spec, designName) {
+  function renderDesign(s, spec, designName, folds) {
     const seg = SEGMENTS[spec.segment];
     const segTabs = SEGMENT_ORDER.map(
       (id) =>
@@ -435,7 +514,22 @@
       )
       .join('');
 
+    // 접힌 섹션의 제목 옆에 지금 고른 값을 적는다 — 열지 않고도 무엇으로 설계 중인지 안다.
+    const curAbreast = spec.abreast ?? Airframe.DEFAULT_ABREAST[spec.segment];
+    const curSection = Airframe.sectionsFor(spec.segment).find((c) => c.abreast === curAbreast);
+    const curFus = FUSELAGE_MATERIALS[spec.fuselage || legacyMat.fuselage];
+    const curWing = WING_MATERIALS[spec.wingMat || legacyMat.wingMat];
+    const optionTags = [
+      spec.family && '패밀리',
+      spec.etops && 'ETOPS',
+      spec.growth && '성장 여유',
+      spec.maintainable && '정비성',
+      spec.engines === 4 && '4발',
+      spec.dualSource && '이중화',
+    ].filter(Boolean);
+
     return `
+      ${renderDesignSummary(s, spec)}
       <section class="card">
         <h3>세그먼트</h3>
         <p class="muted">${esc(seg.desc)}</p>
@@ -443,37 +537,65 @@
       </section>
 
       <section class="grid2">
-        <div class="card">
-          <h3>제원</h3>
-          ${slider('seats', '좌석수', spec.seats, seg.seats.min, seg.seats.max, 1, '석')}
-          ${slider('range', '항속거리', spec.range, seg.range.min, seg.range.max, 100, 'km')}
-          ${slider('tech', '기술 투자', spec.tech, 0, 100, 1, '')}
-          <p class="hint">기술 투자를 올리면 연비·정가가 오르지만 개발비·기간·결함 위험이 함께 오른다.</p>
-          ${slider('wing', '날개 (단거리형 ↔ 장거리형)', spec.wing === undefined ? 45 : spec.wing, 0, 100, 1, '')}
-          <p class="hint">오른쪽으로 갈수록 순항 연비가 좋아지고 <b>이착륙 성능이 나빠진다</b>. 짧은 활주로·고온고지 노선은 왼쪽 설계가 아니면 응찰 자체가 막힌다.</p>
-          ${slider('fuelMargin', '연료 여유 (임무 최적 ↔ 노선 확장)', spec.fuelMargin === undefined ? 35 : spec.fuelMargin, 0, 100, 1, '')}
-          <p class="hint">설계 항속보다 <b>먼 노선도 승객을 덜 태우면 뛸 수 있다</b>. 오른쪽으로 갈수록 그 폭이 넓어지지만, 탱크와 보강 구조를 짧은 노선에서도 지고 다녀 연비·원가·이착륙이 상시로 나빠진다.</p>
-          <h3 style="margin-top:18px">동체 단면</h3>
-          <div class="mats">${sections}</div>
-          <p class="hint">좁게 많이 태우면 좌석당 연비·원가가 좋아지고 객실 점수가 떨어진다. 단면을 바꾸면 형식증명을 물려받을 수 없다 — 파생형의 뿌리가 되는 결정이다.</p>
-          <h3 style="margin-top:18px">동체 소재</h3>
-          <div class="mats">${fusMats}</div>
-          <p class="hint">동체는 여압 사이클이 걸려 개발이 가장 어렵다. 대신 넓은 단면·높은 여압으로 <b>객실이 크게 좋아진다</b>.</p>
-          <h3 style="margin-top:18px">날개 소재</h3>
-          <div class="mats">${wingMats}</div>
-          <p class="hint">날개는 가벼워야 종횡비를 높일 수 있다. <b>고종횡비 장거리 날개는 사실상 복합재라야 성립한다</b> — 알루미늄으로 밀어붙이면 중량이 연비 이득을 갉아먹는다.</p>
-          <h3 style="margin-top:18px">엔진</h3>
-          <div class="mats">${engines}</div>
-          <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
-          <h3 style="margin-top:18px">착수 옵션</h3>
-          <div class="mats" id="design-options">${renderDesignOptions(s, spec)}</div>
-          ${
-            substituted
-              ? `<p class="warn-box">원형 엔진은 더 이상 판매되지 않아 <b>${esc(
-                  (Engines.get(effectiveEngine) || {}).name || '',
-                )}</b>로 대체된다 — 재장착이라 파생형 할인이 줄어든다.</p>`
-              : ''
-          }
+        <div class="stack">
+          <section class="card">
+            <h3>제원</h3>
+            ${slider('seats', '좌석수', spec.seats, seg.seats.min, seg.seats.max, 1, '석')}
+            ${slider('range', '항속거리', spec.range, seg.range.min, seg.range.max, 100, 'km')}
+            ${slider('tech', '기술 투자', spec.tech, 0, 100, 1, '')}
+            <p class="hint">기술 투자를 올리면 연비·정가가 오르지만 개발비·기간·결함 위험이 함께 오른다.</p>
+            ${slider('wing', '날개 (단거리형 ↔ 장거리형)', spec.wing === undefined ? 45 : spec.wing, 0, 100, 1, '')}
+            <p class="hint">오른쪽으로 갈수록 순항 연비가 좋아지고 <b>이착륙 성능이 나빠진다</b>. 짧은 활주로·고온고지 노선은 왼쪽 설계가 아니면 응찰 자체가 막힌다.</p>
+            ${slider('fuelMargin', '연료 여유 (임무 최적 ↔ 노선 확장)', spec.fuelMargin === undefined ? 35 : spec.fuelMargin, 0, 100, 1, '')}
+            <p class="hint">설계 항속보다 <b>먼 노선도 승객을 덜 태우면 뛸 수 있다</b>. 오른쪽으로 갈수록 그 폭이 넓어지지만, 탱크와 보강 구조를 짧은 노선에서도 지고 다녀 연비·원가·이착륙이 상시로 나빠진다.</p>
+          </section>
+
+          ${foldCard(
+            folds,
+            'design-section',
+            '동체 단면',
+            esc(curSection ? curSection.name : ''),
+            `<div class="mats">${sections}</div>
+             <p class="hint">좁게 많이 태우면 좌석당 연비·원가가 좋아지고 객실 점수가 떨어진다. 단면을 바꾸면 형식증명을 물려받을 수 없다 — 파생형의 뿌리가 되는 결정이다.</p>`,
+          )}
+          ${foldCard(
+            folds,
+            'design-fus',
+            '동체 소재',
+            esc(curFus ? curFus.name : ''),
+            `<div class="mats">${fusMats}</div>
+             <p class="hint">동체는 여압 사이클이 걸려 개발이 가장 어렵다. 대신 넓은 단면·높은 여압으로 <b>객실이 크게 좋아진다</b>.</p>`,
+          )}
+          ${foldCard(
+            folds,
+            'design-wingmat',
+            '날개 소재',
+            esc(curWing ? curWing.name : ''),
+            `<div class="mats">${wingMats}</div>
+             <p class="hint">날개는 가벼워야 종횡비를 높일 수 있다. <b>고종횡비 장거리 날개는 사실상 복합재라야 성립한다</b> — 알루미늄으로 밀어붙이면 중량이 연비 이득을 갉아먹는다.</p>`,
+          )}
+          ${foldCard(
+            folds,
+            'design-engine',
+            '엔진',
+            esc((Engines.get(effectiveEngine) || {}).name || ''),
+            `<div class="mats">${engines}</div>
+             <p class="hint">신형 엔진은 연비가 크게 좋지만 단가·개발비가 오르고, 취항 3년 안쪽이면 초기 결함 위험이 얹힌다.</p>
+             ${
+               substituted
+                 ? `<p class="warn-box">원형 엔진은 더 이상 판매되지 않아 <b>${esc(
+                     (Engines.get(effectiveEngine) || {}).name || '',
+                   )}</b>로 대체된다 — 재장착이라 파생형 할인이 줄어든다.</p>`
+                 : ''
+             }`,
+          )}
+          ${foldCard(
+            folds,
+            'design-launch-options',
+            '착수 옵션',
+            optionTags.length ? esc(optionTags.join(' · ')) : '<span class="muted">없음</span>',
+            `<div class="mats" id="design-options">${renderDesignOptions(s, spec)}</div>`,
+          )}
         </div>
         <div class="card" id="design-preview">${renderDesignPreview(s, spec, designName)}</div>
       </section>
@@ -562,6 +684,33 @@
     </label>`;
   }
 
+  /**
+   * 설계 요약 바 — 좁은 화면에서 상단에 붙어 따라다닌다.
+   *
+   * 2단 그리드가 1단으로 접히면 슬라이더는 위, 평가표는 저 아래로 밀린다.
+   * 그러면 값을 움직이면서 그 결과를 볼 수가 없어 설계가 눈감고 하는 일이 된다.
+   * 결정을 좌우하는 숫자만 뽑아 늘 보이게 둔다 (나머지 평가는 아래 미리보기 그대로).
+   */
+  function renderDesignSummary(s, spec) {
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
+    const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
+    const affordable = s.cash >= upfront;
+    const cell = (label, value, tone) =>
+      `<span class="ds-cell ${tone || ''}"><i>${label}</i><b>${value}</b></span>`;
+    return `<div class="design-sum" id="design-sum">
+        <div class="ds-strip">
+          ${cell('좌석', num(ev.seats) + '석')}
+          ${cell('항속', num(ev.range) + 'km')}
+          ${cell('개발비', money(ev.devCost))}
+          ${cell('착수금', money(upfront), affordable ? '' : 'bad')}
+          ${cell('기간', ev.devQuarters + '+' + ev.certQuarters + '분기')}
+          ${cell('연비', String(ev.efficiency))}
+          ${cell('객실', String(ev.comfort))}
+        </div>
+        <button class="ghost small ds-jump" data-action="goto-preview">평가 ▾</button>
+      </div>`;
+  }
+
   /** 설계 미리보기 — 슬라이더를 움직일 때 이 영역만 갈아끼운다. */
   function renderDesignPreview(s, spec, designName) {
     // 미리보기는 항상 "지금" 기준으로 평가한다. spec.year 를 들고 다니면 분기가
@@ -636,7 +785,7 @@
 
   // ─────────────────────────────── 프로그램 ───────────────────────────────
 
-  function renderPrograms(s) {
+  function renderPrograms(s, folds) {
     // 취소·매각된 기종은 목록에서 뺀다. 회고(종료 화면)에는 계보로 남는다.
     const active = s.programs.filter((p) => p.phase !== 'cancelled' && p.phase !== 'sold');
     if (!active.length) return '<div class="card"><p class="muted">아직 기종이 없다. 설계 탭에서 개발을 착수하라.</p></div>';
@@ -752,13 +901,19 @@
           </div>`;
         }
 
+        // 제원 열두 줄은 착수할 때 정한 값이라 매 분기 볼 것이 아니다. 손대는 것은
+        // 아래 조작 블록(인력 배분·시험기·개량)이므로 그쪽을 화면에 먼저 올린다.
+        const specLine = `${SEGMENTS[p.segment].name} · ${p.seats}석 · ${num(p.range)}km`;
         return `<div class="card program ${p.phase}">
           <div class="row between">
             <h3>${esc(p.name)} ${p.legacy ? '<span class="tag">노후 주력기</span>' : ''} ${p.derivative ? '<span class="tag">파생형</span>' : ''}</h3>
             <span class="phase ${p.phase}">${phaseLabel(p)}</span>
           </div>
-          <table class="spec">${rows.join('')}</table>
           ${control}
+          <details class="fold"${foldOpen(folds, 'prog-' + p.id, false) ? ' open' : ''}>
+            <summary data-fold="prog-${p.id}"><b>제원</b><span class="fold-val">${specLine}</span></summary>
+            <table class="spec">${rows.join('')}</table>
+          </details>
         </div>`;
       })
       .join('');
@@ -788,7 +943,7 @@
     return `<div class="row">${btns}</div>`;
   }
 
-  function renderProduction(s) {
+  function renderProduction(s, folds) {
     const ready = s.programs.filter((p) => p.phase === 'production');
     if (!ready.length) return '<div class="card"><p class="muted">양산 가능한 기종이 없다.</p></div>';
 
@@ -876,24 +1031,38 @@
       })
       .join('');
 
+    // 라인 상태와 재고는 매 분기 보는 것이라 펼쳐 두고, 한 번 정하면 오래 가는
+    // 설정(조달·신설·개량·서비스)은 접는다.
     return `
-      ${servicesCard(s)}
-      ${researchCard(s)}
-      <section class="card"><h3>조달 전략</h3>
-        <p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
-        <div class="mats">${sourcingButtons}</div>
-      </section>
-      <section class="card"><h3>라인 신설</h3>
-        <p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.
-          재래식은 싸고 빨리 안정되지만 물량이 적고, 고속 자동화는 반대다 — 수요가 확실한 기종에만 값을 한다.</p>
-        ${buildButtons}
-      </section>
-      <section class="card"><h3>기체 개량</h3>
-        <p class="muted">기체는 취항으로 끝나지 않는다 — PIP·윙렛·객실 리프레시가 몇 분기 뒤 신규 생산분과
-          <b>이미 인도된 선단</b>에 함께 적용된다. 기존 운용사는 개조 키트를 사 가고(인도 1기당 정가의 1.2%),
-          자기 기체가 낡게 방치되지 않는다는 신호에 신뢰가 오른다. 선단이 클수록 개량이 값을 한다.</p>
-        ${upgradeRows}
-      </section>
+      ${servicesCard(s, folds)}
+      ${researchCard(s, folds)}
+      ${foldCard(
+        folds,
+        'prod-sourcing',
+        '조달 전략',
+        esc(sourcing.name),
+        `<p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
+         <div class="mats">${sourcingButtons}</div>`,
+      )}
+      ${foldCard(
+        folds,
+        'prod-newline',
+        '라인 신설',
+        `${s.lines.length}개 가동 중`,
+        `<p class="muted">라인은 주문 잔고 범위 안에서만 생산한다. 주문이 없으면 가동률이 서서히 떨어진다.
+           재래식은 싸고 빨리 안정되지만 물량이 적고, 고속 자동화는 반대다 — 수요가 확실한 기종에만 값을 한다.</p>
+         ${buildButtons}`,
+      )}
+      ${foldCard(
+        folds,
+        'prod-upgrades',
+        '기체 개량',
+        '',
+        `<p class="muted">기체는 취항으로 끝나지 않는다 — PIP·윙렛·객실 리프레시가 몇 분기 뒤 신규 생산분과
+           <b>이미 인도된 선단</b>에 함께 적용된다. 기존 운용사는 개조 키트를 사 가고(인도 1기당 정가의 1.2%),
+           자기 기체가 낡게 방치되지 않는다는 신호에 신뢰가 오른다. 선단이 클수록 개량이 값을 한다.</p>
+         ${upgradeRows}`,
+      )}
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
   }
@@ -902,7 +1071,7 @@
    * 장기 기술 연구 — 스컹크웍스. 분기마다 돈을 태워 몇 년 뒤 회사 상수를 바꾼다.
    * 효과는 완료 이후의 신규 설계·생산에만 붙는다.
    */
-  function researchCard(s) {
+  function researchCard(s, folds) {
     const R = root.AirlinerData.RESEARCH_PROJECTS;
     const research = s.research || { active: null, progress: {}, done: {} };
     const rows = R.map((proj) => {
@@ -919,12 +1088,25 @@
         <p class="hint">${esc(proj.desc)} <b>${esc(proj.effect)}.</b></p>
         <div class="row">${status}</div></div>`;
     }).join('');
-    return `
-      <section class="card"><h3>장기 기술 연구</h3>
-        <p class="muted">연구소는 하나다 — 한 번에 한 프로젝트. 완료된 연구는 <b>그 이후의 신규 설계·생산</b>에 영구히 적용된다.
-          이미 나는 기체는 소급되지 않는다. 중단하면 진행분은 남는다.</p>
-        ${rows}
-      </section>`;
+    // 연구소는 하나뿐이라 화면에서 매번 확인할 것은 "지금 무엇이 돌고 있나" 하나다.
+    // 그 한 줄을 제목에 올리고 프로젝트 목록은 접는다.
+    const running = research.active ? R.find((x) => x.id === research.active) : null;
+    const doneCount = Object.keys(research.done || {}).length;
+    const head = running
+      ? `${esc(running.name)} ${research.progress[running.id] || 0}/${running.quarters}분기`
+      : doneCount
+        ? `${doneCount}건 완료 · 진행 중 없음`
+        : '<span class="muted">진행 중 없음</span>';
+
+    return foldCard(
+      folds,
+      'prod-research',
+      '장기 기술 연구',
+      head,
+      `<p class="muted">연구소는 하나다 — 한 번에 한 프로젝트. 완료된 연구는 <b>그 이후의 신규 설계·생산</b>에 영구히 적용된다.
+         이미 나는 기체는 소급되지 않는다. 중단하면 진행분은 남는다.</p>
+       ${rows}`,
+    );
   }
 
   /**
@@ -932,7 +1114,7 @@
    * 신규 인도만이 매출이면 개발 공백기에 경영할 거리가 없다. 이미 팔아 둔 기체가
    * 얼마를 벌어다 주는지 여기서 보인다.
    */
-  function servicesCard(s) {
+  function servicesCard(s, folds) {
     const inc = E.serviceIncome(s);
     const order = ['none', 'regional', 'global'];
     const curIdx = order.indexOf(s.aftermarket);
@@ -962,9 +1144,12 @@
           .join('')
       : '<span class="muted">양산 중인 기종이 없다.</span>';
 
-    return `
-      <section class="card">
-        <h3>서비스 사업</h3>
+    return foldCard(
+      folds,
+      'prod-services',
+      '서비스 사업',
+      `이번 분기 ${money(inc.total)}`,
+      `
         <p class="muted">이미 팔아 둔 기체가 벌어다 주는 돈이다. 선단 ${num(inc.fleet)}기 기준 이번 분기 <b>${money(inc.total)}</b>
           <span class="muted">(부품·정비 ${money(inc.aftermarket)}${inc.freight ? ` · 화물 ${money(inc.freight)}` : ''}${inc.gov ? ` · 정부 지원 ${money(inc.gov)}` : ''})</span></p>
         <div class="mats">${tiers}</div>
@@ -972,8 +1157,8 @@
         <p class="hint">여객 수요가 꺾여도 화물은 돈다. 침체 분기에는 화물 수익이 ${FREIGHTER.slumpMult}배가 된다 — 불황 헤지다.</p>
         <div class="row wrap">${freightButtons}</div>
         <h3 class="sub">엔진 공급사</h3>
-        ${engineRelationRows(s)}
-      </section>`;
+        ${engineRelationRows(s)}`,
+    );
   }
 
   /** 공급사별 인도 실적과 계약 상태 — 독점 계약·런칭 파트너 제안의 배경 정보다. */
@@ -1011,7 +1196,7 @@
 
   // ─────────────────────────────── 수주 ───────────────────────────────
 
-  function renderRfps(s, discountDraft) {
+  function renderRfps(s, discountDraft, folds) {
     if (!s.rfps.length) return '<div class="card"><p class="muted">이번 분기에는 새 입찰 공고가 없다.</p></div>';
 
     return s.rfps
@@ -1028,11 +1213,28 @@
         const tier = E.loyaltyTier ? E.loyaltyTier(s, rfp.airlineId) : 0;
         const tierBadge = tier === 2 ? ' <span class="tag good">핵심 고객</span>' : tier === 1 ? ' <span class="tag">단골</span>' : '';
 
+        // 한 공고의 배경 설명만 12행이다. 좁은 화면에서 그걸 다 펼쳐 두면 공고 세 건에
+        // 스크롤이 몇 화면씩 되고, 정작 손대야 할 후보·할인율이 화면 밖으로 밀린다.
+        // 판단에 곧바로 쓰는 값만 칩으로 남기고 배경은 접는다 (펼침 상태는 ui.js 가 기억한다).
+        const open = folds && folds.has(rfp.id);
+        const chips = [
+          `${rfp.segmentName} · ${rfp.reqSeats}석 · ${num(rfp.reqRange)}km`,
+          `가격 민감도 ${rfp.priceSensitivity >= 1.2 ? '매우 높음' : rfp.priceSensitivity >= 1.0 ? '높음' : rfp.priceSensitivity >= 0.8 ? '보통' : '낮음'}`,
+          `경쟁 ${rfp.rivalHint.label}`,
+          `관계 ${Math.round(s.relations[rfp.airlineId] ?? 40)}`,
+        ];
+        if (rfp.reqEtops) chips.push('<b class="warn">ETOPS 필수</b>');
+        if (rfp.reqField) chips.push(`<b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'}</b>`);
+        if (bid) chips.push('<b class="good">응찰 중</b>');
+
         return `<div class="card rfp">
           <div class="row between">
             <h3>${esc(rfp.airlineName)} <span class="muted">${esc(rfp.home)}</span>${tierBadge}</h3>
             <span class="qty">${rfp.qty}기</span>
           </div>
+          <div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join('')}</div>
+          <details class="fold"${open ? ' open' : ''}>
+          <summary data-fold="${rfp.id}">공고 배경 · 요구 조건</summary>
           <table class="spec">
             ${airline && airline.doctrine ? `<tr><th>구매 독트린</th><td><b>${esc(airline.doctrine)}</b> — ${esc(airline.doctrineNote || '')}</td></tr>` : ''}
             ${airline && airline.enginePref ? `<tr><th>선호 엔진</th><td>${esc(airline.enginePref)} <span class="muted">— 맞추면 +2 · 낯선 공급사는 −1 · 이중화는 어느 쪽이든 맞고 감점을 면한다</span></td></tr>` : ''}
@@ -1051,6 +1253,7 @@
             <tr><th>우리와의 관계</th><td>${Math.round(s.relations[rfp.airlineId] ?? 40)} / 100</td></tr>
             <tr><th>보유 우리 기체</th><td>${fleetSummary(s, rfp.airlineId)}</td></tr>
           </table>
+          </details>
           ${
             !candidates.length
               ? '<p class="muted">이 세그먼트에 응찰 가능한 기종이 없다. <b>개발 40%</b>부터는 선주문으로 응찰할 수 있다 — 미인증 감점을 받지만 선수금이 개발을 먹인다.</p>'
@@ -1182,7 +1385,7 @@
 
   // ─────────────────────────────── 재무 ───────────────────────────────
 
-  function renderFinance(s) {
+  function renderFinance(s, folds) {
     const rating = E.creditRating(s);
     const rows = s.history
       .slice(-16)
@@ -1245,7 +1448,11 @@
         }
         ${
           rows
-            ? `<table class="hist"><thead><tr><th>분기</th><th>매출</th><th>비용</th><th>손익</th><th>인도</th><th>현금</th><th>부채</th></tr></thead><tbody>${rows}</tbody></table>`
+            ? // 곡선이 흐름을 말해 주므로 숫자 표는 접어 둔다 — 스물네 줄이 그대로 스크롤이다.
+              `<details class="fold"${foldOpen(folds, 'fin-hist', false) ? ' open' : ''}>
+                 <summary data-fold="fin-hist"><b>분기별 숫자</b><span class="fold-val">최근 ${s.history.slice(-24).length}분기</span></summary>
+                 <table class="hist"><thead><tr><th>분기</th><th>매출</th><th>비용</th><th>손익</th><th>인도</th><th>현금</th><th>부채</th></tr></thead><tbody>${rows}</tbody></table>
+               </details>`
             : '<p class="muted">아직 정산된 분기가 없다.</p>'
         }
       </section>`;
@@ -1255,7 +1462,7 @@
    * 경쟁 구도 — 세그먼트별 문턱 기종, 제조사별 누적 인도, 수주전 전적.
    * 상대를 "점수 문턱"이 아니라 이름과 전적을 가진 회사로 보여준다.
    */
-  function rivalCard(s) {
+  function rivalCard(s, folds) {
     const year = E.yearOf(s.turn);
     const segRows = SEGMENT_ORDER.map((seg) => {
       const sg = SEGMENTS[seg];
@@ -1291,17 +1498,20 @@
           .join('')}</ul>`
       : '<p class="muted">아직 맞붙은 수주전이 없다.</p>';
 
-    return `
-      <section class="card">
-        <h3>경쟁 구도</h3>
-        <p class="muted">지금 각 시장에서 우리가 이겨야 하는 상대다. 경쟁사는 실제 역사대로 신형을 내놓고 단산한다.</p>
-        <table class="spec">${segRows}</table>
-        <h3 class="sub">누적 인도 순위${all.length > TOP ? ` <span class="muted">· 상위 ${TOP}개</span>` : ''}</h3>
-        ${bars}
-        ${all.length > TOP ? '<p class="hint">전체 순위는 <b>추이</b> 탭에 있다.</p>' : ''}
-        <h3 class="sub">수주전 전적</h3>
-        ${duelLine}
-      </section>`;
+    const us = all.find((r) => r.us);
+    return foldCard(
+      folds,
+      'ov-rivals',
+      '경쟁 구도',
+      us ? `우리 ${(us.share * 100).toFixed(1)}%` : '',
+      `<p class="muted">지금 각 시장에서 우리가 이겨야 하는 상대다. 경쟁사는 실제 역사대로 신형을 내놓고 단산한다.</p>
+       <table class="spec">${segRows}</table>
+       <h3 class="sub">누적 인도 순위${all.length > TOP ? ` <span class="muted">· 상위 ${TOP}개</span>` : ''}</h3>
+       ${bars}
+       ${all.length > TOP ? '<p class="hint">전체 순위는 <b>추이</b> 탭에 있다.</p>' : ''}
+       <h3 class="sub">수주전 전적</h3>
+       ${duelLine}`,
+    );
   }
 
   // ─────────────────────────────── 추이 ───────────────────────────────
@@ -1319,7 +1529,7 @@
     return rows.map((h) => h.label);
   }
 
-  function renderTrends(s) {
+  function renderTrends(s, folds) {
     const rows = tail(s, 80);
     if (!rows.length) {
       return `<section class="card"><h3>경영 추이</h3><p class="muted">아직 정산된 분기가 없다. 분기를 한 번 넘기면 여기에 20년치 곡선이 쌓이기 시작한다.</p></section>`;
@@ -1417,36 +1627,47 @@
         </div>
       </section>
 
-      <section class="card">
-        <h3>시장 지표</h3>
-        <p class="muted">연료지수가 오르면 입찰 점수에서 연비 비중이 커지고, 수요지수가 내려가면 공고 자체가 줄어든다.</p>
-        ${C.line({
-          title: '연료·수요 지수 추이',
-          height: 110,
-          format: (v) => v.toFixed(2),
-          labels,
-          series: [
-            { name: '연료지수', values: pick(rows, 'fuel'), cls: 'bad' },
-            { name: '수요지수', values: pick(rows, 'demand'), cls: 'good' },
-          ],
-        })}
-        ${legend([
-          { name: '연료지수', cls: 'bad' },
-          { name: '수요지수', cls: 'good' },
-        ])}
-      </section>
-
-      <section class="card">
-        <h3>제조사별 누적 인도</h3>
-        <p class="muted">업계 인도량은 그 시점 카탈로그의 실력대로 갈린다. 787이 뜨면 보잉 몫이 늘고, 단산이 겹치면 줄어든다.</p>
-        ${C.shareBars(shareRows)}
-      </section>
-
-      <section class="card">
-        <h3>수주전 전적</h3>
-        <p class="muted">공고마다 그 시점 최강 기종이 상대로 나온다. 누구에게 얼마나 밀렸는지가 다음 설계의 근거다.</p>
-        ${duelRows}
-      </section>`;
+      ${
+        // 앞의 네 곡선이 "우리가 어떻게 가고 있나"라면, 아래 셋은 배경 지표다.
+        // 매번 스크롤로 지나치는 대신 필요할 때 펼친다.
+        foldCard(
+          folds,
+          'tr-market',
+          '시장 지표',
+          `연료 ${s.market.fuelIndex.toFixed(2)} · 수요 ${s.market.demandIndex.toFixed(2)}`,
+          `<p class="muted">연료지수가 오르면 입찰 점수에서 연비 비중이 커지고, 수요지수가 내려가면 공고 자체가 줄어든다.</p>
+           ${C.line({
+             title: '연료·수요 지수 추이',
+             height: 110,
+             format: (v) => v.toFixed(2),
+             labels,
+             series: [
+               { name: '연료지수', values: pick(rows, 'fuel'), cls: 'bad' },
+               { name: '수요지수', values: pick(rows, 'demand'), cls: 'good' },
+             ],
+           })}
+           ${legend([
+             { name: '연료지수', cls: 'bad' },
+             { name: '수요지수', cls: 'good' },
+           ])}`,
+        )
+      }
+      ${foldCard(
+        folds,
+        'tr-makers',
+        '제조사별 누적 인도',
+        `${standings.length}개사`,
+        `<p class="muted">업계 인도량은 그 시점 카탈로그의 실력대로 갈린다. 787이 뜨면 보잉 몫이 늘고, 단산이 겹치면 줄어든다.</p>
+         ${C.shareBars(shareRows)}`,
+      )}
+      ${foldCard(
+        folds,
+        'tr-duels',
+        '수주전 전적',
+        duels.length ? `${duels.length}개사와 맞붙음` : '',
+        `<p class="muted">공고마다 그 시점 최강 기종이 상대로 나온다. 누구에게 얼마나 밀렸는지가 다음 설계의 근거다.</p>
+         ${duelRows}`,
+      )}`;
   }
 
   function legend(items) {
@@ -1624,16 +1845,37 @@
 
   // ─────────────────────────────── 기록 ───────────────────────────────
 
-  function renderLog(s) {
-    return `<section class="card"><h3>경영 기록</h3><ul class="log">${s.log.map(logItem).join('')}</ul></section>`;
+  const LOG_RECENT = 24;
+
+  /**
+   * 경영 기록 — 20년치가 쌓이면 한 탭이 일곱 화면이 된다.
+   * 최근 것만 펼쳐 두고 나머지는 접는다 (지운 것이 아니라 접은 것임을 개수로 밝힌다).
+   */
+  function renderLog(s, folds) {
+    const recent = s.log.slice(0, LOG_RECENT);
+    const older = s.log.slice(LOG_RECENT);
+    return `<section class="card">
+        <h3>경영 기록</h3>
+        <ul class="log">${recent.map(logItem).join('')}</ul>
+        ${
+          older.length
+            ? `<details class="fold"${foldOpen(folds, 'log-older', false) ? ' open' : ''}>
+                 <summary data-fold="log-older"><b>이전 기록</b><span class="fold-val">${num(older.length)}건</span></summary>
+                 <ul class="log">${older.map(logItem).join('')}</ul>
+               </details>`
+            : ''
+        }
+      </section>`;
   }
 
   root.AirlinerPanels = {
+    todoList,
     renderOverview,
     renderTrends,
     mandateCard,
     renderCareer,
     renderDesign,
+    renderDesignSummary,
     renderDesignOptions,
     renderDesignPreview,
     renderPrograms,
