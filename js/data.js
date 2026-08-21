@@ -342,6 +342,52 @@
   };
 
   /**
+   * 시나리오 — 회사 + 시작 조건 + 목표의 묶음.
+   *
+   * 자유 경영은 "잘 살아남기"가 목표의 전부다. 시나리오는 정해진 산 하나를 준다 —
+   * 같은 20년이라도 오를 산이 다르면 완전히 다른 판이 된다. 목표 판정 로직은
+   * 엔진(scenarioStatus)에 있다: 세이브는 JSON 이라 함수를 여기 둘 수 없다.
+   *
+   * 목표치는 하네스 측정으로 잡는다 — "잘 하는 플레이가 3판에 1번쯤 닿는" 높이.
+   * 파산하면 어떤 시나리오든 실패다: 등급 철학과 같다.
+   */
+  const SCENARIOS = [
+    {
+      id: 'wide_dream', name: '광동체의 꿈', company: 'deneb',
+      goalText: '20년 안에 광동체 100기 인도',
+      desc: '중견사가 장거리 간판까지 오른다. 협동체로 경험을 쌓고, 회사를 걸고 광동체를 띄워라 — 사다리를 오르는 정석 그 자체다.',
+      targetDelivered: 100,
+    },
+    {
+      id: 'phoenix', name: '불사조', company: 'deneb',
+      goalText: '잿더미에서 살아남아 누적 600기 인도',
+      desc: '전임 경영진이 회사를 말아먹었다. 현금은 반토막, 부채는 세 배 — 이 잿더미에서 파산을 피하고, 살아남았다는 것을 인도 대수로 증명하라.',
+      /** 시작 조건 덮어쓰기 — 잿더미. */
+      tweaks: { cash: 2600, debt: 4000 },
+      targetDelivered: 600,
+    },
+    {
+      id: 'red_star', name: '붉은 별', company: 'uac',
+      goalText: '서랍 속 SSJ-100 을 취항시키고 240기 인도',
+      desc: '소련 항공산업의 유산을 물려받았다. 전임자들이 서랍에 넣어 둔 SSJ-100 을 꺼내 끝까지 밀어붙여라 — 서방 리저널 시장에 다시 깃발을 꽂는 길은 그 도면뿐이다.',
+      targetProgramName: 'SSJ-100',
+      targetDelivered: 240,
+    },
+    {
+      id: 'clean_sheet', name: '무결점', company: 'deneb',
+      goalText: '중대 결함(운항 정지) 0회로 1,000기 인도',
+      desc: '단 한 번의 운항 정지도 없이 20년, 그리고 1,000기. 품질에 쓰는 돈이 아깝지 않다는 것을 증명하라 — 결함 위험을 낮게, 항상.',
+      targetDelivered: 1000,
+    },
+    {
+      id: 'successor', name: '후계기', company: 'boeing',
+      goalText: '파생이 아닌 신규 협동체를 취항시키고 800기 인도',
+      desc: '737은 위대한 기체였다 — 40년 전에는. 파생의 관성을 끊고 백지에서 설계한 후계기로 시장을 다시 정의하라.',
+      targetDelivered: 800,
+    },
+  ];
+
+  /**
    * 장기 기술 연구 — 스컹크웍스.
    *
    * 기술력은 지금까지 설계 슬라이더 하나였다. 여기 프로젝트들은 분기마다 돈을
@@ -707,6 +753,8 @@
           const cost = Math.round(p.delivered * p.unitCostBase * h.rng.range(0.08, 0.2));
           h.expense(cost);
           h.reputation(-9);
+          // 무결점 시나리오가 세는 값 — 운항 정지에 이른 중대 결함의 횟수.
+          s.stats.majorDefects = (s.stats.majorDefects || 0) + 1;
           // 기종별로 기록하고, 이미 정지 중이면 더 긴 쪽을 남긴다
           // (단일 슬롯이면 다른 기종의 정지가 기존 정지를 조기 해제해 버린다).
           const q = h.rng.int(1, 3);
@@ -1113,6 +1161,7 @@
     AFTERMARKET_TIERS,
     AFTERMARKET_ORDER,
     FREIGHTER,
+    SCENARIOS,
     RESEARCH_PROJECTS,
     TAKEOVER,
     GOV_MISSIONS,

@@ -6887,6 +6887,183 @@ test('인수 제안 결정: 위기 중에만, 긴 쿨다운으로 온다', () =>
   assert.strictEqual(def.weight(s), 0, '이미 인수한 기종은 다시 매물로 안 나온다');
 });
 
+// ─────────────────────────────── 시나리오 모드 ───────────────────────────────
+
+test('시나리오 시작: 회사를 강제하고 시작 조건을 덮어쓴다', () => {
+  const s = E.newGame(951, null, 'phoenix');
+  assert.strictEqual(s.scenario, 'phoenix');
+  assert.strictEqual(s.company, '데네브 항공우주');
+  assert.strictEqual(s.cash, 2600, '잿더미 — 현금이 깎여야 한다');
+  assert.strictEqual(s.debt, 4000, '잿더미 — 부채가 쌓여야 한다');
+  assert.ok(s.log.some((l) => l.text.includes('불사조')), '시나리오 소개가 로그에 남아야 한다');
+  // 회사를 넘겨도 시나리오가 이긴다 — 목표가 그 회사 전제다.
+  const r = E.newGame(951, 'boeing', 'red_star');
+  assert.strictEqual(r.scenario, 'red_star');
+  assert.deepStrictEqual(r.playerMakers, ['tupolev', 'sukhoi'], '붉은 별은 UAC 로 시작해야 한다');
+  assert.ok(r.programs.some((p) => p.name === 'SSJ-100'), '서랍 속 SSJ 가 있어야 목표가 성립한다');
+  // 자유 경영은 아무 시나리오도 없다.
+  assert.strictEqual(E.scenarioStatus(E.newGame(951)), null);
+  assert.strictEqual(E.newGame(951, 'deneb').scenario, undefined);
+});
+
+test('시나리오 판정: 각 목표의 진행도·실패 조건', () => {
+  // 광동체의 꿈 — 광동체 인도 합.
+  const w = E.newGame(953, null, 'wide_dream');
+  w.programs.push({ id: 'w1', name: 'W', segment: 'wide', phase: 'production', delivered: 60 });
+  w.programs.push({ id: 'w2', name: 'W2', segment: 'wide', phase: 'production', delivered: 45 });
+  const ws = E.scenarioStatus(w);
+  assert.strictEqual(ws.progress, 105);
+  assert.ok(ws.achieved, '광동체 100기를 넘겼다');
+
+  // 붉은 별 — SSJ 인도. 목표 전 매각은 실패, 목표 후 매각은 기록을 무르지 않는다.
+  const r = E.newGame(953, null, 'red_star');
+  const ssj = r.programs.find((p) => p.name === 'SSJ-100');
+  ssj.delivered = 100;
+  assert.strictEqual(E.scenarioStatus(r).progress, 100);
+  ssj.phase = 'sold';
+  assert.ok(E.scenarioStatus(r).failed, '목표 전에 팔면 끝이다');
+  ssj.delivered = 240;
+  assert.ok(E.scenarioStatus(r).achieved, '240기를 채운 뒤의 매각은 기록을 무르지 않는다');
+
+  // 무결점 — 첫 운항 정지가 목표를 무너뜨린다.
+  const c = E.newGame(953, null, 'clean_sheet');
+  c.stats.delivered = 1200;
+  assert.ok(E.scenarioStatus(c).achieved);
+  c.stats.majorDefects = 1;
+  const cs = E.scenarioStatus(c);
+  assert.ok(cs.failed && !cs.achieved, '운항 정지 1회면 무결점은 끝이다');
+
+  // 후계기 — 파생·승계·인수는 백지가 아니다.
+  const b = E.newGame(953, null, 'successor');
+  b.programs.push({ id: 'd1', name: 'D', segment: 'narrow', derivedFrom: { id: 'x' }, certTurn: 5, delivered: 900 });
+  b.programs.push({ id: 'a1', name: 'A', segment: 'narrow', acquired: true, certTurn: 5, delivered: 900 });
+  assert.strictEqual(E.scenarioStatus(b).progress, 0, '파생·인수 기종은 후계가 아니다');
+  b.programs.push({ id: 'c1', name: 'C', segment: 'narrow', certTurn: 5, delivered: 810 });
+  assert.ok(E.scenarioStatus(b).achieved, '백지 협동체 800기가 목표다');
+});
+
+test('시나리오 정산: 달성 순간 기념하고, 파산하면 무엇을 채웠든 실패다', () => {
+  const s = E.newGame(955, null, 'wide_dream');
+  s.programs.push({ id: 'w1', name: 'W', segment: 'wide', phase: 'production', delivered: 120, defectRisk: 0.05, unitCostBase: 100, stock: 0, produced: 120, listPrice: 200, spent: 0, share: 0 });
+  s.cash = 30000;
+  E.endTurn(s);
+  assert.ok(s.scenarioAchievedTurn !== undefined, '단조 목표는 채우는 분기에 기념해야 한다');
+  assert.ok(s.log.some((l) => l.text.includes('목표 달성')), '기념이 로그에 남아야 한다');
+
+  // 파산 — 목표를 채웠어도 실패로 정산된다.
+  const b = E.newGame(957, null, 'wide_dream');
+  b.programs.push({ id: 'w1', name: 'W', segment: 'wide', phase: 'production', delivered: 120, defectRisk: 0.05, unitCostBase: 100, stock: 0, produced: 120, listPrice: 200, spent: 0, share: 0 });
+  b.cash = -99999;
+  b.debt = Data.CONFIG.maxDebt;
+  E.endTurn(b);
+  assert.ok(b.gameOver && b.gameOver.reason === 'bankrupt', '전제: 파산해야 한다');
+  assert.ok(b.gameOver.scenario && b.gameOver.scenario.achieved === false, '파산하면 어떤 목표든 실패다');
+
+  // 정상 종료 — 성공이 gameOver 에 실린다.
+  const g = E.newGame(959, null, 'wide_dream');
+  g.programs.push({ id: 'w1', name: 'W', segment: 'wide', phase: 'production', delivered: 120, defectRisk: 0.05, unitCostBase: 100, stock: 0, produced: 120, listPrice: 200, spent: 0, share: 0 });
+  g.turn = 79;
+  g.cash = 30000;
+  E.endTurn(g);
+  assert.ok(g.gameOver && g.gameOver.reason === 'complete');
+  assert.ok(g.gameOver.scenario.achieved, '목표를 채우고 완주하면 성공이다');
+  assert.strictEqual(g.gameOver.scenario.name, '광동체의 꿈');
+});
+
+test('무결점의 눈금: 중대 결함 이벤트가 카운터를 올린다', () => {
+  const s = E.newGame(961);
+  const p = s.programs[0];
+  const ev = Data.EVENTS.find((x) => x.id === 'defect');
+  const stub = {
+    rng: { int: (a) => a, range: (a) => a, pick: (arr) => arr[0], next: () => 0, chance: () => true },
+    fmt: String, reputation() {}, income() {}, expense() {}, pickWeighted: (arr) => arr[0],
+  };
+  // next()=0 < defectRisk → 중대 판정.
+  ev.apply(s, stub);
+  assert.strictEqual(s.stats.majorDefects, 1, '중대 결함이 세어져야 무결점 시나리오가 성립한다');
+  // 경미 판정(next()=1)은 세지 않는다.
+  stub.rng.next = () => 1;
+  ev.apply(s, stub);
+  assert.strictEqual(s.stats.majorDefects, 1, '경미 결함은 무결점을 깨지 않는다');
+});
+
+test('시나리오 상태는 세이브 왕복을 견딘다', () => {
+  const s = E.newGame(963, null, 'red_star');
+  const round = JSON.parse(JSON.stringify(s));
+  E.ensureShape(round);
+  const a = E.scenarioStatus(s);
+  const b = E.scenarioStatus(round);
+  assert.deepStrictEqual(b, a, '세이브를 오간 시나리오 판정이 달라지면 안 된다');
+});
+
+test('시나리오 시작 조건은 파생값보다 먼저 적용된다 — 금리·개장 로그가 잿더미 기준', () => {
+  const ashes = E.newGame(965, null, 'phoenix');
+  const healthy = E.newGame(965, 'deneb');
+  assert.ok(ashes.rateForQuarter > healthy.rateForQuarter, '잿더미 회사가 첫 분기에 건강한 금리를 쓰면 안 된다');
+  const intro = ashes.log.find((l) => l.text.includes('경영을 인계받았다'));
+  assert.match(intro.text, /2\.60B/, '개장 로그가 덮어쓴 재무를 말해야 한다');
+  assert.match(intro.text, /4\.00B/, '개장 로그의 부채도 잿더미 기준이어야 한다');
+  // 난수를 쓰지 않는 덮어쓰기 — 같은 시드의 충격·드라마 전개는 자유 경영과 같다.
+  assert.deepStrictEqual(ashes.shocks, healthy.shocks, '시나리오가 시드 전개를 바꾸면 안 된다');
+});
+
+test('시나리오 알림의 즉시성: 턴 0 표식·매각 즉시 판정·이벤트 후 재판정', () => {
+  // 턴 0 실패 표식(0은 falsy) — truthiness 로 보면 매 분기 실패 로그가 다시 남는다.
+  const s = E.newGame(967, null, 'red_star');
+  const ssj = s.programs.find((p) => p.name === 'SSJ-100');
+  const r = E.sellProgram(s, ssj.id);
+  assert.ok(r.ok, '전제: 개발 단계의 SSJ 는 팔 수 있다');
+  assert.strictEqual(s.scenarioFailedTurn, 0, '매각 즉시(분기 정산 전에) 실패가 기록돼야 한다');
+  const failLogs = () => s.log.filter((l) => l.text.includes('목표가 무너졌다')).length;
+  assert.strictEqual(failLogs(), 1);
+  s.cash = 30000;
+  E.endTurn(s);
+  E.endTurn(s);
+  assert.strictEqual(failLogs(), 1, '턴 0 표식이 falsy 라고 실패 로그가 매 분기 다시 남으면 안 된다');
+});
+
+test('시나리오 카드: 종료 후에는 확정 판정이 진행 중 표식을 이긴다', () => {
+  // 목표를 채운 분기에 파산 — 진행 표식은 "달성", 확정 판정은 "실패".
+  const s = E.newGame(969, null, 'wide_dream');
+  s.programs.push({ id: 'w1', name: 'W', segment: 'wide', phase: 'production', delivered: 120, defectRisk: 0.05, unitCostBase: 100, stock: 0, produced: 120, listPrice: 200, spent: 0, share: 0 });
+  s.cash = -99999;
+  s.debt = Data.CONFIG.maxDebt;
+  E.endTurn(s);
+  assert.ok(s.gameOver && s.gameOver.reason === 'bankrupt');
+  assert.strictEqual(s.scenarioAchievedTurn, 0, '전제: 같은 분기에 달성 표식이 섰다');
+  assert.strictEqual(s.gameOver.scenario.achieved, false, '확정 판정은 실패다');
+  const html = P.renderOverview(s);
+  // 로그 발췌에는 달성 순간의 기념이 그대로 남는다(역사다) — 카드 문구만 본다.
+  assert.ok(!html.includes('목표 달성 — 파산만 피하면 된다'), '종료된 판의 카드가 진행 중 문구를 보여주면 안 된다');
+  assert.ok(html.includes('목표 실패'), '카드는 확정 판정을 보여줘야 한다');
+});
+
+test('시나리오 목표치는 데이터에 산다 — 판정이 카탈로그 값을 따라간다', () => {
+  const scen = Data.SCENARIOS.find((x) => x.id === 'wide_dream');
+  const saved = scen.targetDelivered;
+  try {
+    scen.targetDelivered = 123; // 캘리브레이션이 data.js 만 만졌다고 가정한다
+    const s = E.newGame(971, null, 'wide_dream');
+    assert.strictEqual(E.scenarioStatus(s).target, 123, '엔진에 목표치가 하드코딩되면 카탈로그 조정이 판정과 분리된다');
+  } finally {
+    scen.targetDelivered = saved;
+  }
+});
+
+test('광동체의 꿈: 인수 기종의 승계 인도분은 목표에 실리지 않는다', () => {
+  const s = E.newGame(973, null, 'wide_dream');
+  s.turn = 40;
+  s.cash = 30000;
+  const r = E.acquireProgram(s, 'b767-300er', 'full');
+  assert.ok(r.ok, r.error);
+  assert.ok(r.program.delivered >= 100, '전제: 성숙한 광동체라 승계분만으로 목표치를 넘는다');
+  const st = E.scenarioStatus(s);
+  assert.strictEqual(st.progress, 0, '산을 산 것이지 오른 게 아니다 — 승계분은 0에서 시작한다');
+  // 인수 이후 우리가 인도한 몫은 정상적으로 쌓인다.
+  r.program.delivered += 30;
+  assert.strictEqual(E.scenarioStatus(s).progress, 30);
+});
+
 // ─────────────────── 회사 특성(사풍) ───────────────────
 //
 // 회사마다 승계 상태만 다르고 20년의 규칙이 같으면 회사 선택은 난이도 슬라이더다.

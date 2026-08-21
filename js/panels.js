@@ -116,6 +116,34 @@
       </table>`;
   }
 
+  /** 시나리오 목표 카드 — 오르는 산이 어디까지 왔나. 자유 경영이면 아무것도 없다. */
+  function scenarioCard(s) {
+    const st = E.scenarioStatus(s);
+    if (!st) return '';
+    const pct = Math.max(0, Math.min(100, Math.round((st.progress / st.target) * 100)));
+    // 종료된 판은 확정된 판정을 보여준다 — 목표를 채운 분기에 파산했다면
+    // 진행 중 표식(달성)과 최종 판정(실패)이 어긋날 수 있다. 확정이 이긴다.
+    const finalVerdict = s.gameOver && s.gameOver.scenario;
+    const state = finalVerdict
+      ? finalVerdict.achieved
+        ? '<span class="tag good">🏆 목표 달성</span>'
+        : '<span class="tag" style="color:var(--bad)">목표 실패</span>'
+      : st.failed
+        ? '<span class="tag" style="color:var(--bad)">실패 확정</span>'
+        : s.scenarioAchievedTurn !== undefined
+          ? '<span class="tag good">목표 달성 — 파산만 피하면 된다</span>'
+          : st.finalOnly
+            ? '<span class="muted">판정은 종료 시점에</span>'
+            : '';
+    return `
+      <section class="card">
+        <h3>시나리오 — ${esc(st.name)}</h3>
+        <p class="muted">${esc(st.goalText)} ${state}</p>
+        <div class="row between"><b>${num(st.progress)} / ${num(st.target)}${esc(st.unit || '')}</b><span class="muted">${pct}%</span></div>
+        ${bar(pct, 'accent')}
+      </section>`;
+  }
+
   /**
    * 지금 손봐야 할 일 — 탭 배지와 하단 액션 바가 이 목록 하나를 같이 쓴다.
    *
@@ -283,6 +311,7 @@
     const rows = s.history.slice(-24);
 
     return `
+      ${scenarioCard(s)}
       ${mandateCard(s)}
       ${decisionCard(s)}
       ${settlementCard(last, prev)}
