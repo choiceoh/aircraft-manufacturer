@@ -8503,3 +8503,51 @@ test('국산화: 예고는 상태를 건드리지 않는다', () => {
   E.localEnginePreview(s, t);
   assert.strictEqual(JSON.stringify(E.serialize ? E.serialize(s) : s), before, '읽기만 해야 한다');
 });
+
+test('국산화: 소재가 한 칸뿐인 옛 세이브도 새 세이브와 같은 값을 낸다', () => {
+  // 회귀 — 쌍 평가가 스펙을 손으로 되짚으면서 `material` 을 빠뜨려, 단면·날개 소재로
+  // 쪼개기 전의 옛 세이브에서는 복합재 기체가 알루미늄으로 평가됐다. 두 평가의
+  // 바탕이 함께 어긋나므로 비율까지 틀어진다(정가 $122.1M 이 $121.7M 으로).
+  const run = (legacy) => {
+    const s = E.newGame(4340, 'uac');
+    s.cash += 200000;
+    const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+    const ev = D.evaluate({ segment: p.segment, seats: p.seats, range: p.range, tech: p.tech, material: 'composite', engine: 'cfm56-5b' });
+    p.listPrice = ev.listPrice;
+    p.unitCostBase = ev.unitCostBase;
+    p.efficiency = ev.efficiency;
+    if (legacy) {
+      p.material = 'composite';
+      delete p.fuselage;
+      delete p.wingMat;
+    } else {
+      p.fuselage = 'composite';
+      p.wingMat = 'composite';
+      delete p.material;
+    }
+    assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+    E.fundLocalEngine(s, s.localEngineProject.cost);
+    for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+    assert.strictEqual(p.engine, 'ps90a');
+    return { price: p.listPrice, cost: p.unitCostBase, eff: p.efficiency };
+  };
+  assert.deepStrictEqual(run(true), run(false), '소재를 어느 칸으로 들고 있든 같은 기체다');
+});
+
+test('설계 스펙은 한 곳에서 읽는다 — 파생형 시드와 엔진 교체가 같은 출처', () => {
+  // 프로그램에서 스펙을 되짚는 자리가 둘인데 따로 적어 두면 한쪽에만 칸이 빠진다.
+  // 실제로 `earlyEngines`·이중화·원형 계보·`material` 이 그렇게 빠졌다.
+  const s = E.newGame(4341, 'uac');
+  const p = s.programs.find((x) => x.phase === 'production');
+  const spec = E.programSpec(p);
+  for (const k of ['segment', 'seats', 'range', 'tech', 'material', 'fuselage', 'wingMat', 'engine', 'abreast', 'wing', 'fuelMargin', 'etops', 'growth', 'maintainable', 'engines', 'dualSource']) {
+    assert.ok(k in spec, `${k} 칸이 있어야 한다`);
+  }
+  // 파생형 시드는 이 스펙 위에 좌석만 옮기고 계보를 얹은 것이다.
+  const seed = E.derivativeSpec(p, 20);
+  for (const [k, v] of Object.entries(spec)) {
+    if (k === 'seats') continue;
+    assert.deepStrictEqual(seed[k], v, `파생형 시드의 ${k} 가 원형 스펙과 달라졌다`);
+  }
+  assert.ok(seed.derivedFrom, '계보는 시드 쪽에만 붙는다');
+});

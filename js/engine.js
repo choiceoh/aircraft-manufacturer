@@ -1077,27 +1077,45 @@
     return { ok: true, program };
   }
 
+  /**
+   * 프로그램이 들고 있는 **설계 스펙** — 기체를 다시 평가해야 할 때 읽는 한 곳.
+   *
+   * 프로그램에서 스펙을 손으로 되짚는 자리가 둘(파생형 착수 시드·엔진 교체의 쌍
+   * 평가)인데, 따로 적어 두니 한쪽에만 칸이 빠지는 일이 반복됐다. 옛 세이브의
+   * `material`(단면·날개 소재로 쪼개기 전의 한 칸)이 그 예다 — 빠뜨리면 복합재
+   * 기체가 알루미늄으로 평가돼 비율이 어긋난다. 새 설계 축은 여기 한 번만 넣는다.
+   *
+   * `material` 은 `fuselage`/`wingMat` 이 있으면 평가기가 무시한다(옛 칸이 새 칸을
+   * 덮지 않는다). 옛 세이브에만 값을 한다.
+   */
+  function programSpec(p) {
+    return {
+      segment: p.segment,
+      seats: p.seats,
+      range: p.range,
+      tech: p.tech,
+      material: p.material,
+      fuselage: p.fuselage,
+      wingMat: p.wingMat,
+      engine: p.engine,
+      abreast: p.abreast,
+      wing: p.wing,
+      fuelMargin: p.fuelMargin,
+      etops: !!p.etops,
+      growth: !!p.growth,
+      maintainable: !!p.maintainable,
+      engines: p.engines || 2,
+      dualSource: !!p.dualSource,
+    };
+  }
+
   /** 파생형 착수용 설계 시드 — 원형의 기술/소재를 물려받는다. */
   function derivativeSpec(base, seatDelta) {
     const seg = SEGMENTS[base.segment];
     return {
-      segment: base.segment,
+      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화도 함께.
+      ...programSpec(base),
       seats: clamp(base.seats + seatDelta, seg.seats.min, seg.seats.max),
-      range: base.range,
-      tech: base.tech,
-      material: base.material,
-      fuselage: base.fuselage,
-      wingMat: base.wingMat,
-      engine: base.engine,
-      abreast: base.abreast,
-      wing: base.wing,
-      fuelMargin: base.fuelMargin,
-      etops: base.etops,
-      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화.
-      growth: !!base.growth,
-      maintainable: !!base.maintainable,
-      engines: base.engines || 2,
-      dualSource: !!base.dualSource,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
         id: base.id,
@@ -2201,10 +2219,7 @@
     const ancOld = anc ? { ...anc, dualSource: hadDual } : null;
     const ancNew = anc ? { ...anc, dualSource: false, engine: anc.engine === from.id ? to.id : anc.engine } : null;
     const base = {
-      segment: p.segment, seats: p.seats, range: p.range, tech: p.tech,
-      fuselage: p.fuselage, wingMat: p.wingMat, abreast: p.abreast, wing: p.wing,
-      fuelMargin: p.fuelMargin, etops: !!p.etops, growth: !!p.growth,
-      maintainable: !!p.maintainable, engines: p.engines || 2,
+      ...programSpec(p),
       domesticEngines: [from.id, to.id],
       // 조기 접근으로 착수한 기종(UAC 의 SaM146)은 이 맥락이 없으면 옛 엔진이
       // 설계 당시 연도에 "못 사는 엔진"으로 잡혀 평가가 통째로 어긋난다 —
@@ -4753,6 +4768,7 @@
     launchAidRate,
     designContext,
     derivativeSpec,
+    programSpec,
     investQuality,
     investWindTunnel,
     WIND_TUNNEL_COST_RATE,
