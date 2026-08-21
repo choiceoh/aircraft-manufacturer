@@ -65,6 +65,16 @@ h2 {
   top: 0;
   z-index: 20;
   background: var(--bg);
+  /* viewport-fit=cover 로 화면 끝까지 깔았으니, 센서 하우징·둥근 모서리가 먹는
+     만큼은 우리가 비켜 준다. 아래(홈 인디케이터)는 하단 액션 바가 맡는다. */
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.panel,
+.toast {
+  margin-left: env(safe-area-inset-left);
+  margin-right: env(safe-area-inset-right);
 }
 
 /* ── HUD ── */
@@ -76,6 +86,17 @@ h2 {
   padding: 12px 18px;
   background: linear-gradient(180deg, #101823, #0d1117);
   border-bottom: 1px solid var(--line);
+}
+/* 회사명·분기와 '새 게임' 이 한 줄에 선다. 이 정렬이 모바일 규칙 안에만 있으면
+   넓은 화면에서 셋이 세로로 쌓여 HUD 가 까닭 없이 높아진다. */
+.hud-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hud-id {
+  display: flex;
+  flex-direction: column;
 }
 .hud-company {
   font-weight: 700;
@@ -631,7 +652,8 @@ input[type='range'] {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
-  padding: 9px 14px calc(9px + env(safe-area-inset-bottom));
+  padding: 9px calc(14px + env(safe-area-inset-right)) calc(9px + env(safe-area-inset-bottom))
+    calc(14px + env(safe-area-inset-left));
   background: #0d1117;
   border-top: 1px solid var(--line);
   font-size: 12px;
@@ -1240,7 +1262,7 @@ details.fold > summary {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 42px;
+  min-height: 44px;
   padding: 10px 0;
   color: var(--muted);
   font-size: 12px;
@@ -1304,6 +1326,10 @@ details.fold > table:first-of-type {
 /* ── 설계 요약 바 ──
    1단으로 접힌 화면에서 슬라이더와 평가표는 서로를 볼 수 없다. 다섯 숫자만
    상단에 붙여 두고 나머지는 아래 미리보기에 그대로 둔다. */
+/* 고정 헤더와 요약 바가 위를 덮고 있다 — 그만큼 미리 멈춰야 평가 제목부터 보인다. */
+#design-preview {
+  scroll-margin-top: calc(var(--topbar-h, 0px) + 76px);
+}
 .design-sum {
   position: sticky;
   top: var(--topbar-h, 0px);
@@ -1433,9 +1459,8 @@ details.fold > table:first-of-type {
   .panel button {
     min-height: 44px;
   }
-  .panel button.small,
-  .panel .ds-jump {
-    min-height: 38px;
+  .panel button.small {
+    min-height: 44px;
   }
 
   /* 가로로 넓은 표는 카드 안에서 스크롤시킨다 — 없으면 페이지 전체가 옆으로 밀린다. */
@@ -1447,10 +1472,12 @@ details.fold > table:first-of-type {
   }
 
   /* 슬라이더는 이 게임에서 가장 많이 만지는 입력이다. 기본 손잡이는 너무 작다. */
+  /* 가장 많이 만지는 입력이다. 손잡이만 키우고 상자를 32px 로 두면 트랙 위아래를
+     스쳐도 잡히지 않는다 — 상자째 44px 로 잡는다. */
   input[type='range'] {
     -webkit-appearance: none;
     appearance: none;
-    height: 32px;
+    height: 44px;
     background: transparent;
   }
   input[type='range']::-webkit-slider-runnable-track {
@@ -1475,8 +1502,8 @@ details.fold > table:first-of-type {
     border: 1px solid var(--line);
   }
   input[type='range']::-moz-range-thumb {
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     border-radius: 50%;
     background: var(--accent);
     border: 2px solid #0d1117;

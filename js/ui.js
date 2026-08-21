@@ -113,14 +113,18 @@
     hud.className = 'hud' + (flash ? ' flash' : '');
     hud.innerHTML = `
       <div class="hud-left">
-        <div class="hud-company">${P.esc(s.company)}</div>
-        <div class="hud-date">${E.turnLabel(shownTurn)} ${
-          s.gameOver
-            ? '<span class="muted">· 경영 종료</span>'
-            : `<span class="muted">· ${CONFIG.totalTurns - s.turn}분기 남음</span>`
-        }</div>
-        <!-- 진행을 지우는 버튼은 엄지가 늘 얹히는 하단이 아니라 여기 둔다. -->
-        <button class="ghost small hud-new" data-action="new-game">새 게임</button>
+        <div class="hud-id">
+          <div class="hud-company">${P.esc(s.company)}</div>
+          <div class="hud-date">${E.turnLabel(shownTurn)} ${
+            s.gameOver
+              ? '<span class="muted">· 경영 종료</span>'
+              : `<span class="muted">· ${CONFIG.totalTurns - s.turn}분기 남음</span>`
+          }</div>
+        </div>
+        <!-- 진행을 지우는 버튼은 엄지가 늘 얹히는 하단이 아니라 여기 둔다.
+             종료 뒤에는 하단 바가 '새 게임'을 정식 버튼으로 내주므로 여기서는 뺀다 —
+             되돌릴 수 없는 입구가 화면에 둘 있을 이유가 없다. -->
+        ${s.gameOver ? '' : '<button class="ghost small hud-new" data-action="new-game">새 게임</button>'}
       </div>
       <div class="hud-stats">
         ${hudStat('현금', money(s.cash), s.cash < 500 ? 'bad' : '', delta('cash', money))}
@@ -488,10 +492,16 @@
         break;
 
       case 'close-line': {
+        // 환급은 등급별 실제 건설비의 20%라 라인마다 다르다. 비율만 적으면
+        // 고속 자동화 라인을 재래식과 같은 값으로 착각하고 닫는다.
+        const line = s.lines.find((l) => l.id === btn.dataset.id);
+        const paid = line && typeof line.paidCost === 'number' ? line.paidCost : 0;
         askConfirm(
           {
             title: '조립 라인 폐쇄',
-            body: '<p>건설비의 <b>20%</b>만 회수된다. 다시 세우려면 처음부터 짓고 램프업도 다시 밟아야 한다.</p>',
+            body: `<p>건설비 ${money(paid)} 중 <b>${money(Math.round(paid * 0.2))}</b>만 회수된다 —
+                 <b class="bad">${money(Math.round(paid * 0.8))}</b>은 그대로 사라진다.</p>
+               <p class="muted">다시 세우려면 처음부터 짓고 램프업도 다시 밟아야 한다.</p>`,
             ok: '폐쇄',
             danger: true,
           },
@@ -625,7 +635,16 @@
       // 좁은 화면에서는 평가표가 화면 밖으로 밀린다. 상단에 붙어 따라다니는 요약 바가
       // 슬라이더를 움직이는 동안 결과를 보여주는 유일한 창이라, 여기서 같이 갈아끼운다.
       const sum = document.getElementById('design-sum');
-      if (sum) sum.outerHTML = P.renderDesignSummary(s, ui.spec);
+      if (sum) {
+        // 좁은 화면에서 요약 바는 옆으로 밀어 보는 스트립이다. 통째로 갈아끼우면
+        // 스크롤이 왼쪽 끝으로 되돌아가, 연비·객실을 보려고 밀어 둔 채 슬라이더를
+        // 움직이면 첫 입력에서 보고 있던 칸이 사라진다.
+        const strip = sum.querySelector('.ds-strip');
+        const left = strip ? strip.scrollLeft : 0;
+        sum.outerHTML = P.renderDesignSummary(s, ui.spec);
+        const next = document.querySelector('#design-sum .ds-strip');
+        if (next) next.scrollLeft = left;
+      }
     } else if (el.dataset.action === 'share') {
       const p = s.programs.find((x) => x.id === el.dataset.id);
       if (!p) return;
@@ -690,12 +709,20 @@
 
   // ─────────────────────────────── 턴 진행 ───────────────────────────────
 
-  function nextTurn() {
+  /**
+   * 분기 종료 — 넘기기 전에 물어볼 것을 차례로 묻는다.
+   *
+   * acked 는 "이미 확인받은 항목"이다. 확인 대화가 비동기라 각 대화의 확정은
+   * **끝내기가 아니라 이 함수로 되돌아오는 것**이어야 한다. 곧장 정산으로 뛰면
+   * 미입찰을 확인해 준 순간 답하지 않은 결정까지 무대응으로 함께 넘어간다.
+   */
+  function nextTurn(acked) {
+    acked = acked || {};
     const s = ui.state;
     // 응찰 가능한 기종이 하나도 없는 공고까지 세면(초반엔 대부분이 그렇다) 확인창이
     // 매 분기 뜨는데 수주 탭에 가도 고를 게 없다. 엔진의 무응찰 감점과 같은 기준을 쓴다.
     const unbid = s.rfps.filter((r) => !s.bids[r.id] && E.canBid(s, r)).length;
-    if (unbid && s.rfps.length && ui.tab !== 'rfps') {
+    if (unbid && s.rfps.length && ui.tab !== 'rfps' && !acked.unbid) {
       askConfirm(
         {
           title: `입찰하지 않은 공고 ${unbid}건`,
@@ -704,13 +731,13 @@
           okClass: 'ghost',
           altHtml: '<button class="primary" data-action="goto-tab" data-tab="rfps">공고 보러 가기</button>',
         },
-        endTurnNow,
+        () => nextTurn({ ...acked, unbid: true }),
       );
       return;
     }
 
     // 답하지 않은 사건은 무대응으로 처리된다. 그 사실을 모르고 넘기지 않도록 한 번 묻는다.
-    if (s.decision) {
+    if (s.decision && !acked.decision) {
       askConfirm(
         {
           title: '답하지 않은 결정',
@@ -719,7 +746,7 @@
           okClass: 'ghost',
           altHtml: '<button class="primary" data-action="goto-tab" data-tab="overview">결정 보러 가기</button>',
         },
-        endTurnNow,
+        () => nextTurn({ ...acked, decision: true }),
       );
       return;
     }
@@ -859,6 +886,9 @@
     ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
     ui.discountDraft = {};
     ui.designName = '';
+    // 접힘은 공고·기종 ID 로 기억한다. newGame 이 ID 카운터를 되돌리므로 비우지 않으면
+    // 지난 판에서 펼쳐 둔 자리가 새 판의 엉뚱한 공고에서 열린 채 뜬다.
+    ui.folds.clear();
     closeModal();
     render();
     const flagship = ui.state.programs[0];

@@ -6604,7 +6604,12 @@ test('되돌릴 수 없는 행동은 네이티브 confirm 을 쓰지 않는다',
   // "손절"인 줄 알고 누른 버튼이 파산 버튼이 된다. DOM 이 필요해 실행은 못 하므로
   // 소스에서 회귀만 막는다.
   const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
-  assert.ok(!/[^.\w]confirm\(`/.test(src) && !/[^.\w]confirm\('/.test(src), 'ui.js 가 네이티브 confirm 을 다시 쓰고 있다');
+  // 주석 줄은 빼고 본다 — 문구를 어떻게 적었든 "실제로 호출하는가"만 봐야 한다.
+  const code = src
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+  assert.ok(!/[^.\w]confirm\s*\(/.test(code), 'ui.js 가 네이티브 confirm 을 다시 쓰고 있다');
   assert.ok(/function askConfirm\(/.test(src), '확인 대화 헬퍼가 사라졌다');
   // 위약금이 붙는 두 행동은 반드시 그 금액을 대화에 실어야 한다.
   for (const action of ["case 'cancel-prog'", "case 'sell-program'"]) {
@@ -6664,4 +6669,17 @@ test('개요는 손볼 게 없으면 빈 경고 카드를 세우지 않는다', 
   // 경고가 생기면 다시 선다.
   s.cash = 100;
   assert.ok(/경영 경고/.test(P.renderOverview(s)), '경고가 생겼는데 카드가 안 선다');
+});
+
+test('확인 하나를 지났다고 나머지 확인까지 건너뛰지 않는다', () => {
+  // 미입찰 공고와 미응답 결정이 같은 분기에 겹치면, 공고 쪽을 확인해 준 것이
+  // 결정까지 무대응으로 넘기는 확정이 되어서는 안 된다. 확인 대화가 비동기라
+  // 각 확정은 "정산 직행"이 아니라 검사 루틴으로 되돌아와야 한다.
+  const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
+  const fn = src.slice(src.indexOf('function nextTurn('), src.indexOf('function endTurnNow('));
+  assert.ok(fn.length > 0, 'nextTurn 을 찾지 못했다');
+  const back = fn.match(/=>\s*nextTurn\(\{/g) || [];
+  assert.strictEqual(back.length, 2, '두 확인 모두 검사 루틴으로 되돌아와야 한다');
+  assert.ok(/acked\.unbid/.test(fn) && /acked\.decision/.test(fn), '이미 확인받은 항목만 건너뛰어야 한다');
+  assert.ok(!/^\s*endTurnNow,\s*$/m.test(fn), '확인 콜백이 곧장 정산으로 뛰고 있다');
 });
