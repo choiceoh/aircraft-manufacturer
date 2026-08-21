@@ -29,6 +29,8 @@
     AFTERMARKET_TIERS,
     FREIGHTER,
     GOV_MISSIONS,
+    RESEARCH_PROJECTS,
+    TAKEOVER,
     RIVAL_DRIFT_LIMIT,
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
@@ -229,6 +231,10 @@
       receivables: [],
       // 애프터마켓(부품·정비) 투자 수준. 인도한 기체가 쌓일수록 값을 한다.
       aftermarket: 'none',
+      // 장기 기술 연구 — 한 번에 한 프로젝트, 완료(done)는 영구다.
+      research: { active: null, progress: {}, done: {} },
+      // 경쟁사에서 인수한 기종 — 경쟁 카탈로그에서 내려온다.
+      acquiredTypes: {},
       // 5년 단위 이사회 목표. newGame 에서 첫 목표를 발령한다.
       mandate: null,
       // 증자 횟수와 누적 지분 희석 — 최종 점수에서 그만큼 우리 몫이 아니다.
@@ -474,6 +480,11 @@
     if (typeof s.equityDilution !== 'number') s.equityDilution = 0;
     if (typeof s.rateForQuarter !== 'number') s.rateForQuarter = interestRate(s);
     if (typeof s.ratingForQuarter !== 'string') s.ratingForQuarter = creditRating(s).grade;
+    // 장기 연구·프로그램 인수 — 이 기능 이전 세이브의 기본값.
+    if (!s.research || typeof s.research !== 'object') s.research = { active: null, progress: {}, done: {} };
+    if (!s.research.progress || typeof s.research.progress !== 'object') s.research.progress = {};
+    if (!s.research.done || typeof s.research.done !== 'object') s.research.done = {};
+    if (!s.acquiredTypes || typeof s.acquiredTypes !== 'object') s.acquiredTypes = {};
 
     if (!OUTSOURCING[s.outsourcing]) s.outsourcing = 'mid';
     for (const l of s.lines || []) {
@@ -815,7 +826,8 @@
   function companyExperience(s) {
     let xp = 0;
     for (const p of s.programs) {
-      if (p.legacy || p.certTurn === null || p.certTurn === undefined) continue;
+      // 인수한 프로그램은 남이 개발해 본 경험이다 — 형식증명을 샀다고 조직이 배우진 않는다.
+      if (p.legacy || p.acquired || p.certTurn === null || p.certTurn === undefined) continue;
       const pts = EXPERIENCE_POINTS[p.segment] || 1;
       xp += p.derivedFrom ? pts * 0.5 : pts;
     }
@@ -824,7 +836,7 @@
 
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s), ...engineDealContext(s) });
+    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s), ...engineDealContext(s), ...researchContext(s) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -1427,6 +1439,7 @@
     chargeLatePenalties(s, report);
     collectReceivables(s, report, rng);
     runServices(s, report);
+    runResearch(s, report);
     tickUpgrades(s, report);
     tickEtopsService(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
@@ -2010,7 +2023,7 @@
 
       // 자동화 라인은 물량이 크지만 안정화가 느리다 — 수요가 확실할 때만 값을 한다.
       const grade = LINE_GRADES[line.grade] || LINE_GRADES.standard;
-      line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter * grade.rampMult);
+      line.ramp = Math.min(1, line.ramp + CONFIG.rampPerQuarter * grade.rampMult * (researchDone(s, 'lean') ? LEAN_RAMP_MULT : 1));
       const raw = line.capacity * line.ramp * mult * pMult + line.partial;
       let units = Math.floor(raw);
       line.partial = raw - units;
@@ -2023,7 +2036,7 @@
       let cost = 0;
       for (let i = 0; i < units; i++) {
         p.produced++;
-        cost += unitCostAt(p.unitCostBase, p.produced) * sourcing.costMult;
+        cost += unitCostAt(p.unitCostBase, p.produced, unitPremium(s)) * sourcing.costMult;
       }
       s.cash -= cost;
       report.productionCost += cost;
@@ -2326,6 +2339,9 @@
       cost: Math.round(cost),
       net: Math.round(revenue - cost),
       delivered: p.delivered,
+      // 총비용에는 넣으면서 rd 를 안 적으면, 개조 개발비가 회사를 무너뜨린 바로
+      // 그 분기의 R&D 가 경력 보고서 총계에서 빠진다.
+      rd: Math.round(p.rdCost),
       backlog: totalBacklog(s),
       reputation: Math.round(s.reputation),
       worth: Math.round(netWorth(s)),
@@ -2463,7 +2479,7 @@
     const weights = new Map();
 
     for (const seg of Object.keys(SEGMENT_UNIT_SHARE)) {
-      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => !(s.playerMakers || []).includes(t.maker));
+      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => !(s.playerMakers || []).includes(t.maker) && !(s.acquiredTypes || {})[t.id]);
       if (!pool.length) continue;
       const segWeight = SEGMENT_UNIT_SHARE[seg];
       // 요구사양 없이 부르면 적합도 감점 없는 순수 카탈로그 실력이다.
@@ -2578,7 +2594,7 @@
       const wonUnits = recent.reduce((a, o) => a + o.qty, 0);
 
       // 그 시장에서 지금 가장 강한 제조사가 공세의 주체다. 플레이어 제조사는 뺀다.
-      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => !(s.playerMakers || []).includes(t.maker));
+      const pool = availableTypes(seg, year, s.rivalDelays).filter((t) => !(s.playerMakers || []).includes(t.maker) && !(s.acquiredTypes || {})[t.id]);
       let leader = null;
       for (const t of pool) {
         // 입찰·인도 배분과 같은 실력(보정치 포함)으로 봐야 한다. 카탈로그 점수만
@@ -2622,7 +2638,8 @@
 
     for (const t of AIRCRAFT) {
       // 플레이어 제조사의 카탈로그 미래는 뉴스가 아니다 — 그 미래는 플레이어가 만든다.
-      if ((s.playerMakers || []).includes(t.maker)) continue;
+      // 인수한 기종도 마찬가지다: 그 기종의 소식은 이제 우리 로그에 산다.
+      if ((s.playerMakers || []).includes(t.maker) || (s.acquiredTypes || {})[t.id]) continue;
       const maker = MANUFACTURERS.find((m) => m.id === t.maker);
       if (!maker) continue;
       // 지연이 걸린 기종은 밀린 시점에 취항 소식이 뜬다 — 입찰 문턱과 같은 달력.
@@ -2658,6 +2675,8 @@
     // 경쟁사 드라마 — 발표·지연·위기. 일정표는 newGame 에서 확정됐다.
     for (const ev of s.rivalDrama || []) {
       if (ev.turn !== s.turn) continue;
+      // 일정표는 판 시작에 확정됐다 — 그 뒤 인수한 기종의 예고·위기는 무대에서 내린다.
+      if ((s.acquiredTypes || {})[ev.typeId]) continue;
       const t = AIRCRAFT.find((x) => x.id === ev.typeId);
       const maker = t && MANUFACTURERS.find((m) => m.id === t.maker);
       if (!t || !maker) continue;
@@ -2849,7 +2868,8 @@
         delete p.freighterAt;
         pushLog(s, 'good', `${p.name} 화물형 개조 사업이 문을 열었다.`);
       }
-      if (p.freighter) freight += (p.delivered || 0) * FREIGHTER.perUnit;
+      // 군용 특수기는 화물기로 개조된 것이 아니다 — 그 인도분은 지원 수익이 맡는다.
+      if (p.freighter) freight += Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit;
     }
     // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
@@ -2866,13 +2886,17 @@
    * 정부 특수기 지원 수익 — 인도된 군용기는 퇴역까지 정비·훈련·부품을 우리가 댄다.
    * 군용기 사업의 진짜 이문이 여기다: 판매는 한 번이지만 지원은 20년이다.
    */
+  /** 이 기종의 인도분 중 군용 특수기 몫. */
+  function govUnitsOf(s, programId) {
+    return ((s.fleets || {}).gov || {})[programId] || 0;
+  }
+
   function govSustainment(s) {
-    const gov = (s.fleets || {}).gov || {};
     let sum = 0;
     for (const p of s.programs) {
       if (!p.govMission) continue;
       const m = GOV_MISSIONS.find((x) => x.id === p.govMission);
-      if (m) sum += (gov[p.id] || 0) * m.sustainPerUnit;
+      if (m) sum += govUnitsOf(s, p.id) * m.sustainPerUnit;
     }
     return sum;
   }
@@ -2905,7 +2929,9 @@
     // 핵심 고객은 정비를 우리에게 전속으로 맡긴다 — 단골의 보상은 입찰 점수가
     // 아니라(공통성 가산이 이미 그 역할이다) 인도 뒤의 현금흐름으로 돌아온다.
     for (const [airlineId, byProgram] of Object.entries(s.fleets || {})) {
-      if (loyaltyTier(s, airlineId) < 2) continue;
+      // 군 선단은 항공사 단골이 아니다 — 군의 정비 계약 경제는 지원 수익 단가에
+      // 이미 들어 있어, 여기서 또 받으면 이중 계상이다.
+      if (airlineId === 'gov' || loyaltyTier(s, airlineId) < 2) continue;
       for (const [pid, n] of Object.entries(byProgram)) {
         const p = s.programs.find((x) => x.id === pid);
         if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1) * LOYAL_SERVICE_BONUS;
@@ -2919,10 +2945,82 @@
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
     const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
     const after = aftermarketBase(s) * tier.mult;
-    let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
+    let freight = s.programs
+      .filter((p) => p.freighter)
+      .reduce((a, p) => a + Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
     const gov = govSustainment(s);
     return { fleet, aftermarket: after, freight, gov, total: after + freight + gov, tier };
+  }
+
+  // ─────────────────────────────── 장기 기술 연구 ───────────────────────────────
+
+  /**
+   * 스컹크웍스 — 한 번에 한 프로젝트, 분기마다 연구비, 몇 년 뒤 회사 상수가 바뀐다.
+   * 효과는 완료 이후의 신규 설계(researchContext)·신규 생산(린)에만 붙는다.
+   */
+  const LEAN_FIRST_UNIT_PREMIUM = 1.72;
+  const LEAN_RAMP_MULT = 1.2;
+
+  function researchDone(s, id) {
+    return !!(s.research && s.research.done && s.research.done[id]);
+  }
+
+  /** 완료된 연구를 설계 평가에 넘긴다 — launchProgram·화면 미리보기가 같이 쓴다. */
+  function researchContext(s) {
+    return { research: (s.research && s.research.done) || {} };
+  }
+
+  /** 린 생산 연구 완료 시의 초도기 할증 — 아니면 undefined 로 기본값을 쓴다. */
+  function unitPremium(s) {
+    return researchDone(s, 'lean') ? LEAN_FIRST_UNIT_PREMIUM : undefined;
+  }
+
+  function startResearch(s, projectId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const proj = RESEARCH_PROJECTS.find((x) => x.id === projectId);
+    if (!proj) return { ok: false, error: '없는 연구 프로젝트입니다.' };
+    if (s.research.done[projectId]) return { ok: false, error: '이미 완료한 연구입니다.' };
+    if (s.research.active === projectId) return { ok: false, error: '이미 진행 중입니다.' };
+    // 연구소는 하나다 — 갈아타면 기존 진행은 서랍에 남는다(사라지지 않는다).
+    s.research.active = projectId;
+    const done = s.research.progress[projectId] || 0;
+    pushLog(
+      s,
+      'program',
+      `${proj.name} 연구 착수 — 분기 ${fmtMoney(proj.costPerQuarter)}, 완료까지 ${proj.quarters - done}분기. ${proj.effect}.`,
+    );
+    return { ok: true };
+  }
+
+  function stopResearch(s) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    if (!s.research.active) return { ok: false, error: '진행 중인 연구가 없습니다.' };
+    const proj = RESEARCH_PROJECTS.find((x) => x.id === s.research.active);
+    s.research.active = null;
+    pushLog(s, 'info', `${proj ? proj.name : '연구'}를 중단했다. 진행분은 남는다 — 다시 시작하면 이어서 간다.`);
+    return { ok: true };
+  }
+
+  /** 분기 연구 정산 — 비용은 이 분기 R&D 로 잡히고, 다 차면 효과가 영구히 켜진다. */
+  function runResearch(s, report) {
+    const r = s.research;
+    if (!r || !r.active) return;
+    const proj = RESEARCH_PROJECTS.find((x) => x.id === r.active);
+    if (!proj) {
+      r.active = null;
+      return;
+    }
+    s.cash -= proj.costPerQuarter;
+    report.rdCost += proj.costPerQuarter;
+    r.progress[proj.id] = (r.progress[proj.id] || 0) + 1;
+    if (r.progress[proj.id] >= proj.quarters) {
+      r.done[proj.id] = true;
+      r.active = null;
+      pushLog(s, 'good', `${proj.name} 연구 완료 — ${proj.effect}. 이제부터의 설계·생산에 적용된다.`);
+    }
   }
 
   // ─────────────────────────────── 이사회 목표 ───────────────────────────────
@@ -3128,7 +3226,7 @@
     // 그 시장에서 가장 약한 축이 따라잡으려 산다고 보는 편이 자연스럽다.
     const seg = p.segment;
     const year = yearOf(s.turn);
-    const active = new Set(availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker)).map((t) => t.maker));
+    const active = new Set(availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker) && !(s.acquiredTypes || {})[t.id]).map((t) => t.maker));
     const candidates = s.competitors.filter((c) => active.has(c.id));
     const buyer =
       (candidates.length
@@ -3140,6 +3238,106 @@
 
     pushLog(s, 'bad', `${p.name} 프로그램을 ${fmtMoney(value)}에 매각했다. 도면은 ${buyerName}로 넘어갔다.`);
     return { ok: true, value, buyer: buyerName };
+  }
+
+  /**
+   * 경쟁사 프로그램 인수 — 결함 파동으로 흔들리는 경쟁사의 기종을 사 온다.
+   *
+   * 에어버스가 C시리즈를 1달러에 가져간 그 구조다: 통째 인수('full')는 헐값이지만
+   * 저마진 승계 계약·저율 생산 라인·높아진 결함 위험이 따라오고, 도면·인증만
+   * 사면('blueprint') 깨끗하지만 몇 배 비싸고 라인·실적 없이 시작한다.
+   * 인수한 기종은 경쟁 카탈로그에서 빠진다 — 이제 그 시장 지위는 우리 것이다.
+   */
+  function acquireProgram(s, typeId, mode, opts) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const t = AIRCRAFT.find((x) => x.id === typeId);
+    if (!t) return { ok: false, error: '없는 기종입니다.' };
+    if (s.acquiredTypes[typeId]) return { ok: false, error: '이미 인수한 기종입니다.' };
+    const seg = SEGMENTS[t.segment];
+    const full = mode !== 'blueprint';
+    const price = Math.round(seg.devBase * (full ? TAKEOVER.fullRate : TAKEOVER.blueprintRate));
+    if (s.cash < price) return { ok: false, error: `인수 대금 ${fmtMoney(price)}이 부족합니다.` };
+
+    const year = yearOf(s.turn);
+    // 설계 세대는 취항 연도에서 유추한다 — 카탈로그 power 는 입찰 척도라 기술이 아니다.
+    const tech = Math.min(70, Math.max(40, Math.round(35 + (t.eis - 1990) * 1.2)));
+    // 남의 설계라 우리 연구 성과는 안 붙는다 — researchContext 를 섞지 않는다.
+    const ev = evaluate({ segment: t.segment, seats: t.seats, range: t.range, tech, material: 'aluminum', year });
+    const p = {
+      id: 'prog-' + s.nextId++,
+      name: t.name,
+      ...ev,
+      phase: 'production',
+      progress: 100,
+      spent: price,
+      certRemaining: 0,
+      qualityInvests: 0,
+      share: 0,
+      // 통째 인수는 치구·라인과 함께 기존 생산분의 학습곡선도 넘어온다.
+      produced: full ? Math.max(6, Math.round(Math.max(0, year - t.eis) * 6)) : 0,
+      delivered: 0,
+      stock: 0,
+      launchTurn: s.turn,
+      certTurn: s.turn,
+      derivedFrom: null,
+      acquired: true,
+    };
+    // 기존 운용 선단의 지원은 우리 몫이 된다 — 애프터마켓이 그만큼 는다.
+    if (full) p.delivered = p.produced;
+    // 남의 설계는 도면 밖의 사정을 모른다 — 결함 위험이 그 값이다. 위기 중 인수면 더 높다.
+    p.defectRisk = Math.round(
+      Math.min(CONFIG.defectRiskMax, ev.defectRisk * (full ? TAKEOVER.riskMult : TAKEOVER.riskMultBlueprint)) * 1000,
+    ) / 1000;
+
+    s.cash -= price;
+    // 도면과 형식증명을 사는 돈이다 — 개발 자산 취득이므로 R&D 로 분류한다.
+    s.pending.rdCost += price;
+    s.programs.push(p);
+    s.acquiredTypes[typeId] = true;
+    // 그 기종의 결함 파동은 이제 우리 문제다 — 경쟁력 감점 장부에서는 지운다.
+    if (s.rivalCrises && s.rivalCrises[typeId]) delete s.rivalCrises[typeId];
+
+    if (full) {
+      s.lines.push({
+        id: 'line-' + s.nextId++,
+        programId: p.id,
+        capacity: Math.max(1, Math.round(seg.lineMaxRate * TAKEOVER.lineCapRate)),
+        capMult: TAKEOVER.lineCapRate,
+        ramp: 0.6,
+        partial: 0,
+        idle: false,
+        builtTurn: s.turn,
+        grade: 'standard',
+        paidCost: 0,
+      });
+      // 전 소유자가 손해 보며 받아 둔 계약 — 물량은 있지만 이문이 없다. 이게 헐값의 조건이다.
+      const qty = (opts && opts.backlogQty) || TAKEOVER.backlogQty[0];
+      s.backlog.push({
+        id: 'ord-' + s.nextId++,
+        airlineId: 'takeover',
+        airlineName: '승계 계약 (전 고객사)',
+        programId: p.id,
+        programName: p.name,
+        qty,
+        remaining: qty,
+        unitPrice: Math.round(ev.unitCostBase * TAKEOVER.backlogPriceRate),
+        wonTurn: s.turn,
+      });
+      // 감항 이관·통합 — 그동안 인도가 멈춘다. 인수는 서류 한 장으로 끝나지 않는다.
+      s.effects.grounded[p.id] = Math.max(s.effects.grounded[p.id] || 0, TAKEOVER.integrationQuarters);
+    }
+
+    const maker = MANUFACTURERS.find((m) => m.id === t.maker);
+    pushLog(
+      s,
+      'program',
+      `${maker ? maker.name : t.maker} ${t.name} 프로그램을 ${fmtMoney(price)}에 인수했다` +
+        (full
+          ? ` — 라인·승계 계약·기존 선단 지원까지 통째로. 감항 이관에 ${TAKEOVER.integrationQuarters}분기, 남의 설계라 결함 위험 ${(p.defectRisk * 100).toFixed(1)}%.`
+          : ` — 도면과 형식증명만. 라인은 우리가 세워야 하고, 결함 위험 ${(p.defectRisk * 100).toFixed(1)}%.`),
+    );
+    return { ok: true, program: p, price };
   }
 
   /**
@@ -3577,7 +3775,7 @@
     const sourcing = OUTSOURCING[s.outsourcing] || OUTSOURCING.mid;
     // 생산 루프는 p.produced 를 먼저 올리고 그 번호로 원가를 매기므로,
     // "다음에 만들 1기"의 원가는 produced+1 번째다. 가격 결정은 이 값을 봐야 한다.
-    return unitCostAt(p.unitCostBase, p.produced + 1) * sourcing.costMult;
+    return unitCostAt(p.unitCostBase, p.produced + 1, unitPremium(s)) * sourcing.costMult;
   }
 
   function netWorth(s) {
@@ -3823,6 +4021,12 @@
     UPGRADES,
     loyaltyTier,
     serviceIncome,
+    flushTerminalQuarter,
+    researchContext,
+    startResearch,
+    stopResearch,
+    acquireProgram,
+    rollMarketNews,
     closeLine,
     toggleLine,
     sellStock,

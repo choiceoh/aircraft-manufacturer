@@ -342,6 +342,67 @@
   };
 
   /**
+   * 장기 기술 연구 — 스컹크웍스.
+   *
+   * 기술력은 지금까지 설계 슬라이더 하나였다. 여기 프로젝트들은 분기마다 돈을
+   * 태워 몇 년 뒤 회사 전체의 상수를 바꾼다 — 개발 공백기에 "미래를 미리 사 두는"
+   * 축이고, 787의 복합재도 A320의 FBW도 이렇게 십 년 앞서 산 기술이었다.
+   *
+   * 한 번에 한 프로젝트만 돌린다(연구소는 하나다). 중단하면 진행은 남는다.
+   * 효과는 완료 이후의 **신규 설계·신규 생산**에만 붙는다 — 이미 나는 기체가
+   * 소급해서 좋아지면 연구가 아니라 마법이다.
+   */
+  const RESEARCH_PROJECTS = [
+    {
+      id: 'aero', name: '고효율 공력', costPerQuarter: 45, quarters: 10,
+      effect: '완료 후 신규 설계 연비 +3',
+      desc: '층류 날개·윙팁 장치 연구. 같은 엔진으로 더 멀리 나는 법.',
+    },
+    {
+      id: 'composite', name: '복합재 성숙', costPerQuarter: 55, quarters: 12,
+      effect: '복합재 동체·날개의 개발 위험 40% 감소',
+      desc: '여압 피로 시험과 수리 표준. 787이 미리 치른 수업료를 우리는 실험실에서 낸다.',
+    },
+    {
+      id: 'fbw', name: '플라이 바이 와이어', costPerQuarter: 50, quarters: 12,
+      effect: '신규 설계 개발 기간 8% 단축 · 쾌적성 +3',
+      desc: '전자식 조종 계통. 설계 반복이 빨라지고 비행 품질이 오른다.',
+    },
+    {
+      id: 'lean', name: '린 생산', costPerQuarter: 40, quarters: 8,
+      effect: '초도기 원가 할증 1.9→1.72 · 램프업 20% 가속',
+      desc: '도요타식 흐름 생산. 라인이 빨리 배우고 빨리 안정된다.',
+    },
+  ];
+
+  /**
+   * 경쟁사 프로그램 인수 — A220 이야기.
+   *
+   * 결함 파동으로 흔들리는 경쟁사는 프로그램을 헐값에 내놓는다. 에어버스가
+   * C시리즈를 1달러에 가져간 것처럼 — 다만 공짜의 조건은 부채였다. 게임에서도
+   * 같은 구조다: 통째 인수는 헐값이지만 손해 보는 초기 계약과 남의 설계라는
+   * 결함 위험이 따라오고, 도면만 사면 깨끗하지만 몇 배 비싸다.
+   */
+  const TAKEOVER = {
+    /** 통째 인수가 (세그먼트 개발비 기준 대비) — 부채·저마진 계약을 떠안는 값 */
+    fullRate: 0.12,
+    /** 도면·형식증명만 사는 값 */
+    blueprintRate: 0.3,
+    /** 남의 설계 — 결함 위험 배수 (통째 / 도면만) */
+    riskMult: 1.45,
+    riskMultBlueprint: 1.2,
+    /** 통째 인수 시 승계하는 저마진 수주 잔고 (원가의 95% — 팔수록 조금 손해) */
+    backlogQty: [10, 16],
+    backlogPriceRate: 0.95,
+    /** 통째 인수 라인의 생산능력 (세그먼트 최대 대비) — 저율 생산 설비다 */
+    lineCapRate: 0.6,
+    /** 감항 이관·통합 기간 — 그동안 인도가 멈춘다 */
+    integrationQuarters: 2,
+    /** 같은 제안이 다시 오기까지의 분기 */
+    cooldown: 24,
+  };
+
+  /**
    * 정부 특수기 사업 — 노후 여객기의 제2의 인생.
    *
    * 여객 시장에서 밀리기 시작한 기종도 검증된 기체라는 사실 자체가 자산이다.
@@ -503,7 +564,7 @@
     const out = [];
     for (const c of s.competitors) {
       for (const seg of SEGMENT_ORDER) {
-        const types = F.availableTypes(seg, year).filter((t) => t.maker === c.id);
+        const types = F.availableTypes(seg, year).filter((t) => t.maker === c.id && !(s.acquiredTypes || {})[t.id]);
         if (types.length) out.push({ c, seg, types });
       }
     }
@@ -1052,6 +1113,8 @@
     AFTERMARKET_TIERS,
     AFTERMARKET_ORDER,
     FREIGHTER,
+    RESEARCH_PROJECTS,
+    TAKEOVER,
     GOV_MISSIONS,
     GOV_BID_MODES,
     GOV_PROPOSAL_COST,
