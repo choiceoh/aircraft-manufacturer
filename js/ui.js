@@ -162,7 +162,7 @@
   }
 
   // 게임 종료 뒤에도 허용되는 행동 — 나머지는 저장 상태를 바꿔 최종 성적과 어긋나게 만든다.
-  const ALLOWED_AFTER_END = new Set(['tab', 'new-game', 'close-modal']);
+  const ALLOWED_AFTER_END = new Set(['tab', 'new-game', 'new-game-as', 'close-modal']);
 
   /**
    * 종료 후 잠금. 클릭뿐 아니라 슬라이더(input/change)도 막아야 한다 —
@@ -418,7 +418,11 @@
         break;
 
       case 'new-game':
-        if (confirm('새 게임을 시작하시겠습니까? 현재 진행 상황은 사라집니다.')) startNewGame();
+        openCompanyPicker();
+        break;
+
+      case 'new-game-as':
+        startNewGame(btn.dataset.company);
         break;
 
       case 'close-modal':
@@ -611,6 +615,12 @@
     modal.setAttribute('aria-hidden', 'true');
     if (lastFocused && lastFocused.isConnected) lastFocused.focus();
     lastFocused = null;
+    // 첫 실행 회사 선택을 닫는 모든 경로(버튼·Esc)가 여기를 지난다 — 어떤 식으로
+    // 닫았든 "데네브로 간다"는 확정이고, 다음 리로드에 다시 물어보면 안 된다.
+    if (ui.state && ui.state.pendingCompanyChoice) {
+      delete ui.state.pendingCompanyChoice;
+      save();
+    }
   }
 
   // ─────────────────────────────── 저장 / 시작 ───────────────────────────────
@@ -654,16 +664,37 @@
     return (t ^ (t << 13) ^ (t >>> 7)) >>> 0;
   }
 
-  function startNewGame() {
+  function startNewGame(companyId) {
     const seed = randomSeed();
-    ui.state = E.newGame(seed);
+    ui.state = E.newGame(seed, companyId);
+    delete ui.state.pendingCompanyChoice;
     ui.tab = 'overview';
     ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
     ui.discountDraft = {};
     ui.designName = '';
     closeModal();
     render();
-    toast('새 경영을 시작한다. 주력기 DN-150이 버텨주는 동안 후속기를 띄워라.', 'good');
+    const flagship = ui.state.programs[0];
+    toast(`${ui.state.company} 경영을 시작한다. ${flagship ? flagship.name + '이(가)' : '주력기가'} 버텨주는 동안 후속기를 띄워라.`, 'good');
+  }
+
+  /** 새 게임 — 어느 회사로 20년을 시작할지 고른다. 실존 제조사는 경쟁 명단에서 빠진다. */
+  function openCompanyPicker(firstRun) {
+    const cards = E.PLAYABLE_COMPANIES.map((c) => {
+      const legacies = c.legacies.map((l) => l.name).join(' · ');
+      return `<button class="mat" data-action="new-game-as" data-company="${c.id}">
+          <b>${P.esc(c.name)} <span class="muted">— ${P.esc(c.difficulty)}</span></b>
+          <span>${P.esc(c.desc)}</span>
+          <span class="muted">주력 ${P.esc(legacies)} · 자본 ${money(c.cash)} · 엔지니어 ${P.num(c.engineers)}명</span>
+        </button>`;
+    }).join('');
+    openModal(
+      `<h2 id="modal-title">어느 회사로 시작할까</h2>
+       <p class="muted">${firstRun ? '' : '현재 진행 상황은 사라진다. '}실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
+       <div class="mats">${cards}</div>
+       <div class="row"><button class="ghost" data-action="close-modal">취소</button></div>`,
+      true,
+    );
   }
 
   function boot() {
@@ -679,7 +710,18 @@
     document.addEventListener('keydown', onKeydown);
     render();
     if (ui.state.gameOver) showGameOver(ui.state);
-    else if (saved) toast('저장된 경영을 이어서 진행한다.');
+    else if (saved && !saved.pendingCompanyChoice) toast('저장된 경영을 이어서 진행한다.');
+    // 첫 방문이면 회사 선택부터 — 기본 판을 조용히 깔아 두는 대신 물어본다.
+    // 모달을 닫으면 깔아 둔 데네브 판이 그대로 시작이다. render() 가 그 기본 판을
+    // 즉시 저장하므로, 모달이 열린 채 새로고침해도 선택이 조용히 확정되지 않도록
+    // "아직 고르는 중" 표식을 세이브에 남겨 두고 다시 물어본다.
+    else {
+      if (!saved || saved.pendingCompanyChoice) {
+        ui.state.pendingCompanyChoice = true;
+        save();
+        openCompanyPicker(true);
+      }
+    }
   }
 
   root.AirlinerUI = { boot, ui };

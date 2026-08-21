@@ -1136,7 +1136,7 @@
       const o = B.bestOffering(s, seg, Math.round(sg.seats.ref), Math.round(sg.range.ref));
       const mine = s.programs.filter((p) => p.segment === seg && p.phase === 'production');
       const ours = mine.length ? mine.map((p) => esc(p.name)).join(', ') : '<span class="muted">없음</span>';
-      const pool = Fleet.availableTypes(seg, year).length;
+      const pool = Fleet.availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker)).length;
       return `<tr>
         <th>${sg.name}</th>
         <td>${o ? `<b>${esc(o.name)}</b>` : '—'} <span class="muted">· 판매 중 ${pool}종 · 우리: ${ours}</span></td>
