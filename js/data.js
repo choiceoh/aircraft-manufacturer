@@ -342,6 +342,65 @@
   };
 
   /**
+   * 정부 특수기 사업 — 노후 여객기의 제2의 인생.
+   *
+   * 여객 시장에서 밀리기 시작한 기종도 검증된 기체라는 사실 자체가 자산이다.
+   * 실제로 767은 급유기(KC-46)로, 737은 초계기(P-8)로, A330은 MRTT로 살아남았다.
+   * 게임에서는 "양산 실적이 쌓인 기종"에게만 공고가 오고, 입찰 방식이 곧 도박이다:
+   *
+   *   고정가   — 정부가 좋아해 이길 확률이 높다. 개조가 꼬이면 초과 비용은 전부
+   *              우리 몫이다 (보잉이 KC-46 에서 실제로 수십억 달러를 물었다).
+   *   원가보전 — 초과 비용을 정부가 진다. 대신 예산 심의에서 밀리기 쉽고 단가도 짜다.
+   *
+   * 낙찰 물량은 정가보다 훨씬 비싸게 팔리고, 인도된 기체는 퇴역할 때까지 분기마다
+   * 지원(정비·훈련·부품) 수익을 낸다 — 군용기 사업의 진짜 이문은 지원 계약이다.
+   */
+  const GOV_MISSIONS = [
+    {
+      id: 'tanker', name: '공중급유기', customer: '공군',
+      /** 응모 자격 — 세그먼트 · 최소 항속 · 최소 인도 실적(검증된 기체) */
+      segments: ['narrow', 'wide'], minRange: 5200, minDelivered: 20, minReputation: 0,
+      qty: [7, 11],
+      /** 낙찰 단가 = 정가 × priceMult (군용 개조·지원 장비 포함가) */
+      priceMult: 1.85,
+      /** 개조 개발비 = 원 기종 개발비 × convRate, 개발 기간 convQuarters 분기 */
+      convRate: 0.15, convQuarters: 5,
+      /** 인도 1기당 분기 지원 수익 (M$) */
+      sustainPerUnit: 0.5,
+      /** 고정가 낙찰 시 개조 난항 확률과 초과 비용 (개조 개발비 대비) */
+      overrunChance: 0.55, overrunRange: [0.3, 0.8],
+    },
+    {
+      id: 'patrol', name: '해상초계기', customer: '해군',
+      segments: ['regional', 'narrow'], minRange: 3600, minDelivered: 12, minReputation: 0,
+      qty: [5, 8],
+      priceMult: 1.75,
+      convRate: 0.18, convQuarters: 4,
+      sustainPerUnit: 0.35,
+      overrunChance: 0.5, overrunRange: [0.25, 0.7],
+    },
+    {
+      id: 'vip', name: '정부 전용기', customer: '정부',
+      /** 국가 원수가 탈 기체 — 실적보다 평판이 자격이다. */
+      segments: ['narrow', 'wide'], minRange: 4000, minDelivered: 8, minReputation: 55,
+      qty: [2, 3],
+      priceMult: 2.4,
+      convRate: 0.06, convQuarters: 2,
+      sustainPerUnit: 0.25,
+      overrunChance: 0.35, overrunRange: [0.2, 0.5],
+    },
+  ];
+
+  /** 입찰 방식별 낙찰 기본 확률 — 평판 보정(±)은 결정 쪽에서 얹는다. */
+  const GOV_BID_MODES = {
+    fixed: { id: 'fixed', name: '고정가', winBase: 0.58 },
+    costplus: { id: 'costplus', name: '원가보전', winBase: 0.34, priceMult: 0.9 },
+  };
+
+  /** 제안서·시제 검토 비용 — 입찰 자체의 값. 떨어져도 돌아오지 않는다. */
+  const GOV_PROPOSAL_COST = 45;
+
+  /**
    * 입찰 조건 — 할인율 말고 무엇을 걸 수 있나.
    *
    * 할인 슬라이더 하나뿐일 때는 응찰만 하면 88% 이겼다(측정치). 결정이 하나면
@@ -986,6 +1045,9 @@
     AFTERMARKET_TIERS,
     AFTERMARKET_ORDER,
     FREIGHTER,
+    GOV_MISSIONS,
+    GOV_BID_MODES,
+    GOV_PROPOSAL_COST,
     BID_PLEDGES,
     BID_FINANCING,
     RIVAL_STRENGTH_CAP,

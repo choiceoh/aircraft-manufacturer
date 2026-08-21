@@ -571,7 +571,7 @@
             p.engines === 4 ? '4발 ✓' : p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'
           }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${p.altEngine ? ' · 이중화' : ''}${
             p.familyId ? ' · 패밀리' : ''
-          }${p.derivative ? ' · 파생형' : ''}</td></tr>`,
+          }${p.derivative ? ' · 파생형' : ''}${p.govMission ? ' · 특수기 파생' : ''}</td></tr>`,
         );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
@@ -844,7 +844,7 @@
       <section class="card">
         <h3>서비스 사업</h3>
         <p class="muted">이미 팔아 둔 기체가 벌어다 주는 돈이다. 선단 ${num(inc.fleet)}기 기준 이번 분기 <b>${money(inc.total)}</b>
-          <span class="muted">(부품·정비 ${money(inc.aftermarket)}${inc.freight ? ` · 화물 ${money(inc.freight)}` : ''})</span></p>
+          <span class="muted">(부품·정비 ${money(inc.aftermarket)}${inc.freight ? ` · 화물 ${money(inc.freight)}` : ''}${inc.gov ? ` · 정부 지원 ${money(inc.gov)}` : ''})</span></p>
         <div class="mats">${tiers}</div>
         <h3 class="sub">화물형 개조</h3>
         <p class="hint">여객 수요가 꺾여도 화물은 돈다. 침체 분기에는 화물 수익이 ${FREIGHTER.slumpMult}배가 된다 — 불황 헤지다.</p>

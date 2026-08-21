@@ -28,6 +28,7 @@
     AFTERMARKET_PER_UNIT_BY_SEG,
     AFTERMARKET_TIERS,
     FREIGHTER,
+    GOV_MISSIONS,
     RIVAL_DRIFT_LIMIT,
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
@@ -2851,12 +2852,27 @@
     // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
 
-    const total = Math.round(after + freight);
+    const total = Math.round(after + freight + govSustainment(s));
     if (total <= 0) return;
     s.cash += total;
     s.stats.revenue += total;
     report.revenue += total;
     report.services = total;
+  }
+
+  /**
+   * 정부 특수기 지원 수익 — 인도된 군용기는 퇴역까지 정비·훈련·부품을 우리가 댄다.
+   * 군용기 사업의 진짜 이문이 여기다: 판매는 한 번이지만 지원은 20년이다.
+   */
+  function govSustainment(s) {
+    const gov = (s.fleets || {}).gov || {};
+    let sum = 0;
+    for (const p of s.programs) {
+      if (!p.govMission) continue;
+      const m = GOV_MISSIONS.find((x) => x.id === p.govMission);
+      if (m) sum += (gov[p.id] || 0) * m.sustainPerUnit;
+    }
+    return sum;
   }
 
   /** 급별 단가로 계산한 선단의 분기 기본 서비스 수익 (투자 배수 적용 전). */
@@ -2903,7 +2919,8 @@
     const after = aftermarketBase(s) * tier.mult;
     let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
-    return { fleet, aftermarket: after, freight, total: after + freight, tier };
+    const gov = govSustainment(s);
+    return { fleet, aftermarket: after, freight, gov, total: after + freight + gov, tier };
   }
 
   // ─────────────────────────────── 이사회 목표 ───────────────────────────────
