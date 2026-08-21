@@ -223,6 +223,27 @@
       engineersNeeded *= rate.eng;
     }
 
+    // 사풍 — 회사마다 잘하는 일이 다르다. 두 축이고, 서로 다른 것을 잰다.
+    //
+    //   houseFocus : **급**의 특기. 리저널의 장인은 지선 기체를, 광동체의 집은 큰
+    //                기체를 싸게 만든다. 원형이든 파생형이든 그 급이면 붙는다 —
+    //                파생형에서만 특기가 사라지면 "장인"이 자기 계보를 늘릴 때
+    //                남보다 불리해지는, 설명할 수 없는 규칙이 된다.
+    //   houseDeriv : **일**의 특기. 늘리고 고쳐 다는 데 이골이 난 회사의 값이라
+    //                파생형에만 붙고, 급을 가리지 않는다.
+    //
+    // 둘 다 가진 회사는 자기 급의 파생형에서 배수를 겹쳐 받는다. 그건 의도다 —
+    // CRJ 를 다섯 번 늘려 본 회사가 여섯 번째를 남보다 싸게 하는 것이 계보의 값이고,
+    // 그 대신 백지에서 큰 기체를 그리는 값이 비싸게 매겨져 있다.
+    const houseFocus = (spec.houseFocus && spec.houseFocus[seg.id]) || null;
+    const houseDeriv = derivative ? spec.houseDeriv || null : null;
+    for (const house of [houseFocus, houseDeriv]) {
+      if (!house) continue;
+      devCost *= house.cost === undefined ? 1 : house.cost;
+      devQuarters *= house.time === undefined ? 1 : house.time;
+      engineersNeeded *= house.eng === undefined ? 1 : house.eng;
+    }
+
     // 연비 지수(0~100). 기술 투자 + 소재가 좌우하고, 과도한 항속은 구조중량으로 깎인다.
     const rangePenalty = Math.max(0, rangeRatio - 1) * 9;
     // 연료 여유는 공짜가 아니다. 탱크와 보강 구조를 짧은 노선에서도 지고 다닌다 —
