@@ -2326,6 +2326,9 @@
       cost: Math.round(cost),
       net: Math.round(revenue - cost),
       delivered: p.delivered,
+      // 총비용에는 넣으면서 rd 를 안 적으면, 개조 개발비가 회사를 무너뜨린 바로
+      // 그 분기의 R&D 가 경력 보고서 총계에서 빠진다.
+      rd: Math.round(p.rdCost),
       backlog: totalBacklog(s),
       reputation: Math.round(s.reputation),
       worth: Math.round(netWorth(s)),
@@ -2849,7 +2852,8 @@
         delete p.freighterAt;
         pushLog(s, 'good', `${p.name} 화물형 개조 사업이 문을 열었다.`);
       }
-      if (p.freighter) freight += (p.delivered || 0) * FREIGHTER.perUnit;
+      // 군용 특수기는 화물기로 개조된 것이 아니다 — 그 인도분은 지원 수익이 맡는다.
+      if (p.freighter) freight += Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit;
     }
     // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
@@ -2866,13 +2870,17 @@
    * 정부 특수기 지원 수익 — 인도된 군용기는 퇴역까지 정비·훈련·부품을 우리가 댄다.
    * 군용기 사업의 진짜 이문이 여기다: 판매는 한 번이지만 지원은 20년이다.
    */
+  /** 이 기종의 인도분 중 군용 특수기 몫. */
+  function govUnitsOf(s, programId) {
+    return ((s.fleets || {}).gov || {})[programId] || 0;
+  }
+
   function govSustainment(s) {
-    const gov = (s.fleets || {}).gov || {};
     let sum = 0;
     for (const p of s.programs) {
       if (!p.govMission) continue;
       const m = GOV_MISSIONS.find((x) => x.id === p.govMission);
-      if (m) sum += (gov[p.id] || 0) * m.sustainPerUnit;
+      if (m) sum += govUnitsOf(s, p.id) * m.sustainPerUnit;
     }
     return sum;
   }
@@ -2905,7 +2913,9 @@
     // 핵심 고객은 정비를 우리에게 전속으로 맡긴다 — 단골의 보상은 입찰 점수가
     // 아니라(공통성 가산이 이미 그 역할이다) 인도 뒤의 현금흐름으로 돌아온다.
     for (const [airlineId, byProgram] of Object.entries(s.fleets || {})) {
-      if (loyaltyTier(s, airlineId) < 2) continue;
+      // 군 선단은 항공사 단골이 아니다 — 군의 정비 계약 경제는 지원 수익 단가에
+      // 이미 들어 있어, 여기서 또 받으면 이중 계상이다.
+      if (airlineId === 'gov' || loyaltyTier(s, airlineId) < 2) continue;
       for (const [pid, n] of Object.entries(byProgram)) {
         const p = s.programs.find((x) => x.id === pid);
         if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1) * LOYAL_SERVICE_BONUS;
@@ -2919,7 +2929,9 @@
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
     const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
     const after = aftermarketBase(s) * tier.mult;
-    let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
+    let freight = s.programs
+      .filter((p) => p.freighter)
+      .reduce((a, p) => a + Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
     const gov = govSustainment(s);
     return { fleet, aftermarket: after, freight, gov, total: after + freight + gov, tier };
@@ -3823,6 +3835,7 @@
     UPGRADES,
     loyaltyTier,
     serviceIncome,
+    flushTerminalQuarter,
     closeLine,
     toggleLine,
     sellStock,

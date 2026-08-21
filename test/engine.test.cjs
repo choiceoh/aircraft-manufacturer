@@ -6534,3 +6534,38 @@ test('정부 특수기: 순위표·경력 보고서도 민항 경계를 지킨�
   assert.notStrictEqual(gov.name, 'gov', '원시 키가 보고서에 노출되면 안 된다');
   assert.match(gov.name, /정부|군/, '정부·군 계정으로 읽혀야 한다');
 });
+
+test('정부 특수기: 군용 기체는 화물형 수익을 벌지 않는다', () => {
+  const s = E.newGame(921);
+  const p = s.programs[0];
+  p.freighter = true;
+  p.delivered = 100;
+  const base = E.serviceIncome(s).freight;
+  assert.ok(Math.abs(base - 100 * Data.FREIGHTER.perUnit) < 1e-9);
+  // 군용 10기 인도 — 급유기는 화물 개조 대상이 아니다. 지원 수익이 그 몫을 맡는다.
+  p.delivered = 110;
+  s.fleets.gov = { [p.id]: 10 };
+  assert.ok(Math.abs(E.serviceIncome(s).freight - base) < 1e-9, '군용 인도분이 화물형 수익에 실리면 안 된다');
+
+  // 정산 경로도 같은 제외를 지나는지 — 군용 100기 차이가 현금에 정확히 반영돼야 한다.
+  p.delivered = 200;
+  const a = JSON.parse(JSON.stringify(s));
+  const b = JSON.parse(JSON.stringify(s));
+  a.fleets.gov = { [p.id]: 100 }; // 화물 수익 100기분 제외 = 9 (정수라 반올림 무관)
+  b.fleets.gov = {};
+  E.ensureShape(a); E.ensureShape(b);
+  const expected = Math.round(E.serviceIncome(b).total) - Math.round(E.serviceIncome(a).total);
+  assert.strictEqual(expected, Math.round(100 * Data.FREIGHTER.perUnit), '전제: 차이가 화물 단가 100기분이어야 한다');
+  E.endTurn(a); E.endTurn(b);
+  assert.strictEqual(Math.round(b.cash - a.cash), expected, '정산(runServices)도 군용분을 제외해야 한다');
+});
+
+test('종말 분기 행도 R&D 를 적는다 — 개조비가 회사를 무너뜨린 분기', () => {
+  const s = E.newGame(923);
+  s.pending.rdCost = 512;
+  s.pending.overhead = 100;
+  E.flushTerminalQuarter(s);
+  const row = s.history[s.history.length - 1];
+  assert.strictEqual(row.rd, 512, '총비용에는 넣으면서 rd 를 안 적으면 경력 보고서 R&D 총계가 샌다');
+  assert.strictEqual(row.cost, 612);
+});
