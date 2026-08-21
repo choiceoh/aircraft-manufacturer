@@ -1247,14 +1247,23 @@
         const spec = s.trait.stateOrders;
         const p = stateOrderPick(s);
         const qty = h.rng.int(spec.qty[0], spec.qty[1]);
-        const unitPrice = Math.round(p.listPrice * spec.priceMult);
+        // 국산 엔진을 단 기체는 정부가 더 쳐 준다 — 발주의 명분이 "자국 산업"이라
+        // 국산화율이 곧 값이다. 두 사업(UEC 국산화 · 국가 발주)이 만나는 지점이고,
+        // 국산 엔진이 연비로 치르는 값을 여기서 일부 돌려받는다.
+        const domestic = !!(Engines.get(p.engine) || {}).domestic;
+        const bonus = domestic ? ((s.trait.localEngine || {}).stateBonus || 0) : 0;
+        const rate = spec.priceMult + bonus;
+        const unitPrice = Math.round(p.listPrice * rate);
         h.remember('program', p.id);
         h.remember('qty', qty);
         h.remember('unitPrice', unitPrice);
         h.remember('customer', spec.customer);
         return (
           `산업부가 ${spec.customer}를 통해 <b>${p.name}</b> ${qty}기를 입찰 없이 사겠다고 한다. ` +
-          `대당 ${money(unitPrice)} — 정가의 ${Math.round(spec.priceMult * 100)}%다. ` +
+          `대당 ${money(unitPrice)} — 정가의 ${Math.round(rate * 100)}%다. ` +
+          (domestic
+            ? `국산 엔진을 단 기체라 단가를 ${Math.round(bonus * 100)}%p 더 쳐 줬다. `
+            : '') +
           `"자국 라인을 놀릴 수는 없지 않느냐"는 것이 명분이고, 실제로 라인은 놀고 있다.`
         );
       },

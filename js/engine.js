@@ -186,6 +186,21 @@
           // 설계를 고치라는 지적이 붙는다.
           certification: { costRate: 0.09, quarters: 6, findingChance: 0.4 },
         },
+        // 자회사 UEC — 서방 엔진을 국산으로 갈아 끼우는 사업. 시간과 돈을 **둘 다**
+        // 채워야 끝난다: 돈을 아무리 부어도 minQuarters 는 안 줄고, 분기가 아무리
+        // 지나도 자금이 안 차면 안 끝난다. 실제 엔진 개발이 그렇다.
+        localEngine: {
+          maker: 'UEC',
+          // 대체 대상 엔진의 세그먼트 → 그 자리를 메울 국산 엔진.
+          // PS-90A 는 실제로 Tu-204(협동체)와 Il-96(광동체)을 모두 돌렸다.
+          map: { regional: 'd436', narrow: 'ps90a', wide: 'ps90a' },
+          /** 개발비 = 그 세그먼트 개발비 기준 × 이 비율 */
+          costRate: 0.25,
+          /** 돈을 다 부어도 이보다 빨리는 안 끝난다 */
+          minQuarters: 10,
+          /** 국산 엔진을 단 기종에 붙는 국가 발주 단가 우대 (정가 대비 가산) */
+          stateBonus: 0.08,
+        },
         // 국가 발주 — 수출이 막혀도 곳간이 완전히 마르지는 않는다. 대신 단가가 짜서
         // 여기에 기대면 살아는 남고 크지는 못한다.
         stateOrders: {
@@ -360,6 +375,10 @@
       engineEarlyAccess: {},
       // 정부 지원금이 쌓는 무역 긴장 — 문턱을 넘으면 관세 판정이 날아온다.
       tradeTension: 0,
+      // UEC 국산화 — 진행 중인 사업 { target, engine, cost, funded, quarters }
+      // 과 이미 해금한 국산 엔진 id 목록.
+      localEngineProject: null,
+      localEngines: [],
       // 이 회사가 남긴 순간들 — 첫 인도, 100호기, 첫 광동체. 종료 회고의 연표가 된다.
       milestones: [],
       gameOver: null,
@@ -789,6 +808,8 @@
     if (s.engineDeal === undefined) s.engineDeal = null;
     if (!s.engineEarlyAccess || typeof s.engineEarlyAccess !== 'object') s.engineEarlyAccess = {};
     if (typeof s.tradeTension !== 'number') s.tradeTension = 0;
+    if (s.localEngineProject === undefined) s.localEngineProject = null;
+    if (!Array.isArray(s.localEngines)) s.localEngines = [];
     if (!Array.isArray(s.playerMakers)) {
       // 단수 문자열이던 시절의 세이브 — 배열로 옮긴다.
       s.playerMakers = typeof s.playerMaker === 'string' && s.playerMaker ? [s.playerMaker] : [];
@@ -1206,6 +1227,8 @@
       experience: companyExperience(s),
       ...engineDealContext(s),
       ...researchContext(s),
+      // 해금한 국산 엔진 — 설계 화면과 착수가 같은 목록을 봐야 한다.
+      domesticEngines: s.localEngines || [],
       houseFocus: t.focus || null,
       houseDeriv: t.deriv || null,
     };
@@ -1625,6 +1648,7 @@
     tickUpgrades(s, report);
     tickEtopsService(s);
     tickForeignCert(s, rng, report);
+    tickLocalEngine(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
@@ -1994,6 +2018,181 @@
       `${p.name} 조기 ETOPS 취득에 착수했다 (${fmtMoney(cost)}). 재시험 ${num(addedHours)}시간이 늘고, 취항과 동시에 대양 노선에 들어간다.`,
     );
     return { ok: true, cost };
+  }
+
+  // ─────────────────────── UEC 국산화 (trait.localEngine) ───────────────────────
+  //
+  // UAC 는 서방 엔진을 달고 시작한다 — Tu-204 에 CFM56, Il-96 에 PW4000. 실제
+  // 러시아 기체가 수출형에서 그랬듯이, 그게 서방 시장에 들이밀 수 있는 조합이기
+  // 때문이다. 대신 그 엔진은 남의 공급망이고 남의 값이다.
+  //
+  // 자회사 UEC 에 개발비를 부어 그 자리를 국산 엔진으로 갈아 끼울 수 있다.
+  // **시간과 돈을 둘 다 채워야** 끝난다: 돈을 아무리 부어도 minQuarters 는 줄지
+  // 않고, 분기가 아무리 지나도 자금이 안 차면 끝나지 않는다. 실제 엔진 개발이 그렇다.
+  //
+  // 완성되면 그 엔진을 달고 있던 **우리 기종 전부**가 자동으로 갈아탄다 — 이름이
+  // 바뀌고 생산원가가 내려간다. 대신 연비가 처지고 초기 신뢰성이 나빠진다:
+  // PS-90A 가 CFM56 대비 실제로 그랬고, 그래서 Tu-204 는 국내선에서 버티고
+  // 수출에서는 밀렸다.
+  //
+  // 측정된 값의 성격은 **원가를 사고 수주 경쟁력을 파는 것**이다 (Tu-204 기준):
+  // 대당 원가 $59M → $50M, 대신 모든 수주전에서 1.5~1.8점을 잃는다. 서방의 벽이
+  // −3점인 것과 견주면 그 절반쯤이다. 유가가 오를수록 감점이 조금 더 벌어지지만
+  // (0.6 에서 −1.5, 1.9 에서 −1.8) 시대를 갈아엎을 만큼은 아니다 — 이 축의 본질은
+  // 유가가 아니라 **곳간**이다. 현금이 급한 회사가 파는 것이 수주 경쟁력이다.
+
+  function localEngineSpec(s) {
+    return companyTrait(s).localEngine || null;
+  }
+
+  /** 이 기종이 국산 엔진을 달고 있나 — 국가 발주 우대와 공급 차질 면역의 근거. */
+  function hasDomesticEngine(p) {
+    return !!(p && (root.AirlinerEngines.get(p.engine) || {}).domestic);
+  }
+
+  /** 지금 국산화를 걸 수 있는 서방 엔진들 — 우리가 실제로 쓰고 있는 것만. */
+  function localEngineTargets(s) {
+    const spec = localEngineSpec(s);
+    if (!spec) return [];
+    const seen = new Map();
+    for (const p of s.programs) {
+      if (p.phase === 'cancelled' || p.phase === 'sold') continue;
+      const eng = root.AirlinerEngines.get(p.engine);
+      // 이미 국산이면 갈아 끼울 것이 없고, 그 세그먼트에 국산 대안이 없어도 안 된다.
+      if (!eng || eng.domestic) continue;
+      const replacement = spec.map[p.segment];
+      if (!replacement) continue;
+      if (!seen.has(eng.id)) {
+        // 그 국산 엔진을 이미 만들어 뒀다면 이건 **개발이 아니라 재장착**이다:
+        // 엔진은 있고, 그 기체에 다는 인증만 하면 된다. 싸고 짧다.
+        const refit = (s.localEngines || []).includes(replacement);
+        seen.set(eng.id, { engine: eng, replacement, refit, programs: [] });
+      }
+      seen.get(eng.id).programs.push(p);
+    }
+    return [...seen.values()];
+  }
+
+  /** 이미 개발한 엔진을 다른 기체에 다는 값 — 개발의 일부만 든다. */
+  const LOCAL_ENGINE_REFIT_RATE = 0.35;
+
+  function localEngineCost(s, target) {
+    const spec = localEngineSpec(s);
+    const segs = target.programs.map((p) => p.segment);
+    // 여러 급이 걸린 엔진이면 가장 큰 급 기준이다 — 광동체용 코어를 만드는 값이
+    // 협동체용보다 싸질 수는 없다.
+    const base = Math.max(...segs.map((seg) => SEGMENTS[seg].devBase));
+    return Math.round(base * spec.costRate * (target.refit ? LOCAL_ENGINE_REFIT_RATE : 1));
+  }
+
+  /** 그 사업에 필요한 최소 분기 — 재장착은 절반이면 된다. */
+  function localEngineQuarters(s, target) {
+    const spec = localEngineSpec(s);
+    return target && target.refit ? Math.max(2, Math.round(spec.minQuarters * 0.5)) : spec.minQuarters;
+  }
+
+  function startLocalEngine(s, targetEngineId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const spec = localEngineSpec(s);
+    if (!spec) return { ok: false, error: '이 회사에는 국산화할 엔진 자회사가 없습니다.' };
+    if (s.localEngineProject) return { ok: false, error: '이미 국산화 사업을 하나 진행 중입니다.' };
+    const target = localEngineTargets(s).find((t) => t.engine.id === targetEngineId);
+    if (!target) return { ok: false, error: '지금 우리가 쓰고 있는 서방 엔진만 국산화할 수 있습니다.' };
+    const minQuarters = localEngineQuarters(s, target);
+    s.localEngineProject = {
+      target: target.engine.id,
+      engine: target.replacement,
+      cost: localEngineCost(s, target),
+      minQuarters,
+      refit: !!target.refit,
+      funded: 0,
+      quarters: 0,
+    };
+    const rep = root.AirlinerEngines.get(target.replacement);
+    const repName = rep ? rep.name : target.replacement;
+    pushLog(
+      s,
+      'program',
+      target.refit
+        ? `${spec.maker}에 ${target.engine.name} 자리에 ${repName} 를 다는 재장착 인증을 맡겼다. 엔진은 이미 우리 것이라 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기면 된다.`
+        : `${spec.maker}에 ${target.engine.name} 대체 엔진(${repName}) 개발을 맡겼다. 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기 — 자금과 기간을 **둘 다** 채워야 나온다.`,
+    );
+    return { ok: true, project: s.localEngineProject };
+  }
+
+  function fundLocalEngine(s, amount) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const proj = s.localEngineProject;
+    if (!proj) return { ok: false, error: '진행 중인 국산화 사업이 없습니다.' };
+    const need = proj.cost - proj.funded;
+    if (need <= 0) return { ok: false, error: '개발비는 이미 다 채웠습니다 — 남은 것은 기간입니다.' };
+    const put = Math.min(Math.max(0, Math.round(amount)), need);
+    if (put <= 0) return { ok: false, error: '넣을 금액을 정하세요.' };
+    if (s.cash < put) return { ok: false, error: `현금이 부족합니다 (보유 ${fmtMoney(s.cash)}).` };
+    s.cash -= put;
+    s.pending.rdCost += put;
+    proj.funded += put;
+    return { ok: true, funded: proj.funded, cost: proj.cost, put };
+  }
+
+  /** 국산화 취소 — 넣은 돈은 돌아오지 않는다. 개발을 접는 것과 같은 규칙이다. */
+  function cancelLocalEngine(s) {
+    if (!s.localEngineProject) return { ok: false, error: '진행 중인 국산화 사업이 없습니다.' };
+    const spent = s.localEngineProject.funded;
+    s.localEngineProject = null;
+    pushLog(s, 'bad', `국산 엔진 개발을 접었다. 투입한 ${fmtMoney(spent)}은 돌아오지 않는다.`);
+    return { ok: true, spent };
+  }
+
+  /**
+   * 국산화 진행 — 매 분기 정산에서 부른다. 자금과 기간이 **둘 다** 차면 완성되고,
+   * 그 엔진을 달고 있던 우리 기종이 전부 갈아탄다.
+   *
+   * 갈아타기는 `evaluate` 를 다시 돌리지 않는다. 그 사이 개량(PIP·윙렛·객실)과
+   * 품질 투자, 인증 주사위가 이미 값을 바꿔 놨기 때문에, 재평가하면 그 이력이
+   * 통째로 지워진다. 엔진 항목은 원가에 곱으로, 연비·객실에 합으로 들어가므로
+   * **차이만 얹는다** — 개량이 하는 것과 같은 방식이다.
+   */
+  function tickLocalEngine(s) {
+    const proj = s.localEngineProject;
+    if (!proj) return;
+    const spec = localEngineSpec(s);
+    if (!spec) return;
+    proj.quarters += 1;
+    // 옛 세이브(프로젝트에 minQuarters 가 없던 판)는 사풍의 기본값으로 읽는다.
+    const need = proj.minQuarters ?? spec.minQuarters;
+    if (proj.funded < proj.cost || proj.quarters < need) return;
+
+    const from = root.AirlinerEngines.get(proj.target);
+    const to = root.AirlinerEngines.get(proj.engine);
+    s.localEngineProject = null;
+    if (!from || !to) return;
+
+    if (!s.localEngines.includes(to.id)) s.localEngines.push(to.id);
+
+    const swapped = [];
+    for (const p of s.programs) {
+      if (p.phase === 'cancelled' || p.phase === 'sold') continue;
+      if (p.engine !== from.id) continue;
+      p.engine = to.id;
+      p.unitCostBase = Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
+      p.efficiency = clamp(Math.round(p.efficiency + (to.eff - from.eff)), 1, 99);
+      p.comfort = clamp(Math.round(p.comfort + (to.comfort - from.comfort)), 1, 99);
+      p.defectRisk = Math.round(clamp((p.defectRisk * to.riskMult) / from.riskMult, 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
+      swapped.push(p.name);
+    }
+    // engineRelations(공급사별 인도 실적)는 손대지 않는다. 이미 인도한 기체는
+    // 실제로 그 공급사 엔진을 달고 나갔고, 그 이력까지 지우면 장부가 거짓이 된다.
+    // 앞으로의 인도분이 UEC 쪽에 쌓이면서 자연히 무게중심이 옮겨 간다.
+    pushLog(
+      s,
+      'good',
+      swapped.length
+        ? `${to.name} 국산화 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — 생산원가가 내려가고 공급이 우리 손에 들어왔다. 대신 연비는 처진다.`
+        : `${to.name} 개발 완료. 갈아 끼울 기체는 없지만, 이제 설계에서 고를 수 있다.`,
+    );
   }
 
   // ─────────────────── 서방 형식증명 (foreignBid.certification) ───────────────────
@@ -4404,6 +4603,14 @@
     delayCertification,
     startEarlyEtops,
     startForeignCert,
+    startLocalEngine,
+    fundLocalEngine,
+    cancelLocalEngine,
+    localEngineSpec,
+    localEngineTargets,
+    localEngineCost,
+    localEngineQuarters,
+    hasDomesticEngine,
     foreignCertSpec,
     foreignCertified,
     testAircraftCost,

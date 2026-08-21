@@ -835,16 +835,22 @@
       id: 'engine_shortage',
       name: '엔진 공급 차질',
       weight: 5,
-      // 양산 기종이 어느 공급사 엔진이라도 달고 있어야 성립한다.
+      // 양산 기종이 **남의** 공급사 엔진을 달고 있어야 성립한다. 국산 엔진은
+      // 우리 자회사 라인이라 이 사건의 대상이 아니다 — 공급을 우리 손에 들여놓는
+      // 것이 국산화로 사는 것의 절반이다.
       condition: (s) =>
-        s.programs.some((p) => p.phase === 'production' && (root.AirlinerEngines.get(p.engine) || {}).maker),
+        s.programs.some((p) => {
+          const e = root.AirlinerEngines.get(p.engine);
+          return p.phase === 'production' && e && e.maker && !e.domestic;
+        }),
       apply: (s, h) => {
         // 우리 노출이 큰 공급사일수록 잘 걸린다 — 몰빵의 값이 여기서 드러난다.
         const exposure = {};
         for (const p of s.programs) {
           if (p.phase !== 'production') continue;
-          const m = (root.AirlinerEngines.get(p.engine) || {}).maker;
-          if (m) exposure[m] = (exposure[m] || 0) + (p.delivered || 0) + 5;
+          const e = root.AirlinerEngines.get(p.engine);
+          if (!e || !e.maker || e.domestic) continue;
+          exposure[e.maker] = (exposure[e.maker] || 0) + (p.delivered || 0) + 5;
         }
         const makers = Object.keys(exposure);
         const maker = h.pickWeighted(makers, (m) => exposure[m]);

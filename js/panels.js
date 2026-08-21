@@ -587,9 +587,10 @@
       .join('');
 
     const dealCtx = E.engineDealContext(s);
-    const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year, dealCtx.earlyEngines) || {}).id;
+    const domesticIds = s.localEngines || [];
+    const effectiveEngine = (Engines.resolve(spec.segment, spec.engine, year, dealCtx.earlyEngines, domesticIds) || {}).id;
     const substituted = spec.engine && effectiveEngine !== spec.engine;
-    const engines = Engines.available(spec.segment, year, dealCtx.earlyEngines)
+    const engines = Engines.available(spec.segment, year, dealCtx.earlyEngines, domesticIds)
       .slice()
       .sort((a, b) => a.eff - b.eff)
       .map((e) => {
@@ -899,7 +900,9 @@
         // 좌우한다. 화면에 없으면 플레이어가 자기 기체의 엔진을 확인할 방법이 없다.
         const inst = Engines.get(p.engine);
         if (inst) {
-          const gone = !Engines.inService(inst, E.yearOf(s.turn));
+          // 해금 목록을 넘겨야 한다 — 국산 엔진은 게이트가 걸려 있어, 안 넘기면
+          // 국산화한 기체가 매번 "단산"으로 보이고 파생형 안내까지 거짓이 된다.
+          const gone = !Engines.inService(inst, E.yearOf(s.turn), [], s.localEngines || []);
           rows.push(
             `<tr><th>엔진</th><td>${esc(inst.name)} <span class="muted">${esc(inst.maker)}</span>${
               p.altEngine ? ` · 대안 ${esc((Engines.get(p.altEngine) || {}).name || '')}` : ''
@@ -1047,9 +1050,83 @@
     return `<div class="row">${btns}</div>`;
   }
 
+  /**
+   * UEC 국산화 카드 — 엔진 자회사가 있는 회사(UAC)에만 나온다.
+   *
+   * 진행 중이면 자금·기간 두 막대를 나란히 보여 준다. 하나만 보여 주면
+   * "돈을 다 넣었는데 왜 안 끝나느냐"가 된다 — 둘 다 채워야 한다는 것이
+   * 이 사업의 규칙이므로, 화면도 둘을 나란히 놓아야 한다.
+   */
+  function localEngineCard(s, folds) {
+    const spec = E.localEngineSpec(s);
+    if (!spec) return '';
+    const proj = s.localEngineProject;
+
+    if (proj) {
+      const from = Engines.get(proj.target);
+      const to = Engines.get(proj.engine);
+      const need = proj.minQuarters ?? spec.minQuarters;
+      const moneyPct = proj.cost > 0 ? (proj.funded / proj.cost) * 100 : 100;
+      const timePct = need > 0 ? (proj.quarters / need) * 100 : 100;
+      const left = Math.max(0, proj.cost - proj.funded);
+      const steps = [left, Math.round(proj.cost * 0.25), Math.round(proj.cost * 0.5)]
+        .filter((v, i, a) => v > 0 && a.indexOf(v) === i)
+        .slice(0, 3)
+        .map(
+          (v) =>
+            `<button data-action="fund-local-engine" data-amount="${v}" ${s.cash >= v ? '' : 'disabled'}>+${money(v)}</button>`,
+        )
+        .join('');
+      return foldCard(
+        folds,
+        'prod-uec',
+        `${esc(spec.maker)} 국산화`,
+        `${esc(to ? to.name : proj.engine)} · ${Math.round(Math.min(moneyPct, timePct))}%`,
+        `<p class="muted">${esc(from ? from.name : proj.target)} 자리에 <b>${esc(to ? to.name : proj.engine)}</b> 를 넣는다.
+           ${proj.refit ? '엔진은 이미 우리 것이라 재장착 인증만 하면 된다.' : '자금과 기간을 <b>둘 다</b> 채워야 나온다.'}</p>
+         <div class="row between"><span>개발비</span><span>${money(proj.funded)} / ${money(proj.cost)}</span></div>
+         ${bar(moneyPct, 'prog')}
+         <div class="row between"><span>기간</span><span>${proj.quarters} / ${need}분기</span></div>
+         ${bar(timePct, 'ramp')}
+         <div class="row">${steps || '<span class="muted">개발비는 다 채웠다 — 남은 것은 기간이다.</span>'}</div>
+         <div class="row"><button class="danger" data-action="cancel-local-engine">개발 중단</button></div>`,
+      );
+    }
+
+    const targets = E.localEngineTargets(s);
+    const body = targets.length
+      ? `<p class="muted">우리가 쓰고 있는 서방 엔진을 자회사 ${esc(spec.maker)} 것으로 갈아 끼운다.
+           완성되면 <b>그 엔진을 달고 있던 우리 기종 전부</b>가 자동으로 바뀐다 —
+           생산원가가 내려가고 공급 차질을 비켜 가며, 국가 발주 단가도 ${Math.round((spec.stateBonus || 0) * 100)}%p 더 받는다.
+           대신 <b>연비가 처지고 초기 결함 위험이 오른다</b>: 수주전에서 1~2점을 상시로 잃는다
+           (서방의 벽이 −3점인 것의 절반쯤). <b>원가를 사고 수주 경쟁력을 파는 거래</b>다 —
+           곳간이 급한 회사의 수다.</p>
+         ${targets
+           .map((t) => {
+             const to = Engines.get(t.replacement);
+             const cost = E.localEngineCost(s, t);
+             const q = E.localEngineQuarters(s, t);
+             const dEff = to.eff - t.engine.eff;
+             const dCost = Math.round((to.costMult / t.engine.costMult - 1) * 100);
+             return `<button class="mat" data-action="start-local-engine" data-engine="${t.engine.id}" ${s.cash >= Math.round(cost * 0.1) ? '' : 'disabled'}>
+                 <b>${esc(t.engine.name)} → ${esc(to.name)}</b>
+                 <span>${money(cost)} · 최소 ${q}분기${t.refit ? ' <b>(재장착 — 엔진은 이미 우리 것)</b>' : ''}</span>
+                 <span class="muted">대상: ${esc(t.programs.map((x) => x.name).join(' · '))}</span>
+                 <span><span class="good">생산원가 ${dCost}%</span> · <span class="bad">연비 ${dEff > 0 ? '+' : ''}${dEff}</span></span>
+               </button>`;
+           })
+           .join('')}`
+      : '<p class="muted">지금 국산화를 걸 서방 엔진이 없다. 서방 엔진을 단 기종이 있어야 대체할 것이 생긴다.</p>';
+
+    return foldCard(folds, 'prod-uec', `${esc(spec.maker)} 국산화`, targets.length ? `후보 ${targets.length}종` : '', body);
+  }
+
   function renderProduction(s, folds) {
     const ready = s.programs.filter((p) => p.phase === 'production');
-    if (!ready.length) return '<div class="card"><p class="muted">양산 가능한 기종이 없다.</p></div>';
+    // 국산화는 개발 중 기종에도 걸 수 있어 양산 기종이 없어도 보여야 한다.
+    if (!ready.length) {
+      return `${localEngineCard(s, folds)}<div class="card"><p class="muted">양산 가능한 기종이 없다.</p></div>`;
+    }
 
     const buildButtons = ready
       .map((p) => {
@@ -1140,6 +1217,7 @@
     return `
       ${servicesCard(s, folds)}
       ${researchCard(s, folds)}
+      ${localEngineCard(s, folds)}
       ${foldCard(
         folds,
         'prod-sourcing',

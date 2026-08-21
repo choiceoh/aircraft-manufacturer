@@ -14,6 +14,7 @@ for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', '
   require(path.join(JS, f));
 }
 
+const Eng = globalThis.AirlinerEngines;
 const {
   AirlinerEngine: E,
   AirlinerDesign: D,
@@ -7743,4 +7744,194 @@ test('서방 형식증명: 평판이 높을 때 산 인증은 평판이 떨어�
   s.reputation = 50;
   assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, insured), 0, '보험이 값을 해야 한다');
   assert.ok(B.homeBias(s, { airlineId: 'panamer' }, bare) < 0, '안 산 기종에는 벽이 되살아난다');
+});
+
+// ─────────────────── UEC 국산화 (trait.localEngine) ───────────────────
+//
+// 자회사에 개발비를 부어 서방 엔진을 국산으로 갈아 끼운다. 이름이 바뀌고
+// 생산원가가 내려가되, 연비가 처지고 초기 신뢰성이 나빠진다.
+
+test('국산화: 해금 전에는 아무도 국산 엔진을 못 고른다', () => {
+  const domestic = Eng.ENGINES.filter((e) => e.domestic);
+  assert.ok(domestic.length >= 2, '국산 엔진이 카탈로그에 있어야 한다');
+
+  for (const seg of ['regional', 'narrow', 'wide']) {
+    for (const year of [1998, 2005, 2017]) {
+      const pool = Eng.available(seg, year);
+      assert.ok(!pool.some((e) => e.domestic), `${seg}/${year}: 해금 없이 국산 엔진이 풀에 들어오면 안 된다`);
+      // 기본 엔진이 국산이 되면 엔진을 지정하지 않은 옛 세이브가 조용히 갈아탄다.
+      const def = Eng.defaultFor(seg, year);
+      assert.ok(def && !def.domestic, `${seg}/${year}: 기본 엔진이 국산이면 안 된다`);
+    }
+  }
+  // 해금하면 그 엔진만 보인다.
+  assert.ok(Eng.available('narrow', 2005, [], ['ps90a']).some((e) => e.id === 'ps90a'));
+  assert.ok(!Eng.available('regional', 2005, [], ['ps90a']).some((e) => e.domestic), '해금은 그 엔진에만 적용된다');
+});
+
+test('국산화: 자금과 기간을 둘 다 채워야 끝난다', () => {
+  const s = E.newGame(4301, 'uac');
+  s.cash += 40000;
+  const spec = E.localEngineSpec(s);
+  assert.ok(spec, 'UAC 에는 엔진 자회사가 있다');
+
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  assert.strictEqual(E.startLocalEngine(s, 'pw4000').ok, false, '동시에 둘은 못 한다');
+
+  // 돈을 다 부어도 기간은 안 줄어든다.
+  const proj = s.localEngineProject;
+  assert.ok(E.fundLocalEngine(s, proj.cost).ok);
+  assert.strictEqual(E.fundLocalEngine(s, 100).ok, false, '다 채운 뒤에는 더 넣을 수 없다');
+  for (let i = 0; i < proj.minQuarters - 1; i++) E.endTurn(s);
+  assert.ok(s.localEngineProject, `자금을 다 채워도 ${proj.minQuarters}분기 전에는 안 끝난다`);
+  E.endTurn(s);
+  assert.strictEqual(s.localEngineProject, null, '기간까지 차면 끝난다');
+
+  // 반대로 기간만 지나고 자금이 모자라면 안 끝난다.
+  const t = E.newGame(4301, 'uac');
+  t.cash += 40000;
+  E.startLocalEngine(t, 'cfm56-5b');
+  E.fundLocalEngine(t, Math.round(t.localEngineProject.cost / 2));
+  for (let i = 0; i < spec.minQuarters + 6; i++) E.endTurn(t);
+  assert.ok(t.localEngineProject, '자금이 모자라면 분기가 아무리 지나도 안 끝난다');
+});
+
+test('국산화: 그 엔진을 단 기종만 갈아타고, 값이 양방향으로 움직인다', () => {
+  const s = E.newGame(4302, 'uac');
+  s.cash += 40000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  const il = s.programs.find((p) => p.engine === 'pw4000');
+  assert.ok(tu && il, '두 승계기가 서로 다른 서방 엔진을 단다');
+  const before = { cost: tu.unitCostBase, eff: tu.efficiency, risk: tu.defectRisk };
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(tu.engine, 'ps90a', '이름이 바뀌어야 한다');
+  assert.strictEqual(il.engine, 'pw4000', '다른 엔진을 단 기종은 그대로다');
+  assert.ok(tu.unitCostBase < before.cost, '생산원가가 내려가야 한다');
+  assert.ok(tu.efficiency < before.eff, '연비는 처져야 한다 — 공짜 개선이면 결정이 아니라 버튼이다');
+  assert.ok(tu.defectRisk > before.risk, '초기 신뢰성도 나빠져야 한다');
+  assert.ok(s.localEngines.includes('ps90a'), '해금 목록에 올라야 한다');
+
+  // 해금된 뒤에는 설계에서도 고를 수 있다.
+  assert.ok(E.designContext(s).domesticEngines.includes('ps90a'));
+  // 파생형은 국산 엔진을 그대로 물려받고 재장착으로 잡히지 않는다.
+  const d = E.launchProgram(s, E.derivativeSpec(tu, 25), 'Tu-204-300');
+  assert.ok(d.ok, d.error);
+  assert.strictEqual(d.program.engine, 'ps90a');
+  assert.ok(d.program.derivative, '같은 엔진이므로 순수 동체 연장이다');
+});
+
+test('국산화: 이미 만든 엔진을 다른 기체에 다는 것은 재장착이라 싸고 짧다', () => {
+  const s = E.newGame(4303, 'uac');
+  s.cash += 60000;
+  const newDev = E.localEngineTargets(s).find((t) => t.engine.id === 'pw4000');
+  const fullCost = E.localEngineCost(s, newDev);
+  const fullQuarters = E.localEngineQuarters(s, newDev);
+  assert.strictEqual(newDev.refit, false);
+
+  // 협동체 쪽으로 PS-90A 를 먼저 만들어 둔다.
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  const refit = E.localEngineTargets(s).find((t) => t.engine.id === 'pw4000');
+  assert.ok(refit && refit.refit, '같은 국산 엔진으로 가는 길은 이제 재장착이다');
+  assert.ok(E.localEngineCost(s, refit) < fullCost * 0.6, '재장착은 뚜렷이 싸야 한다');
+  assert.ok(E.localEngineQuarters(s, refit) < fullQuarters, '재장착은 더 짧아야 한다');
+
+  const il = s.programs.find((p) => p.engine === 'pw4000');
+  const beforeCost = il.unitCostBase;
+  E.startLocalEngine(s, 'pw4000');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(il.engine, 'ps90a');
+  assert.ok(il.unitCostBase < beforeCost);
+});
+
+test('국산화: 중단하면 넣은 돈은 돌아오지 않는다', () => {
+  const s = E.newGame(4304, 'uac');
+  s.cash += 40000;
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, 500);
+  const cash = s.cash;
+  const r = E.cancelLocalEngine(s);
+  assert.ok(r.ok);
+  assert.strictEqual(r.spent, 500);
+  assert.strictEqual(s.cash, cash, '환급은 없다 — 개발 중단과 같은 규칙이다');
+  assert.strictEqual(s.localEngineProject, null);
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok, '다시 시작할 수는 있다');
+  assert.strictEqual(s.localEngineProject.funded, 0, '다시 시작하면 처음부터다');
+});
+
+test('국산화: 공급 차질은 국산 엔진을 비켜 간다', () => {
+  const shortage = Data.EVENTS.find((e) => e.id === 'engine_shortage');
+  assert.ok(shortage, '엔진 공급 차질 사건이 있어야 한다');
+
+  const s = E.newGame(4305, 'uac');
+  assert.ok(shortage.condition(s), '서방 엔진을 달고 있으면 걸린다');
+
+  // 모든 양산 기종을 국산으로 바꿔 두면 이 사건 자체가 성립하지 않는다.
+  for (const p of s.programs) if (p.phase === 'production') p.engine = 'ps90a';
+  assert.strictEqual(shortage.condition(s), false, '국산 엔진만 남으면 남의 공급망 사고가 아니다');
+});
+
+test('국산화: 국가 발주가 국산 엔진을 단 기체를 더 쳐 준다', () => {
+  const def = Dec.get('state_order');
+  const price = (engineId) => {
+    const s = E.newGame(4306, 'uac');
+    s.turn = 20;
+    s.cash = 700;
+    for (const p of s.programs) if (p.phase === 'production') p.engine = engineId;
+    const memo = {};
+    const h = {
+      rng: R.createRng(4),
+      remember: (k, v) => ((memo[k] = v), v),
+      recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+    };
+    def.text(s, h);
+    const p = s.programs.find((x) => x.id === memo.program);
+    return { unit: memo.unitPrice, list: p.listPrice };
+  };
+  const foreign = price('cfm56-5b');
+  const local = price('ps90a');
+  const trait = E.companyTrait(E.newGame(4306, 'uac'));
+  const bonus = trait.localEngine.stateBonus;
+  assert.strictEqual(local.list, foreign.list, '같은 기종이어야 비교가 성립한다');
+  assert.ok(local.unit > foreign.unit, `국산 엔진 기체가 더 비싸게 팔려야 한다 (${local.unit} vs ${foreign.unit})`);
+  // 단가는 정수로 반올림돼 나오므로 비율이 아니라 반올림한 값으로 못박는다.
+  assert.strictEqual(foreign.unit, Math.round(local.list * trait.stateOrders.priceMult));
+  assert.strictEqual(local.unit, Math.round(local.list * (trait.stateOrders.priceMult + bonus)));
+});
+
+test('국산화: 세이브 왕복에도 진행도와 해금이 살아 있다', () => {
+  const s = E.newGame(4307, 'uac');
+  s.cash += 40000;
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, 400);
+  E.endTurn(s);
+  const back = E.ensureShape(JSON.parse(JSON.stringify(s)));
+  assert.deepStrictEqual(back.localEngineProject, s.localEngineProject);
+
+  // 옛 세이브(두 칸이 아예 없던 판)도 조용히 채워진다.
+  const old = E.newGame(4307, 'uac');
+  delete old.localEngineProject;
+  delete old.localEngines;
+  E.ensureShape(old);
+  assert.strictEqual(old.localEngineProject, null);
+  assert.deepStrictEqual(old.localEngines, []);
+});
+
+test('국산화: 다른 다섯 회사에는 이 사업이 없다', () => {
+  for (const id of ['deneb', 'boeing', 'airbus', 'embraer', 'bombardier']) {
+    const s = E.newGame(4308, id);
+    assert.strictEqual(E.localEngineSpec(s), null, `${id}: 엔진 자회사가 없어야 한다`);
+    assert.deepStrictEqual(E.localEngineTargets(s), []);
+    s.cash += 40000;
+    assert.strictEqual(E.startLocalEngine(s, 'cfm56-5b').ok, false, `${id}: 살 수 없는 것을 팔면 안 된다`);
+    // 설계 맥락에도 국산 해금이 실리지 않는다.
+    assert.deepStrictEqual(E.designContext(s).domesticEngines, []);
+  }
 });
