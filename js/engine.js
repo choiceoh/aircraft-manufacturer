@@ -66,11 +66,32 @@
    * 실제 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년 실제 위치를
    * 본뜬 승계 상태(주력기·선단·자금 규모)에서 시작한다. 등급 문턱은 데네브
    * 기준으로 조정돼 있다 — 거인으로 시작하면 점수는 쉽게 나온다. 그게 거인이다.
+   *
+   * ── 회사 특성(사풍) ──
+   *
+   * 승계 상태만 다르고 20년의 플레이가 같으면, 회사 선택은 난이도 슬라이더에
+   * 이름을 붙인 것에 지나지 않는다. `trait` 의 값들은 게임 내내 살아 있는
+   * **규칙의 차이**다. 전부 선택 항목이고, 없으면 기준(데네브)이다.
+   *
+   *   home       : 본국·전통 고객(항공사 id). 시작 관계가 높고, 그 항공사 수주전에서
+   *                가산점을 받는다. 실제 선단 이력에서 골랐다 — 라이언에어는 737 만
+   *                굴렸고, KLM 시티호퍼는 E-Jet 을, 비데뢰에는 Dash 8 을 굴렸다.
+   *   focus      : 세그먼트별 개발비·기간 배수. "그 회사가 잘하는 급"과 "남의 급".
+   *                원형이든 파생형이든 그 급이면 붙는다.
+   *   deriv      : 파생형 개발비·기간 배수. 급을 가리지 않고 파생형에만 붙는다 —
+   *                CRJ 를 다섯 번 늘려 본 회사의 값이다.
+   *   gov        : 정부 특수기 사업 보정 — 자격 문턱(인도 실적)·낙찰 확률·지원 수익.
+   *   aid        : 정부 런치 에이드 보정 — 지원율과 무역 긴장.
+   *   foreignBid : 서방 시장 감점. 평판이 오르면 사라진다 — 벽이지 천장이 아니다.
+   *
+   * 균형의 원칙은 설계 축과 같다: **모든 특색은 양방향이다.** 방산이 센 회사는
+   * 지원금이 약하고, 지원금이 후한 회사는 무역 분쟁의 표적이 된다.
    */
   const PLAYABLE_COMPANIES = [
     {
       id: 'deneb', name: '데네브 항공우주', makers: [], difficulty: '기준',
       desc: '가상의 중견 제조사. 낡은 주력기 하나와 20년 — 이 게임의 원래 이야기다.',
+      trait: { name: '무색무취', note: '본국도 방산도 정부도 없다. 오로지 설계와 영업으로 서는 회사 — 이 게임의 기준선이다.' },
       cash: CONFIG.startCash, debt: CONFIG.startDebt, engineers: CONFIG.startEngineers,
       reputation: CONFIG.startReputation, rivalDelivered: 240, overheadMult: 1, scoreMult: 1,
       legacies: [
@@ -82,6 +103,14 @@
     {
       id: 'boeing', name: '보잉', makers: ['boeing'], difficulty: '쉬움',
       desc: '시애틀의 거인. 협동체와 광동체 두 주력, 두터운 선단 — 대신 에어버스가 전력으로 온다.',
+      trait: {
+        name: '방산의 유산',
+        note: '광동체가 집이고 군이 오랜 고객이다. 대신 리저널은 남의 시장이고, 워싱턴은 개발비를 대주지 않는다.',
+        home: ['panamer', 'vertex'],
+        focus: { wide: { cost: 0.92, time: 0.95 }, regional: { cost: 1.12, time: 1.05 } },
+        gov: { deliveredMult: 0.5, winBonus: 0.12, sustainMult: 1.3 },
+        aid: { rateMult: 0.6, tensionMult: 0.5 },
+      },
       cash: 9500, debt: 5200, engineers: 7800, reputation: 63, rivalDelivered: 620,
       // 거인의 값: 본사·법무·연금이 무겁고(간접비 ×1.7), 등급은 출발선을 감안해 환산된다.
       overheadMult: 1.7, scoreMult: 0.45,
@@ -96,6 +125,14 @@
     {
       id: 'airbus', name: '에어버스', makers: ['airbus'], difficulty: '쉬움',
       desc: '툴루즈의 도전자. A320의 기세와 A330의 대양 — 보잉의 아성을 허물어야 한다.',
+      trait: {
+        name: '컨소시엄의 정치력',
+        note: '협동체가 집이고 각국 정부가 개발 위험을 나눠 진다. 대신 그 돈이 무역 분쟁의 표적이고, 군은 우리 고객이 아니다.',
+        home: ['albion', 'hanul'],
+        focus: { narrow: { cost: 0.9, time: 0.95 } },
+        gov: { winBonus: -0.06, sustainMult: 0.85 },
+        aid: { rateMult: 1.4, tensionMult: 1.6 },
+      },
       cash: 8800, debt: 6000, engineers: 7200, reputation: 59, rivalDelivered: 780,
       overheadMult: 1.65, scoreMult: 0.5,
       legacies: [
@@ -109,6 +146,14 @@
     {
       id: 'embraer', name: '엠브라에르', makers: ['embraer'], difficulty: '어려움',
       desc: '상파울루의 복병. 리저널 틈새 하나로 시작해 위로 올라가야 한다.',
+      trait: {
+        name: '리저널의 장인',
+        note: '지선 기체는 누구보다 싸고 빠르게 만든다. 다만 광동체는 다른 세계다 — 계단이 가파르다.',
+        home: ['meridian', 'lumen'],
+        focus: { regional: { cost: 0.85, time: 0.92 }, wide: { cost: 1.2, time: 1.08 } },
+        gov: { deliveredMult: 0.7 },
+        aid: { rateMult: 1.25, tensionMult: 0.7 },
+      },
       cash: 4400, debt: 1300, engineers: 1800, reputation: 46, rivalDelivered: 260,
       // 복병의 위안: 몸집이 작아 간접비도 작고(×0.6), 등급 환산은 후하다.
       overheadMult: 0.6, scoreMult: 1.5,
@@ -121,6 +166,14 @@
     {
       id: 'uac', name: 'UAC (통합항공기제작사)', makers: ['tupolev', 'sukhoi'], difficulty: '어려움',
       desc: '러시아 통합 항공. Tu-204와 4발 Il-96M, 서랍 속 SSJ-100 설계안 — 다 가졌지만 전부 미완이다.',
+      trait: {
+        name: '국가의 주문 · 서방의 벽',
+        note: '국가가 개발비를 대고 군이 사 준다. 대신 북미·서유럽 항공사는 인증과 정비망을 믿지 않는다 — 그 불신은 평판으로만 녹는다.',
+        home: ['kosmo'],
+        gov: { deliveredMult: 0.4, winBonus: 0.15, sustainMult: 1.15 },
+        aid: { rateMult: 1.6, tensionMult: 0 },
+        foreignBid: { regions: ['북미', '서유럽'], penalty: 3, fadeFrom: 45, fadeTo: 75 },
+      },
       cash: 2200, debt: 4200, engineers: 3800, reputation: 36, rivalDelivered: 380,
       overheadMult: 0.9, scoreMult: 0.8,
       legacies: [
@@ -144,6 +197,14 @@
     {
       id: 'bombardier', name: '봉바르디에', makers: ['bombardier'], difficulty: '어려움',
       desc: '몬트리올의 승부사. CRJ로 버는 동안 더 큰 기체로 올라설 길을 찾아야 한다.',
+      trait: {
+        name: '계보의 승부사',
+        note: 'CRJ 를 늘리고 또 늘려 본 회사다 — 파생형이 남들보다 싸고 빠르다. 대신 백지에서 큰 기체를 그리는 일은 여전히 비싸다.',
+        home: ['nordic', 'panamer'],
+        focus: { regional: { cost: 0.94, time: 0.97 }, wide: { cost: 1.15, time: 1.05 } },
+        deriv: { cost: 0.85, time: 0.9 },
+        aid: { rateMult: 1.25, tensionMult: 0.7 },
+      },
       cash: 4600, debt: 1500, engineers: 1900, reputation: 47, rivalDelivered: 300,
       overheadMult: 0.62, scoreMult: 1.45,
       legacies: [
@@ -156,6 +217,18 @@
 
   function companyPreset(id) {
     return PLAYABLE_COMPANIES.find((c) => c.id === id) || PLAYABLE_COMPANIES[0];
+  }
+
+  /** 본국·전통 고객의 시작 관계 하한. 승계 선단(58)보다 조금 높다. */
+  const HOME_START_RELATION = 62;
+
+  /** 이 판의 사풍. 옛 세이브는 빈 객체 — 모든 보정이 기준값이 된다. */
+  function companyTrait(s) {
+    return (s && s.trait) || {};
+  }
+
+  function homeAirlines(s) {
+    return companyTrait(s).home || [];
   }
 
   function newGame(seed, companyName) {
@@ -176,6 +249,11 @@
       // 회사 규모의 값 — 간접비 배수. 그리고 출발선을 감안한 등급 환산 배수.
       overheadMult: preset.overheadMult,
       scoreMult: preset.scoreMult,
+      // 사풍 — 본국 시장·개발 특기·방산·지원금. 20년 내내 규칙으로 살아 있다.
+      // 상태에 복사해 둔다: 세이브만 있고 프리셋 id 는 없는 판(이름을 직접 지은
+      // 데네브)도 자기 특성을 잃지 않아야 하고, 프리셋 값을 나중에 손봐도
+      // 진행 중인 판의 규칙이 도중에 바뀌지 않는다.
+      trait: preset.trait || {},
       turn: 0,
       nextId: 1,
       cash: preset.cash,
@@ -262,6 +340,11 @@
       gameOver: null,
     };
     for (const a of AIRLINES) s.relations[a.id] = 34 + (a.prestige < 0.8 ? 10 : 0);
+    // 본국·전통 고객은 초면이 아니다. 승계 선단이 없는 항공사라도 그 회사의
+    // 영업소가 수십 년째 그 도시에 있다 — 관계는 승계 선단과 별개로 시작한다.
+    for (const aid of homeAirlines(s)) {
+      if (s.relations[aid] !== undefined) s.relations[aid] = Math.max(s.relations[aid], HOME_START_RELATION);
+    }
     // 승계 부채가 봉우리의 출발점이다. 첫 정산 전에 갚아 버리면 이력에 한 번도 안 남는다.
     markDebtPeak(s);
 
@@ -373,7 +456,9 @@
           unitPrice: Math.round(p.listPrice * 0.92 * 10) / 10,
           wonTurn: -4,
         });
-        s.relations[aid] = 58;
+        // 선단과 같은 하한이되 **덮어쓰지는 않는다**. 대입으로 두면 이미 더 높게
+        // 잡힌 관계(본국·전통 고객)를 열린 주문이 있다는 이유로 오히려 끌어내린다.
+        s.relations[aid] = Math.max(s.relations[aid] || 0, 58);
       }
     }
 
@@ -669,6 +754,28 @@
     }
     if (typeof s.overheadMult !== 'number') s.overheadMult = 1;
     if (typeof s.scoreMult !== 'number') s.scoreMult = 1;
+    // 사풍이 없던 세이브 — 고른 제조사에서 되찾는다. 보잉으로 시작한 판이
+    // 불러오는 순간 "특색 없는 보잉"이 되면 안 된다. 다만 시작 관계 보정은
+    // newGame 한 번뿐인 효과라 소급하지 않는다 (그 판의 관계는 이미 20년치
+    // 영업의 결과이지, 출발선이 아니다).
+    if (!s.trait || typeof s.trait !== 'object') {
+      const makers = s.playerMakers || [];
+      const exact = PLAYABLE_COMPANIES.find(
+        (c) => c.makers.length === makers.length && c.makers.every((m) => makers.includes(m)),
+      );
+      // 흡수된 회사도 자기 사풍을 찾아야 한다. 투폴레프로 시작한 세이브는
+      // playerMakers 가 ['tupolev'] 인데, 지금 그 자리를 잇는 프리셋은
+      // UAC(['tupolev', 'sukhoi'])라 개수가 안 맞는다. 정확히 일치하는 프리셋이
+      // 없으면 **그 제조사를 품은** 프리셋으로 넓힌다 — 안 그러면 그 판이
+      // 조용히 기준선(무보정)으로 저장돼 영영 러시아 회사의 규칙을 못 받는다.
+      // 빈 배열(가상 회사)은 모든 프리셋에 트리비얼하게 포함되므로 제외한다.
+      const absorbed =
+        exact ||
+        (makers.length
+          ? PLAYABLE_COMPANIES.find((c) => c.makers.length && makers.every((m) => c.makers.includes(m)))
+          : null);
+      s.trait = (absorbed || companyPreset('deneb')).trait || {};
+    }
     if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;
   }
@@ -836,7 +943,7 @@
 
   /** 신규 프로그램 착수. 착수금(개발비의 8%)을 즉시 지출한다. */
   function launchProgram(s, spec, name) {
-    const evalSpec = evaluate({ ...spec, year: yearOf(s.turn), experience: companyExperience(s), ...engineDealContext(s), ...researchContext(s) });
+    const evalSpec = evaluate({ ...spec, ...designContext(s) });
     const upfront = Math.round(evalSpec.devCost * CONFIG.launchUpfrontRate);
     if (s.cash < upfront) {
       return { ok: false, error: `착수금 ${fmtMoney(upfront)}이 부족합니다.` };
@@ -1011,16 +1118,28 @@
     if (p.progress >= 50) return { ok: false, error: '개발이 절반을 넘었다 — 정부는 위험을 나누는 돈만 낸다.' };
     if (p.launchAid) return { ok: false, error: '이미 지원을 받은 프로그램입니다.' };
     ensureShape(s);
-    const aid = Math.round(p.devCost * LAUNCH_AID_RATE);
+    // 사풍 — 국가가 개발 위험을 얼마나 지고, 그 대가로 무역 긴장이 얼마나 쌓이는가.
+    // 에어버스의 컨소시엄은 후하지만 표적이 되고, 미국은 개발비 대신 방산으로 준다.
+    const aidT = companyTrait(s).aid || {};
+    const aid = Math.round(p.devCost * launchAidRate(s));
     s.cash += aid;
     p.launchAid = { amount: aid, repaid: 0 };
-    s.tradeTension += LAUNCH_AID_TENSION;
+    const tension = LAUNCH_AID_TENSION * (aidT.tensionMult ?? 1);
+    s.tradeTension += tension;
     pushLog(
       s,
       'program',
-      `${p.name}에 정부 지원금 ${fmtMoney(aid)}. 인도마다 계약가의 ${Math.round(LAUNCH_AID_ROYALTY * 100)}%씩, 총 ${LAUNCH_AID_PAYBACK}배까지 갚는다 — 개발을 접으면 갚지 않는다. 대신 무역 긴장이 올랐다.`,
+      `${p.name}에 정부 지원금 ${fmtMoney(aid)}. 인도마다 계약가의 ${Math.round(LAUNCH_AID_ROYALTY * 100)}%씩, 총 ${LAUNCH_AID_PAYBACK}배까지 갚는다 — 개발을 접으면 갚지 않는다.${
+        tension > 0 ? ' 대신 무역 긴장이 올랐다.' : ' WTO 밖의 돈이라 무역 긴장은 쌓이지 않는다.'
+      }`,
     );
     return { ok: true, aid };
+  }
+
+  /** 이 회사가 실제로 받는 런치 에이드 지원율. 화면도 이 값을 써야 버튼과 결과가 맞는다. */
+  function launchAidRate(s) {
+    const aid = companyTrait(s).aid || {};
+    return LAUNCH_AID_RATE * (aid.rateMult ?? 1);
   }
 
   /** 설계 평가에 실어 보낼 공급사 계약 맥락 — 조기 접근 엔진과 독점 공급사. */
@@ -1028,6 +1147,25 @@
     return {
       earlyEngines: Object.keys(s.engineEarlyAccess || {}),
       exclusiveMaker: s.engineDeal && s.turn < s.engineDeal.until ? s.engineDeal.maker : null,
+    };
+  }
+
+  /**
+   * 설계 평가에 실어 보낼 회사 맥락 전부 — 지금 시점·조직 경험·공급사 계약·장기 연구·사풍.
+   *
+   * 미리보기(panels)와 실제 착수(launchProgram)가 **같은 맥락**으로 평가해야
+   * 화면의 개발비와 청구서가 어긋나지 않는다. 호출부마다 손으로 조합하던 것을
+   * 한곳에 모아 두는 이유다 — 축이 하나 늘 때마다 세 군데를 고쳐야 했다.
+   */
+  function designContext(s) {
+    const t = companyTrait(s);
+    return {
+      year: yearOf(s.turn),
+      experience: companyExperience(s),
+      ...engineDealContext(s),
+      ...researchContext(s),
+      houseFocus: t.focus || null,
+      houseDeriv: t.deriv || null,
     };
   }
 
@@ -2892,11 +3030,15 @@
   }
 
   function govSustainment(s) {
+    // 사풍 — 오래 군을 상대한 회사는 지원 계약도 두껍게 쓴다. 반대로 방산이
+    // 남의 집인 회사는 같은 기체로도 같은 계약을 못 받는다.
+    // 0 은 유효한 값이다 ("군 지원 계약이 아예 없다"). ||는 그것을 1 로 되살린다.
+    const mult = (companyTrait(s).gov || {}).sustainMult ?? 1;
     let sum = 0;
     for (const p of s.programs) {
       if (!p.govMission) continue;
       const m = GOV_MISSIONS.find((x) => x.id === p.govMission);
-      if (m) sum += govUnitsOf(s, p.id) * m.sustainPerUnit;
+      if (m) sum += govUnitsOf(s, p.id) * m.sustainPerUnit * mult;
     }
     return sum;
   }
@@ -3992,6 +4134,10 @@
     PLAYABLE_COMPANIES,
     launchProgram,
     companyExperience,
+    companyTrait,
+    homeAirlines,
+    launchAidRate,
+    designContext,
     derivativeSpec,
     investQuality,
     investWindTunnel,

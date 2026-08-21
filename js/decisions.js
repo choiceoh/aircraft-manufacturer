@@ -163,13 +163,19 @@
    */
   function govFit(s, m) {
     if ((m.minReputation || 0) > (s.reputation || 0)) return null;
+    // 사풍 — 군을 오래 상대한 회사는 더 적은 실적으로도 후보에 오른다. 항속·평판
+    // 문턱은 그대로다: 그건 회사의 이력이 아니라 임무가 요구하는 물리다.
+    const govT = ((s.trait || {}).gov) || {};
+    // 배수 0 은 유효한 값이다 ("실적을 따지지 않는다"). ||는 그것을 1 로 되살려
+    // 문턱을 통째로 되돌린다 — 이 사풍 체계는 이미 tensionMult: 0 을 쓰고 있다.
+    const minDelivered = Math.ceil(m.minDelivered * (govT.deliveredMult ?? 1));
     const eligible = s.programs.filter(
       (p) =>
         p.phase === 'production' &&
         !p.govMission &&
         m.segments.includes(p.segment) &&
         p.range >= m.minRange &&
-        (p.delivered || 0) >= m.minDelivered,
+        (p.delivered || 0) >= minDelivered,
     );
     if (!eligible.length) return null;
     // 실적이 가장 두터운 기종이 유력 후보다 — 정부는 검증을 산다.
@@ -194,8 +200,11 @@
   /** 낙찰 확률 — 입찰 방식이 기본값을, 평판이 보정을 정한다. */
   function govWinChance(s, mode) {
     const base = (GOV_BID_MODES[mode] || GOV_BID_MODES.fixed).winBase;
+    // 사풍 — 심사관이 아는 이름인가. 방산이 집인 회사는 유리하고, 여객기만
+    // 만들어 온 회사는 같은 제안서로도 밀린다.
+    const bonus = (((s.trait || {}).gov) || {}).winBonus || 0;
     // 평판 0은 유효한 값(최악)이다 — ||는 0을 50으로 되살려 바닥 평판이 보정을 피해 간다.
-    return Math.max(0.15, Math.min(0.85, base + ((s.reputation ?? 50) - 50) * 0.005));
+    return Math.max(0.15, Math.min(0.85, base + bonus + ((s.reputation ?? 50) - 50) * 0.005));
   }
 
   /**

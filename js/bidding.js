@@ -73,6 +73,41 @@
       : 0;
   }
 
+  /**
+   * 사풍의 지리 — 본국 시장과 서방의 벽.
+   *
+   * 제조사는 어디에나 똑같이 파는 회사가 아니다. 본국·전통 고객의 구매부에는
+   * 우리 영업소가 수십 년째 있고(정치도 거든다), 반대로 인증 체계와 정비망이
+   * 낯선 시장에서는 같은 기체가 같은 값을 못 받는다.
+   *
+   * 두 항은 모두 **가산점**이지 가중치가 아니다. 가중합에 넣으면 분모가 커져
+   * 관계없는 항목까지 일괄로 흔들린다 (공통성 가산과 같은 이유).
+   *
+   * 벽은 천장이 아니다: 감점은 평판이 오르면 선형으로 녹아 없어진다. UAC 가
+   * 서방 시장을 뚫는 20년이 그 곡선이고, 그래서 "지금은 못 판다"가 아니라
+   * "지금 팔려면 다른 것을 더 내야 한다"가 된다.
+   */
+  const HOME_BID_BONUS = 1.5;
+
+  function homeBias(state, rfp) {
+    const trait = (state && state.trait) || {};
+    let bias = 0;
+    if ((trait.home || []).includes(rfp.airlineId)) bias += HOME_BID_BONUS;
+
+    const wall = trait.foreignBid;
+    if (wall) {
+      const home = airlineOf(rfp.airlineId).home;
+      if ((wall.regions || []).includes(home)) {
+        const from = wall.fadeFrom === undefined ? 45 : wall.fadeFrom;
+        const to = wall.fadeTo === undefined ? 75 : wall.fadeTo;
+        // 평판 from 이하면 감점 전액, to 이상이면 0. 사이는 선형이다.
+        const left = to <= from ? 1 : clamp((to - (state.reputation ?? 50)) / (to - from), 0, 1);
+        bias -= (wall.penalty || 0) * left;
+      }
+    }
+    return Math.round(bias * 10) / 10;
+  }
+
   /** 해당 분기에 새로 뜨는 RFP 목록을 만든다. */
   /**
    * 항공사 선단 계획.
@@ -508,7 +543,8 @@
     // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
     // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
     const prefBonus = enginePrefBonus(rfp, program);
-    const bounded = clamp(total + termBonus + flagshipBonus(state) + prefBonus - preorderPenalty, 0, 100);
+    const homeAdj = homeBias(state, rfp);
+    const bounded = clamp(total + termBonus + flagshipBonus(state) + prefBonus + homeAdj - preorderPenalty, 0, 100);
 
     return {
       total: Math.round(bounded * 10) / 10,
@@ -533,6 +569,7 @@
       terms: t,
       termBonus: Math.round(termBonus * 10) / 10,
       enginePref: prefBonus,
+      homeBias: homeAdj,
       blocked: null,
       price: Math.round(effPrice * 10) / 10,
     };
@@ -621,5 +658,5 @@
     };
   }
 
-  root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, normalizeTerms, CONFIG };
+  root.AirlinerBidding = { generateRfps, makeRfp, scoreBid, resolveBid, rivalScore, rivalBand, bestOffering, normalizeTerms, homeBias, HOME_BID_BONUS, CONFIG };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

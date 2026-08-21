@@ -48,6 +48,9 @@ h2 {
 .bad {
   color: var(--bad);
 }
+.accent {
+  color: var(--accent);
+}
 
 /* ── HUD ── */
 .hud {

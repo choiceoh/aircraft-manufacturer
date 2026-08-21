@@ -6737,3 +6737,353 @@ test('인수 제안 결정: 위기 중에만, 긴 쿨다운으로 온다', () =>
   s.acquiredTypes = { crj900: true };
   assert.strictEqual(def.weight(s), 0, '이미 인수한 기종은 다시 매물로 안 나온다');
 });
+
+// ─────────────────── 회사 특성(사풍) ───────────────────
+//
+// 회사마다 승계 상태만 다르고 20년의 규칙이 같으면 회사 선택은 난이도 슬라이더다.
+// 여기 케이스들이 지키는 것은 두 가지다: 특색이 **실제로 규칙을 바꾼다는 것**과,
+// 그 특색이 **기준선(데네브)을 건드리지 않는다는 것**.
+
+test('사풍: 데네브는 모든 보정이 중립이다 — 기준선이 움직이면 등급 문턱이 통째로 갈린다', () => {
+  const s = E.newGame(4101);
+  const t = E.companyTrait(s);
+  assert.ok(!t.focus && !t.deriv && !t.home && !t.foreignBid && !t.aid && !t.gov, '기준 회사에는 보정이 없어야 한다');
+  assert.strictEqual(E.launchAidRate(s), E.LAUNCH_AID_RATE);
+  assert.deepStrictEqual(E.homeAirlines(s), []);
+
+  // 설계 맥락에도 사풍이 실리지 않는다 — 실리면 기존 밸런스 측정치가 전부 무효가 된다.
+  const ctx = E.designContext(s);
+  assert.strictEqual(ctx.houseFocus, null);
+  assert.strictEqual(ctx.houseDeriv, null);
+});
+
+test('사풍: 급별 특기가 신규 개발비를 실제로 바꾼다 (엠브라에르 — 리저널은 싸고 광동체는 비싸다)', () => {
+  const base = E.newGame(4102);
+  const emb = E.newGame(4102, 'embraer');
+  const reg = { segment: 'regional', seats: 90, range: 3000, tech: 55, material: 'aluminum', engine: 'cf34-8' };
+  const wide = { segment: 'wide', seats: 300, range: 12000, tech: 60, material: 'aluminum', engine: 'trent700' };
+
+  const regBase = D.evaluate({ ...reg, ...E.designContext(base) });
+  const regEmb = D.evaluate({ ...reg, ...E.designContext(emb) });
+  assert.ok(regEmb.devCost < regBase.devCost, '리저널의 장인은 지선 기체를 더 싸게 만들어야 한다');
+  assert.ok(regEmb.devQuarters <= regBase.devQuarters, '개발 기간도 늘어나면 안 된다');
+
+  const wideBase = D.evaluate({ ...wide, ...E.designContext(base) });
+  const wideEmb = D.evaluate({ ...wide, ...E.designContext(emb) });
+  assert.ok(wideEmb.devCost > wideBase.devCost, '특기가 없는 급은 비싸야 한다 — 특색은 양방향이다');
+});
+
+test('사풍: 파생형 특기는 파생형에만 붙고, 급 특기는 원형·파생형 모두에 붙는다', () => {
+  const bom = E.newGame(4103, 'bombardier');
+  const base = E.newGame(4103);
+  const spec = { segment: 'regional', seats: 90, range: 3000, tech: 55, material: 'aluminum', engine: 'cf34-8', year: 2004 };
+
+  // 원형 — 급 특기(regional)만 붙는다.
+  const origRatio = D.evaluate({ ...spec, ...E.designContext(bom), year: 2004 }).devCost /
+    D.evaluate({ ...spec, ...E.designContext(base), year: 2004 }).devCost;
+
+  // 파생형 — 급 특기 위에 파생형 특기가 겹친다.
+  const deriv = {
+    ...spec,
+    seats: 104,
+    derivedFrom: { id: 'x', name: 'X', tech: 55, material: 'aluminum', fuselage: 'aluminum', wingMat: 'aluminum', abreast: undefined, engine: 'cf34-8', range: 3000, wing: undefined, segment: 'regional' },
+  };
+  const derivRatio = D.evaluate({ ...deriv, ...E.designContext(bom), year: 2004 }).devCost /
+    D.evaluate({ ...deriv, ...E.designContext(base), year: 2004 }).devCost;
+
+  assert.ok(origRatio < 1, '리저널 급 특기가 원형에도 붙어야 한다');
+  assert.ok(derivRatio < origRatio - 0.01, '계보의 특기는 파생형에서 한 겹 더 붙어야 한다');
+
+  // 특기가 없는 회사의 파생형은 배수가 1이다 — 파생형 축 자체를 흔들면 안 된다.
+  const embDeriv = D.evaluate({ ...deriv, ...E.designContext(E.newGame(4103, 'embraer')), year: 2004 }).devCost;
+  const embOrig = D.evaluate({ ...spec, ...E.designContext(E.newGame(4103, 'embraer')), year: 2004 }).devCost;
+  const baseDeriv = D.evaluate({ ...deriv, ...E.designContext(base), year: 2004 }).devCost;
+  const baseOrig = D.evaluate({ ...spec, ...E.designContext(base), year: 2004 }).devCost;
+  // devCost 는 정수로 반올림돼 나오므로 비율은 소수점 아래에서만 어긋난다.
+  assert.ok(
+    Math.abs(embDeriv / baseDeriv - embOrig / baseOrig) < 1e-3,
+    '파생형 특기가 없는 회사는 원형과 파생형의 배수가 같아야 한다',
+  );
+});
+
+test('사풍: 본국·전통 고객만 수주전 가산을 받는다', () => {
+  const boe = E.newGame(4104, 'boeing');
+  assert.strictEqual(B.homeBias(boe, { airlineId: 'panamer' }), B.HOME_BID_BONUS);
+  assert.strictEqual(B.homeBias(boe, { airlineId: 'vertex' }), B.HOME_BID_BONUS);
+  assert.strictEqual(B.homeBias(boe, { airlineId: 'kosmo' }), 0, '본국이 아닌 시장은 가산이 없어야 한다');
+  assert.strictEqual(B.homeBias(E.newGame(4104), { airlineId: 'panamer' }), 0, '기준 회사에는 본국이 없다');
+});
+
+test('사풍: 서방의 벽은 평판으로 녹는다 — 천장이 아니라 숙제다', () => {
+  const uac = E.newGame(4105, 'uac');
+  const wall = E.companyTrait(uac).foreignBid;
+  uac.reputation = wall.fadeFrom;
+  assert.strictEqual(B.homeBias(uac, { airlineId: 'panamer' }), -wall.penalty, '평판이 낮으면 감점 전액이다');
+  uac.reputation = (wall.fadeFrom + wall.fadeTo) / 2;
+  const half = B.homeBias(uac, { airlineId: 'albion' });
+  assert.ok(half < 0 && half > -wall.penalty, '중간 평판에서는 감점이 절반쯤 남아야 한다');
+  uac.reputation = wall.fadeTo;
+  assert.strictEqual(B.homeBias(uac, { airlineId: 'panamer' }), 0, '평판을 채우면 벽이 사라져야 한다');
+  // 본국은 벽의 영향을 받지 않는다.
+  uac.reputation = 30;
+  assert.strictEqual(B.homeBias(uac, { airlineId: 'kosmo' }), B.HOME_BID_BONUS);
+});
+
+test('사풍: 입찰 점수에 본국 가산이 실제로 실린다', () => {
+  const s = E.newGame(4106, 'boeing');
+  // 실격이 아닌 공고를 하나 찾는다 — 실격 판정은 점수를 계산하기 전에 빠져나간다.
+  let found = null;
+  for (let i = 0; i < 24 && !found; i++) {
+    for (const rfp of s.rfps) {
+      const cand = E.eligiblePrograms(s, rfp).find((c) => !c.score.blocked);
+      if (cand) { found = { rfp, program: cand.program }; break; }
+    }
+    if (!found) E.endTurn(s);
+  }
+  assert.ok(found, '점수를 낼 수 있는 공고가 나와야 한다');
+
+  // 같은 공고·같은 기체에 사풍만 갈아 끼운다. 항공사를 바꿔 비교하면 관계·선호
+  // 엔진·공통성까지 함께 움직여 무엇이 점수를 바꿨는지 알 수 없다.
+  const away = { ...s, trait: { ...s.trait, home: [] } };
+  const home = { ...s, trait: { ...s.trait, home: [found.rfp.airlineId] } };
+  const scoreAway = B.scoreBid(away, found.rfp, found.program, 0);
+  const scoreHome = B.scoreBid(home, found.rfp, found.program, 0);
+  assert.strictEqual(scoreAway.homeBias, 0);
+  assert.strictEqual(scoreHome.homeBias, B.HOME_BID_BONUS);
+  assert.ok(
+    Math.abs(scoreHome.total - scoreAway.total - B.HOME_BID_BONUS) < 0.11,
+    `본국 가산이 총점에 그대로 실려야 한다 (${scoreAway.total} → ${scoreHome.total})`,
+  );
+});
+
+test('사풍: 본국 관계는 승계 주문이 있다고 낮아지지 않는다', () => {
+  // 회귀 — 승계 잔고 시딩이 관계를 58로 **대입**해, 본국 고객(62)이 오히려 깎였다.
+  for (const id of ['boeing', 'airbus', 'embraer', 'bombardier', 'uac']) {
+    const s = E.newGame(4107, id);
+    for (const aid of E.homeAirlines(s)) {
+      assert.ok(s.relations[aid] >= 62, `${id}: 본국 고객 ${aid} 관계가 시작부터 높아야 한다 (실제 ${s.relations[aid]})`);
+    }
+  }
+});
+
+test('사풍: 런치 에이드의 지원율과 무역 긴장이 회사마다 다르다', () => {
+  const airbus = E.newGame(4108, 'airbus');
+  const boeing = E.newGame(4108, 'boeing');
+  const uac = E.newGame(4108, 'uac');
+  assert.ok(E.launchAidRate(airbus) > E.LAUNCH_AID_RATE, '컨소시엄은 더 많이 받는다');
+  assert.ok(E.launchAidRate(boeing) < E.LAUNCH_AID_RATE, '워싱턴은 개발비를 대주지 않는다');
+
+  // 실제로 받아 본다 — 배수가 화면에만 있고 정산에 없으면 특색이 아니라 문구다.
+  const take = (s) => {
+    const spec = { segment: 'narrow', seats: 170, range: 5200, tech: 50, material: 'aluminum', engine: 'cfm56-5b' };
+    s.cash += 40000;
+    const r = E.launchProgram(s, spec, 'T');
+    assert.ok(r.ok, r.error);
+    const before = s.tradeTension;
+    const aid = E.investLaunchAid(s, r.program.id);
+    assert.ok(aid.ok, aid.error);
+    return { aid: aid.aid, devCost: r.program.devCost, tension: s.tradeTension - before };
+  };
+  const a = take(airbus);
+  const u = take(uac);
+  const b = take(boeing);
+  assert.ok(a.aid / a.devCost > b.aid / b.devCost, '지원율 차이가 실제 수령액에 나타나야 한다');
+  assert.ok(a.tension > b.tension, '후한 지원은 무역 긴장을 더 쌓아야 한다');
+  assert.strictEqual(u.tension, 0, 'WTO 밖의 돈은 무역 긴장을 쌓지 않는다');
+});
+
+test('사풍: 정부 특수기 사업의 자격 문턱과 낙찰 확률이 회사마다 다르다', () => {
+  const tanker = Data.GOV_MISSIONS.find((m) => m.id === 'tanker');
+  // 임무 하나만 남기고 나머지를 닫아야 문턱 비교가 성립한다. 공고는 세 임무를
+  // 돌아가며 뽑으므로, 다른 임무가 대신 자격을 채우면 검사가 통째로 무의미해진다.
+  //   · 해상초계기 — 세그먼트(리저널·협동체)로 닫는다: 후보를 광동체로만 둔다
+  //   · 정부 전용기 — 평판 55 문턱으로 닫는다: 평판을 50 으로 둔다
+  const between = Math.ceil(tanker.minDelivered * 0.5);
+  assert.ok(between < tanker.minDelivered, '문턱 사이 값이 존재해야 이 검사가 의미가 있다');
+
+  const setup = (id) => {
+    const s = E.newGame(4109, id);
+    // 승계 기종은 전부 자격에서 뺀다 — 남는 후보는 아래에서 심는 광동체 하나다.
+    for (const p of s.programs) p.delivered = 0;
+    s.programs.push({
+      id: 'prog-gov-test',
+      name: '시험용 광동체',
+      segment: 'wide',
+      phase: 'production',
+      range: tanker.minRange + 500,
+      delivered: between,
+      devCost: 12000,
+      listPrice: 180,
+      govMission: null,
+    });
+    s.reputation = 50;
+    s.turn = 20;
+    return s;
+  };
+
+  const dec = Dec.get('gov_special');
+  assert.ok(dec, '특수기 사건이 있어야 한다');
+  assert.strictEqual(dec.weight(setup('deneb')), 0, '기준 회사는 아직 자격 미달이어야 한다');
+  assert.ok(dec.weight(setup('boeing')) > 0, '방산이 집인 회사는 더 적은 실적으로도 후보가 된다');
+  // 항속·평판 문턱은 사풍이 건드리지 않는다 — 회사의 이력이 아니라 임무의 물리다.
+  const short = setup('boeing');
+  short.programs[short.programs.length - 1].range = tanker.minRange - 1;
+  assert.strictEqual(dec.weight(short), 0, '항속이 모자라면 방산 회사도 후보가 아니다');
+});
+
+test('사풍: 정부 특수기 지원 수익도 회사를 탄다', () => {
+  // 지원 수익은 분기 정산 안에서만 계산되므로, 같은 군용 선단으로 한 분기를
+  // 돌려 매출 차이를 잰다. 다른 수입이 끼어들지 않도록 두 판의 조건을 맞춘다.
+  // 사풍만 갈아 끼운 같은 회사 둘을 비교한다. 다른 회사끼리 재면 간접비 배수·
+  // 선단·평판이 함께 달라져 차이가 지원 수익에서 왔는지 알 수 없다.
+  const run = (sustainMult) => {
+    const s = E.newGame(4110, 'boeing');
+    s.trait = { ...s.trait, gov: { ...s.trait.gov, sustainMult } };
+    const p = s.programs[0];
+    p.govMission = 'tanker';
+    s.fleets = { gov: { [p.id]: 40 } };
+    s.backlog = [];
+    s.rfps = [];
+    const before = s.cash;
+    E.endTurn(s);
+    return s.cash - before;
+  };
+  const thick = run(1.3);
+  const plain = run(1);
+  assert.ok(thick > plain, `지원 수익 배수가 정산에 실려야 한다 (${thick} vs ${plain})`);
+  // 배수가 문구가 아니라 값이라는 것 — 차이는 선단 규모에 비례한다.
+  const perUnit = Data.GOV_MISSIONS.find((m) => m.id === 'tanker').sustainPerUnit;
+  assert.ok(Math.abs(thick - plain - 40 * perUnit * 0.3) < 2, '차이가 인도 대수 × 단가 × 배수 차와 맞아야 한다');
+});
+
+test('사풍: 옛 세이브는 고른 제조사에서 사풍을 되찾는다', () => {
+  for (const [id, makers] of [['boeing', ['boeing']], ['airbus', ['airbus']], ['uac', ['tupolev', 'sukhoi']]]) {
+    const s = E.newGame(4111, id);
+    const expected = s.trait.name;
+    delete s.trait;
+    E.ensureShape(s);
+    assert.strictEqual(s.trait.name, expected, `${id}: 사풍이 복원되어야 한다`);
+    assert.deepStrictEqual(s.playerMakers.slice().sort(), makers.slice().sort());
+  }
+  // 가상 회사(제조사 없음)는 기준선으로 돌아간다.
+  const d = E.newGame(4111);
+  delete d.trait;
+  E.ensureShape(d);
+  assert.ok(!d.trait.focus && !d.trait.home, '기준 회사는 보정 없는 사풍이어야 한다');
+});
+
+test('사풍: 배수 0 은 유효한 값이다 — 꺼 둔 규칙이 조용히 켜지면 안 된다', () => {
+  // 회귀 — 배수를 `|| 1` 로 읽으면 "아예 없다"는 뜻의 0 이 기준값 1 로 되살아난다.
+  // 이 체계는 이미 UAC 의 aid.tensionMult = 0 으로 그 표기를 쓰고 있다.
+
+  // 개발비 배수 0 — 극단값이지만 1 로 되살아나지 않는다는 것이 요점이다.
+  const s = E.newGame(4115, 'embraer');
+  s.trait = { ...s.trait, focus: { regional: { cost: 0 } } };
+  const spec = { segment: 'regional', seats: 90, range: 3000, tech: 55, material: 'aluminum', engine: 'cf34-8' };
+  assert.strictEqual(D.evaluate({ ...spec, ...E.designContext(s) }).devCost, 0, '개발비 배수 0 이 살아야 한다');
+
+  // 런치 에이드 지원율 0 — "국가가 한 푼도 안 댄다"
+  const noAid = E.newGame(4115, 'airbus');
+  noAid.trait = { ...noAid.trait, aid: { rateMult: 0 } };
+  assert.strictEqual(E.launchAidRate(noAid), 0, '지원율 0 이 기준값으로 되살아나면 안 된다');
+
+  // 특수기 자격 문턱 배수 0 — "실적을 따지지 않는다"
+  const anyRecord = E.newGame(4115, 'boeing');
+  anyRecord.trait = { ...anyRecord.trait, gov: { deliveredMult: 0 } };
+  for (const p of anyRecord.programs) p.delivered = 0;
+  const tanker = Data.GOV_MISSIONS.find((m) => m.id === 'tanker');
+  anyRecord.programs.push({
+    id: 'prog-zero-test', name: '무실적 광동체', segment: 'wide', phase: 'production',
+    range: tanker.minRange + 500, delivered: 0, devCost: 12000, listPrice: 180, govMission: null,
+  });
+  anyRecord.reputation = 50;
+  anyRecord.turn = 20;
+  assert.ok(Dec.get('gov_special').weight(anyRecord) > 0, '문턱 배수 0 이면 무실적 기체도 후보여야 한다');
+
+  // 지원 수익 배수 0 — "군 지원 계약이 아예 없다"
+  const noSustain = E.newGame(4115, 'boeing');
+  noSustain.trait = { ...noSustain.trait, gov: { sustainMult: 0 } };
+  const prog = noSustain.programs[0];
+  prog.govMission = 'tanker';
+  noSustain.fleets = { gov: { [prog.id]: 40 } };
+  noSustain.backlog = [];
+  noSustain.rfps = [];
+  const before = noSustain.cash;
+  E.endTurn(noSustain);
+  const withZero = noSustain.cash - before;
+
+  const full = E.newGame(4115, 'boeing');
+  full.trait = { ...full.trait, gov: { sustainMult: 1 } };
+  const prog2 = full.programs[0];
+  prog2.govMission = 'tanker';
+  full.fleets = { gov: { [prog2.id]: 40 } };
+  full.backlog = [];
+  full.rfps = [];
+  const before2 = full.cash;
+  E.endTurn(full);
+  assert.ok(withZero < full.cash - before2, '지원 수익 배수 0 이 기준값으로 되살아나면 안 된다');
+});
+
+test('사풍: 데네브의 name·note 는 표기일 뿐 규칙이 아니다', () => {
+  // README 가 못박는 불변식 — 기준 회사에는 **보정 필드**가 하나도 없어야 한다.
+  // name/note 는 화면용이라 이 목록 밖이다.
+  const deneb = E.PLAYABLE_COMPANIES.find((c) => c.id === 'deneb');
+  for (const key of ['focus', 'deriv', 'home', 'aid', 'gov', 'foreignBid']) {
+    assert.strictEqual(deneb.trait[key], undefined, `기준 회사에 ${key} 보정이 붙으면 안 된다`);
+  }
+  assert.ok(deneb.trait.name, '표기용 이름은 있어야 한다 — 화면이 빈 카드를 그리면 안 된다');
+});
+
+test('사풍: 흡수된 회사로 시작한 옛 세이브도 사풍을 찾는다 (투폴레프 → UAC)', () => {
+  // 회귀 — 투폴레프는 한때 단독 플레이어블이었고, 그 세이브의 playerMakers 는
+  // ['tupolev'] 다. 지금 그 자리를 잇는 프리셋은 UAC(['tupolev','sukhoi'])라
+  // 개수가 안 맞아, 정확 일치만 보면 기준선(무보정)으로 조용히 굳어 버린다.
+  const uacTrait = E.newGame(4114, 'uac').trait;
+  const s = E.newGame(4114, 'uac');
+  delete s.trait;
+  s.playerMakers = ['tupolev'];
+  E.ensureShape(s);
+  assert.strictEqual(s.trait.name, uacTrait.name, '투폴레프 세이브는 UAC 사풍을 받아야 한다');
+  assert.ok(s.trait.foreignBid, '서방의 벽까지 그대로 살아야 한다');
+
+  // 단수 필드(playerMaker)만 있던 더 옛 세이브도 같은 경로를 지난다.
+  const older = E.newGame(4114, 'uac');
+  delete older.trait;
+  delete older.playerMakers;
+  older.playerMaker = 'tupolev';
+  E.ensureShape(older);
+  assert.strictEqual(older.trait.name, uacTrait.name);
+  assert.deepStrictEqual(older.playerMakers, ['tupolev']);
+
+  // 넓힌 검색이 엉뚱한 회사를 집어오면 안 된다: 제조사가 없는 판은 기준선이다.
+  const fictional = E.newGame(4114);
+  delete fictional.trait;
+  fictional.playerMakers = [];
+  E.ensureShape(fictional);
+  assert.ok(!fictional.trait.foreignBid && !fictional.trait.focus, '가상 회사는 기준선으로 남아야 한다');
+  // 그리고 정확 일치가 있으면 그쪽이 이긴다.
+  const boe = E.newGame(4114, 'boeing');
+  delete boe.trait;
+  E.ensureShape(boe);
+  assert.strictEqual(boe.trait.name, E.newGame(4114, 'boeing').trait.name);
+});
+
+test('사풍: 세이브 왕복에도 규칙이 그대로 살아 있다', () => {
+  const s = E.newGame(4112, 'uac');
+  const back = E.ensureShape(JSON.parse(JSON.stringify(s)));
+  assert.deepStrictEqual(back.trait, s.trait);
+  assert.strictEqual(B.homeBias(back, { airlineId: 'panamer' }), B.homeBias(s, { airlineId: 'panamer' }));
+  assert.strictEqual(E.launchAidRate(back), E.launchAidRate(s));
+});
+
+test('사풍: 회사를 골라도 결정론은 그대로다 (같은 시드 → 같은 전개)', () => {
+  for (const id of ['deneb', 'boeing', 'uac']) {
+    const a = E.newGame(4113, id);
+    const b = E.newGame(4113, id);
+    for (let i = 0; i < 8; i++) {
+      E.endTurn(a);
+      E.endTurn(b);
+    }
+    assert.strictEqual(JSON.stringify(a), JSON.stringify(b), `${id}: 같은 시드는 같은 전개여야 한다`);
+  }
+});
