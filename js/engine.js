@@ -2243,6 +2243,8 @@
       if (p.altEngine) {
         dropped.push(p.name);
         p.altEngine = null;
+        p.altEngineName = null;
+        p.altMaker = null;
         p.dualSource = false;
       }
 
@@ -2256,10 +2258,17 @@
         Math.round(clamp(p.defectRisk * ratio(evNew.defectRisk, evOld.defectRisk), 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
 
       p.engine = to.id;
-      // 화면·경력 보고서가 읽는 캐시다. 안 고치면 국산화한 Tu-204 가 20년 뒤
-      // 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
+      // 엔진에서 나온 **표시용 캐시**도 함께 간다. 안 고치면 국산화한 Tu-204 가
+      // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
       p.engineName = to.name;
       p.engineMaker = to.maker;
+      if (exact) p.engineImmature = evNew.engineImmature;
+
+      // 개발비·개발기간·필요인력은 **일부러 그대로 둔다.** 엔진이 그 값들에도
+      // 들어가지만, 이미 착수해 진행 중인 개발의 계약을 도중에 다시 쓰는 셈이고,
+      // devCost 는 품질 투자·풍동·런치 에이드·서방 형식증명·국산화 비용의 기준이라
+      // 지금 흔들면 이미 제시한 값들이 소급해서 바뀐다. 갈아 끼우는 것은 기체가
+      // 앞으로 낼 성능과 원가이지, 이미 쓴 개발비가 아니다.
 
       // 이미 계약된 주문은 그 엔진을 보고 서명한 것이다. 주문마다 엔진 구성을
       // 따로 들고 다니게 하는 대신(생산·인도 회계를 통째로 갈라야 한다), 계약과

@@ -8173,6 +8173,34 @@ test('국산화: 엔진에서 유도되는 값이 하나도 빠지지 않고 함
   assert.strictEqual(tu.engineName, 'PS-90A');
   assert.strictEqual(tu.engineMaker, 'UEC');
   assert.strictEqual(E.careerReport(s).programs.find((x) => x.name === tu.name).engineName, 'PS-90A');
+
+  // 개발비는 일부러 안 바꾼다 — 품질 투자·풍동·런치 에이드·형식증명·국산화 비용의
+  // 기준이라, 흔들면 이미 제시한 값들이 소급해서 바뀐다.
+  assert.strictEqual(tu.devCost, s.programs.find((x) => x.id === tu.id).devCost);
+});
+
+test('국산화: 엔진에서 나온 표시용 캐시가 하나도 안 남는다', () => {
+  // 회귀 — engineName 을 고치면서도 altEngineName·altMaker·engineImmature 는
+  // 옛 엔진 것으로 남아 있었다. 같은 계열의 값은 같이 움직여야 한다.
+  const s = E.newGame(4322, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  tu.altEngine = 'v2500';
+  tu.altEngineName = 'V2500';
+  tu.altMaker = 'IAE';
+  tu.dualSource = true;
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(tu.engine, 'ps90a');
+
+  assert.ok(!tu.altEngine && !tu.altEngineName && !tu.altMaker, '접은 대안의 표기가 남으면 안 된다');
+  assert.strictEqual(tu.dualSource, false);
+
+  // 성숙도 표기도 새 엔진 기준이어야 한다.
+  const expected = Math.round((Eng.maturityRisk(Eng.get('ps90a'), E.yearOf(s.turn)) - 1) * 100) / 100;
+  assert.strictEqual(tu.engineImmature, expected);
 });
 
 test('국산화: 옛 공급사의 성능 패키지는 엔진과 함께 나간다', () => {
