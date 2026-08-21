@@ -154,6 +154,12 @@
     return (
       Engines.ENGINES.filter(
         (e) =>
+          // 국산 엔진은 런칭 파트너의 대상이 아니다. 독점 공급 계약과 같은 이유로
+          // 우리 자회사는 제3자 공급사가 아니고, 무엇보다 **분담금으로는 안 열린다**:
+          // 조기 접근은 `engineEarlyAccess` 만 채우는데 국산 엔진의 문은 `localEngines`
+          // 가 잡는다. 그대로 두면 $403M 을 내고 아무것도 못 쓰는 계약이 되고, 열리게
+          // 만들면 $2.9B·14분기짜리 2세대 사업에 옆문이 생긴다.
+          !e.domestic &&
           e.eis > year &&
           e.eis - year <= 3 &&
           !(s.engineEarlyAccess || {})[e.id] &&

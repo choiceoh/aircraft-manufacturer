@@ -8751,3 +8751,26 @@ test('국산화: 착수 뒤에 끝난 연구는 갈아타기에 끼어들지 않
     D.evaluate({ ...spec, year: 1998 }).efficiency;
   assert.strictEqual(p.efficiency, before + engineOnly, '엔진 차이만 얹혀야 한다');
 });
+
+test('국산화: 자회사는 런칭 파트너를 제안하지 않는다', () => {
+  // 회귀 — PD 계열이 카탈로그에 들어오면서 열린 구멍이다. UEC 인도가 쌓인
+  // 2010년 UAC 판에서 "UEC가 PD-14 의 런칭 파트너를 제안했다($403M)"가 떴다.
+  // 분담금은 engineEarlyAccess 만 채우는데 국산 엔진의 문은 localEngines 가
+  // 잡으므로, 내고도 아무것도 못 쓰는 계약이었다.
+  const ev = Dec.DECISIONS.find((x) => x.id === 'engine_launch_partner');
+  assert.ok(ev, '런칭 파트너 사건이 있어야 한다');
+
+  const s = E.newGame(4381, 'uac');
+  s.turn = (2010 - 1998) * 4;
+  s.engineRelations = { UEC: 120 };
+  assert.strictEqual(ev.weight(s), 0, '자회사만 거래처면 제안이 아예 없어야 한다');
+
+  // 서방 공급사가 섞여 있으면 그쪽으로는 정상적으로 제안이 간다.
+  s.turn = (2014 - 1998) * 4;
+  s.engineRelations = { UEC: 120, CFM: 60 };
+  assert.ok(ev.weight(s) > 0, 'LEAP-1A(2016) 는 제안 대상이다');
+  const memo = {};
+  const h = { remember: (k, v) => ((memo[k] = v), v), recall: (k, f) => (memo[k] === undefined ? f : memo[k]) };
+  ev.text(s, h);
+  assert.ok(!Eng.get(memo.engine).domestic, `국산 엔진이 잡히면 안 된다 (${memo.engine})`);
+});
