@@ -473,6 +473,7 @@
         delivered: leg.produced,
         stock: 0,
         launchTurn: -40,
+        engineTurn: -40,
         certTurn: -8,
         derivedFrom: null,
         legacy: true,
@@ -556,6 +557,7 @@
         delivered: 0,
         stock: 0,
         launchTurn: 0,
+        engineTurn: 0,
         certTurn: null,
         derivedFrom: null,
       });
@@ -794,10 +796,21 @@
       for (const [id, doneFlag] of Object.entries((s.research && s.research.done) || {})) {
         if (!doneFlag) continue;
         const at = (s.research.doneTurn || {})[id];
-        if (typeof at === 'number' && born < at) continue;
+        // 같은 분기는 **못 받은 쪽**이다. 착수는 플레이어가 그 분기에 하고, 연구
+        // 정산(runResearch)은 그 분기의 endTurn 안에서 뒤늦게 돈다 — 그래서 완료
+        // 분기에 착수한 기체는 실제로 연구 없이 평가됐다(launchProgram 의 스냅숏이
+        // 그 순서를 그대로 담는다). 마이그레이션도 같은 경계를 써야 한다.
+        if (typeof at === 'number' && born <= at) continue;
         filled[id] = true;
       }
       p.research = filled;
+    }
+
+    // 엔진을 **언제 달았는지**가 없던 프로그램(승계 기종과 옛 세이브). 착수 분기로
+    // 채운다 — 그 시점에는 착수와 장착이 같은 분기다. 국산화로 갈아 끼우면 그때로
+    // 옮겨 간다.
+    for (const p of s.programs) {
+      if (typeof p.engineTurn !== 'number') p.engineTurn = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
     }
 
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
@@ -1095,6 +1108,9 @@
       delivered: 0,
       stock: 0,
       launchTurn: s.turn,
+      // 지금 엔진을 단 분기. 착수 시점에는 착수 분기와 같지만, 국산화로 갈아
+      // 끼우면 그때로 옮겨 간다 — 옛 엔진을 평가할 연도가 이 값이다.
+      engineTurn: s.turn,
       certTurn: null,
       // 호환성 판정을 통과했을 때만 원형 연결을 남긴다. 원형에서 소재·기술·항속을
       // 갈아엎어 신규 설계 비용을 전액 낸 설계에 파생형 딱지가 붙으면 안 된다.
@@ -2136,6 +2152,9 @@
   /** 계약한 엔진과 다른 것을 받게 된 항공사의 관계 하락. */
   const LOCAL_ENGINE_SWAP_RELATION = 4;
 
+  /** 관계 점수를 실제로 들고 있는 계정 — 카탈로그의 항공사뿐이다. */
+  const RELATION_AIRLINES = new Set(AIRLINES.map((a) => a.id));
+
   function localEngineSpec(s) {
     return companyTrait(s).localEngine || null;
   }
@@ -2331,9 +2350,16 @@
    * 상태는 건드리지 않는다. 바뀔 값을 계산해서 돌려줄 뿐이다.
    */
   function localEngineImpact(s, p, from, to, liveYear, engineBefore) {
-    // 옛 엔진은 **설계 당시** 연도로, 새 엔진은 **바뀐 기체가 보이는** 연도로
-    // 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이 얹힌다.
-    const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
+    // 옛 엔진은 **그 엔진을 단 시점**의 연도로, 새 엔진은 **바뀐 기체가 보이는**
+    // 연도로 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이
+    // 얹힌다.
+    //
+    // 착수 연도가 아니라 **장착 연도**인 이유 — 2세대 국산화는 1세대로 한 번
+    // 갈아 끼운 엔진을 다시 바꾼다. SSJ-100 은 1998년에 나왔지만 D-436(취항 1999)을
+    // 단 것은 2000년이다. 착수 연도로 재면 그 시점에 못 사는 엔진이라 평가가
+    // 폴백으로 떨어지고(exact 실패), 정가·결함 위험·미성숙 표시가 통째로 안 바뀐다.
+    const engineBorn = typeof p.engineTurn === 'number' ? p.engineTurn : p.launchTurn || 0;
+    const designYear = Math.max(yearOf(0), yearOf(engineBorn));
     // 이중화였는지는 옛 평가가 그대로 재현해야 이중화 할증(원가 +3%)이 비율에서
     // 빠진다 — 대안을 접는 것이 국산화가 파는 값의 일부다.
     const hadDual = !!(p.dualSource || p.altEngine);
@@ -2486,6 +2512,8 @@
       // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
       p.engineName = to.name;
       p.engineMaker = to.maker;
+      // 다음 세대가 "이 엔진을 언제 달았나"를 여기서 읽는다.
+      p.engineTurn = s.turn + 1;
 
       // 개발비·개발기간·필요인력은 **일부러 그대로 둔다.** 엔진이 그 값들에도
       // 들어가지만, 이미 착수해 진행 중인 개발의 계약을 도중에 다시 쓰는 셈이고,
@@ -2498,7 +2526,12 @@
       // 다른 것을 받게 된 항공사의 관계를 깎는다 — 잔고가 두꺼울 때 갈아타는
       // 것이 실제로 비싸지도록.
       for (const o of s.backlog) {
-        if (o.programId === p.id && o.remaining > 0 && o.airlineId && o.airlineId !== 'gov' && o.airlineId !== 'state') {
+        // 관계 점수는 **카탈로그에 있는 항공사**에만 있다. 정부·국영뿐 아니라
+        // 리스사(lessor)·인수 승계(takeover) 같은 기관 계정도 잔고를 들 수 있는데,
+        // 그쪽을 깎으면 아무도 안 읽는 유령 항목(s.relations.lessor)이 생기고
+        // 로그만 "관계가 깎였다"고 말한다. 뺄 이름을 하나씩 세는 대신 있는 이름만
+        // 받는다 — 새 기관 계정이 늘어도 새지 않는다.
+        if (o.programId === p.id && o.remaining > 0 && RELATION_AIRLINES.has(o.airlineId)) {
           upset.add(o.airlineId);
         }
       }
@@ -4114,6 +4147,8 @@
       delivered: 0,
       stock: 0,
       launchTurn: s.turn,
+      // 인수한 기체는 이미 그 엔진을 달고 온다 — 장착 시점은 인수 분기다.
+      engineTurn: s.turn,
       certTurn: s.turn,
       derivedFrom: null,
       acquired: true,

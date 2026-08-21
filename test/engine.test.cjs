@@ -8933,3 +8933,86 @@ test('성능 패키지: 연비 상한에 걸린 기종은 카운터도 오르지
   runLocal(s2, 'cfm56-5b', 'ps90a');
   assert.strictEqual(drop, 99 - q.efficiency, '패키지를 못 받은 기종과 같은 폭이어야 한다');
 });
+
+test('마이그레이션: 연구가 끝난 그 분기에 착수한 기체는 그 연구를 못 받았다', () => {
+  // 착수는 플레이어가 그 분기에 하고, 연구 정산은 같은 분기의 endTurn 안에서
+  // 뒤늦게 돈다. 그래서 완료 분기에 착수한 기체는 실제로 연구 없이 평가된다 —
+  // 마이그레이션도 같은 경계를 써야 한다.
+  const aero = Data.RESEARCH_PROJECTS.find((x) => x.id === 'aero');
+
+  // 살아 있는 경로가 어느 쪽인지 먼저 못박는다.
+  const live = E.newGame(4410, 'uac');
+  live.cash += 900000;
+  assert.ok(E.startResearch(live, 'aero').ok);
+  let sameTurn = null;
+  for (let i = 0; i < aero.quarters + 3 && !sameTurn; i++) {
+    const willFinish = live.research.active === 'aero' && (live.research.progress.aero || 0) + 1 >= aero.quarters;
+    if (willFinish) {
+      sameTurn = E.launchProgram(live, { segment: 'narrow', seats: 170, range: 5000, tech: 70, material: 'aluminum', engine: 'cfm56-5b' }, 'SameTurn').program;
+    }
+    live.cash += 6000;
+    E.endTurn(live);
+  }
+  assert.ok(sameTurn, '연구가 끝나는 분기에 착수해 봐야 한다');
+  assert.strictEqual(sameTurn.launchTurn, live.research.doneTurn.aero, '같은 분기여야 이 검사가 의미가 있다');
+  assert.deepStrictEqual(sameTurn.research, {}, '살아 있는 경로는 못 받은 것으로 적는다');
+
+  // 마이그레이션이 그 경계를 그대로 쓴다.
+  const base = E.newGame(4412, 'uac');
+  base.research = { active: null, progress: {}, done: { aero: true }, doneTurn: { aero: 20 } };
+  for (const [turn, expected] of [[19, {}], [20, {}], [21, { aero: true }]]) {
+    const s = JSON.parse(JSON.stringify(base));
+    s.programs = [{ ...s.programs[0], id: `x${turn}`, launchTurn: turn }];
+    delete s.programs[0].research;
+    E.ensureShape(s);
+    assert.deepStrictEqual(s.programs[0].research, expected, `launchTurn ${turn} (완료 20분기)`);
+  }
+});
+
+test('2세대: 옛 엔진은 착수 연도가 아니라 그 엔진을 단 연도로 평가한다', () => {
+  // 회귀 — SSJ-100 은 1998년에 나왔지만 D-436(취항 1999)을 단 것은 2000년이다.
+  // 착수 연도로 재면 그 시점에 못 사는 엔진이라 평가가 폴백으로 떨어져(exact 실패),
+  // 정가·결함 위험이 통째로 안 바뀐 채 2세대로 넘어갔다.
+  const s = E.newGame(4411, 'uac');
+  s.cash += 900000;
+  const ss = s.programs.find((p) => p.segment === 'regional');
+  assert.strictEqual(ss.engineTurn, ss.launchTurn, '착수 시점에는 두 값이 같다');
+  assert.ok(yearOfTurn(ss.launchTurn) < Eng.get('d436').eis, '착수 시점에는 D-436 이 아직 없다');
+
+  runLocal(s, ss.engine, 'd436');
+  assert.strictEqual(ss.engine, 'd436');
+  assert.ok(ss.engineTurn > ss.launchTurn, '엔진을 단 분기가 따로 남아야 한다');
+  assert.ok(yearOfTurn(ss.engineTurn) >= Eng.get('d436').eis, '그 시점에는 살 수 있는 엔진이다');
+
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd8').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const before = { price: ss.listPrice, risk: ss.defectRisk };
+  runLocal(s, 'd436', 'pd8');
+  assert.strictEqual(ss.engine, 'pd8');
+  assert.notStrictEqual(ss.listPrice, before.price, '정가가 따라 움직여야 한다');
+  assert.ok(ss.defectRisk > before.risk, '갓 나온 코어라 초기 위험이 얹힌다');
+});
+
+function yearOfTurn(turn) {
+  return 1998 + Math.floor(turn / 4);
+}
+
+test('국산화: 관계가 깎이는 것은 카탈로그에 있는 항공사뿐이다', () => {
+  // 회귀 — 리스사·인수 승계 같은 기관 계정의 잔고까지 세면, 아무도 안 읽는
+  // 유령 항목(s.relations.lessor)이 생기고 로그만 "관계가 깎였다"고 말한다.
+  const s = E.newGame(4413, 'uac');
+  s.cash += 900000;
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+  const real = Data.AIRLINES[0].id;
+  s.backlog.push({ programId: p.id, remaining: 20, airlineId: 'lessor', airlineName: '국제 리스사', unitPrice: 80 });
+  s.backlog.push({ programId: p.id, remaining: 20, airlineId: 'takeover', airlineName: '인수 승계', unitPrice: 80 });
+  s.backlog.push({ programId: p.id, remaining: 20, airlineId: real, airlineName: 'A', unitPrice: 80 });
+  const beforeReal = s.relations[real];
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  assert.strictEqual(s.relations.lessor, undefined, '리스사에는 관계 항목이 없다');
+  assert.strictEqual(s.relations.takeover, undefined, '인수 승계도 마찬가지다');
+  assert.ok(s.relations[real] < beforeReal, '실재하는 항공사는 깎여야 한다');
+});
