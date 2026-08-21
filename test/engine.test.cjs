@@ -7306,3 +7306,31 @@ test('UAC 심화: 다른 회사의 규칙은 아무것도 바뀌지 않는다', 
     assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, s.programs[0]), B.homeBias(s, { airlineId: 'panamer' }));
   }
 });
+
+test('서방 형식증명: 파생형은 따로 받되, 개정 형식증명만큼 싸다', () => {
+  // 두 성질을 함께 못박는다.
+  //  1) 파생형은 원형의 인증을 **승계하지 않는다** — ETOPS 와 같은 규칙이다.
+  //     상대 당국이 검증한 것은 그 형식이지 계보가 아니다.
+  //  2) 그런데도 값은 싸다. 비용이 `그 프로그램의 devCost × costRate` 라,
+  //     파생형 개발비가 원형의 일부인 만큼 인증비도 그만큼 내려간다 —
+  //     실제 개정 형식증명(amended type certificate)이 원형 심사보다 싼 것과 같다.
+  //     이 성질은 규칙을 따로 쓴 것이 아니라 원가 모델에서 저절로 나온다.
+  const s = E.newGame(4211, 'uac');
+  s.cash += 60000;
+  const spec = E.foreignCertSpec(s);
+  const base = s.programs.find((p) => p.segment === 'narrow');
+  const r = E.launchProgram(s, E.derivativeSpec(base, 30), 'Tu-204-300');
+  assert.ok(r.ok, r.error);
+  const deriv = r.program;
+  assert.ok(deriv.derivedFrom, '파생형으로 잡혀야 이 검사가 의미가 있다');
+
+  const baseCost = Math.round(base.devCost * spec.costRate);
+  const derivCost = Math.round(deriv.devCost * spec.costRate);
+  assert.ok(derivCost < baseCost * 0.75, `파생형 인증이 원형보다 뚜렷이 싸야 한다 (${derivCost} vs ${baseCost})`);
+
+  assert.ok(E.startForeignCert(s, base.id).ok);
+  for (let i = 0; i < spec.quarters + 4 && !E.foreignCertified(base); i++) E.endTurn(s);
+  assert.ok(E.foreignCertified(base));
+  assert.strictEqual(E.foreignCertified(deriv), false, '파생형이 원형의 인증을 공짜로 물려받으면 안 된다');
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, deriv), -E.companyTrait(s).foreignBid.penalty);
+});
