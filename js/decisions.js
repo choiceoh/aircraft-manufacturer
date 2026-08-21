@@ -93,13 +93,21 @@
 
   /** 우리 기체를 가장 많이 굴리는 항공사 — 없으면 관계가 가장 좋은 곳. */
   function topCustomer(s) {
+    // 선단 장부에는 항공사가 아닌 계정도 있다 — 군용 특수기('gov')와 국영 항공사
+    // 발주('state'). 그 계정이 최다가 되면 `AIRLINES.find` 가 빗나가 조용히
+    // AIRLINES[0](대한항공)로 떨어지고, 런치 커스터머·에어쇼가 실제 최대 고객이
+    // 아니라 명단 첫 줄을 집는다. 순위를 매기기 전에 **실존 항공사만** 남긴다.
+    const isAirline = (id) => AIRLINES.some((a) => a.id === id);
     const byUnits = Object.entries(s.fleets || {})
+      .filter(([id]) => isAirline(id))
       .map(([id, byProgram]) => ({ id, units: Object.values(byProgram).reduce((a, n) => a + n, 0) }))
       .filter((x) => x.units > 0)
       .sort((a, b) => b.units - a.units)[0];
     const id = byUnits
       ? byUnits.id
-      : Object.entries(s.relations || {}).sort((a, b) => b[1] - a[1])[0]?.[0];
+      : Object.entries(s.relations || {})
+          .filter(([aid]) => isAirline(aid))
+          .sort((a, b) => b[1] - a[1])[0]?.[0];
     return AIRLINES.find((a) => a.id === id) || AIRLINES[0];
   }
 
@@ -360,7 +368,7 @@
         const a = topCustomer(s);
         h.remember('program', p.id);
         h.remember('airline', a.id);
-        return `${a.name}이 개발 중인 <b>${p.name}</b>의 런치 커스터머를 자청했다. 단, 초도 물량을 대폭 할인해 달라는 조건이다.`;
+        return `${iGa(a.name)} 개발 중인 <b>${p.name}</b>의 런치 커스터머를 자청했다. 단, 초도 물량을 대폭 할인해 달라는 조건이다.`;
       },
       options: [
         {
@@ -390,10 +398,10 @@
               const advance = Math.round(p.devCost * 0.05);
               h.income(advance);
               h.relation(a.id, 8);
-              return `${a.name}이 역제안을 받아들였다. 선급금 ${money(advance)}, 정가는 지켰다.`;
+              return `${iGa(a.name)} 역제안을 받아들였다. 선급금 ${money(advance)}, 정가는 지켰다.`;
             }
             h.relation(a.id, -6);
-            return `${a.name}이 역제안을 걷어찼다. 런치 커스터머 이야기는 없던 일이 됐다.`;
+            return `${iGa(a.name)} 역제안을 걷어찼다. 런치 커스터머 이야기는 없던 일이 됐다.`;
           },
         },
         {
@@ -510,7 +518,7 @@
         h.remember('airlineName', deal.airline.name);
         h.remember('program', deal.program.id);
         h.remember('qty', h.rng.int(6, 12));
-        return `${deal.airline.name}이 입찰 없이 ${deal.program.name} ${h.recall('qty')}기 추가 도입을 타진해 왔다 — 오래 거래한 사이라 조건만 맞으면 바로 계약하겠다고 한다. 대신 단골값을 기대한다.`;
+        return `${iGa(deal.airline.name)} 입찰 없이 ${deal.program.name} ${h.recall('qty')}기 추가 도입을 타진해 왔다 — 오래 거래한 사이라 조건만 맞으면 바로 계약하겠다고 한다. 대신 단골값을 기대한다.`;
       },
       options: [
         {
@@ -1275,9 +1283,18 @@
             quarters: 4,
             apply: (s, h) => {
               // 다음 해 예산 심의. 국가 발주의 진짜 성질은 물량이 아니라 **예산의 변덕**이다.
-              if (h.final) return '예산 심의 전에 경영이 끝났다.';
+              //
+              // 종료 정산(h.final)에서 그냥 닫으면 안 된다. 마지막 네 분기에 전량
+              // 수락하면 선수금은 챙기고 광고한 하방(예산 삭감)만 영영 피해 가는,
+              // "늦게 고를수록 이득"인 구멍이 생긴다 — gov_grant 가 같은 이유로
+              // 종료 시 원금을 회수한다. 다만 **상방은 종료에서 값을 못 한다**:
+              // 추가 발주를 넣어 봐야 인도할 분기가 없다. 그래서 종료 정산은
+              // 같은 주사위를 굴리되 상방은 물량 없이 문장으로만 닫고, 하방은
+              // 그대로 청구한다.
               const p = s.programs.find((x) => x.id === h.recall('program'));
-              if (h.rng.chance(0.55) && p && p.phase === 'production') {
+              const passed = h.rng.chance(0.55) && p && p.phase === 'production';
+              if (passed) {
+                if (h.final) return `다음 해 예산이 통과됐지만, 인도할 분기가 남지 않은 채 경영이 끝났다.`;
                 const extra = Math.max(2, Math.round(h.recall('qty', 8) * 0.4));
                 const unitPrice = h.recall('unitPrice', Math.round(p.listPrice * 0.78));
                 h.order({ airlineId: 'state', airlineName: h.recall('customer', '국영 항공사'), program: p, qty: extra, unitPrice, gov: true });

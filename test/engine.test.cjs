@@ -7483,3 +7483,87 @@ test('서방 형식증명: 파생형은 따로 받되, 개정 형식증명만큼
   assert.strictEqual(E.foreignCertified(deriv), false, '파생형이 원형의 인증을 공짜로 물려받으면 안 된다');
   assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, deriv), -E.companyTrait(s).foreignBid.penalty);
 });
+
+test('국가 발주: 국영 선단이 최다여도 런치 커스터머는 실존 항공사를 집는다', () => {
+  // 회귀 — 선단 장부에는 항공사가 아닌 계정('gov'·'state')도 있다. 그 계정이
+  // 최다가 되면 AIRLINES.find 가 빗나가 조용히 명단 첫 줄(대한항공)로 떨어져,
+  // 런치 커스터머·에어쇼가 실제 최대 고객이 아닌 엉뚱한 항공사를 집었다.
+  const s = E.newGame(4212, 'uac');
+  s.fleets = { kosmo: { 'prog-1': 30 }, state: { 'prog-1': 90 }, gov: { 'prog-1': 80 } };
+  const def = Dec.get('launch_customer');
+  assert.ok(def.weight(s) > 0, 'UAC 는 개발 중 기종을 갖고 시작한다');
+
+  const memo = {};
+  const h = {
+    rng: R.createRng(1),
+    remember: (k, v) => ((memo[k] = v), v),
+    recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+  };
+  def.text(s, h);
+  assert.strictEqual(memo.airline, 'kosmo', `실제 최대 항공사 고객을 집어야 한다 (집힌 값: ${memo.airline})`);
+
+  // 실항공사 선단이 아예 없으면 관계로 떨어지되, 그때도 항공사여야 한다.
+  const t = E.newGame(4212, 'uac');
+  t.fleets = { state: { 'prog-1': 90 } };
+  const memo2 = {};
+  const h2 = { rng: R.createRng(1), remember: (k, v) => ((memo2[k] = v), v), recall: (k, f) => (memo2[k] === undefined ? f : memo2[k]) };
+  def.text(t, h2);
+  assert.ok(
+    Data.AIRLINES.some((a) => a.id === memo2.airline),
+    '관계 경로로 떨어져도 항공사를 집어야 한다',
+  );
+});
+
+test('국가 발주: 종료 정산에서도 예산 심의의 하방이 청구된다', () => {
+  // 회귀 — 마지막 네 분기에 전량 수락하면 선수금만 챙기고 광고한 하방을 영영
+  // 피해 가는, "늦게 고를수록 이득"인 구멍이 있었다. 상방은 종료에서 값을
+  // 못 하므로(인도할 분기가 없다) 문장으로만 닫고, 하방은 그대로 청구한다.
+  const opt = Dec.optionOf('state_order', 'take_all');
+  assert.ok(opt && opt.after, '전량 수락에는 지연 결과가 있어야 한다');
+
+  let charged = 0;
+  let ordered = 0;
+  const run = (rngSeed) => {
+    const s = E.newGame(4213, 'uac');
+    const p = s.programs.find((x) => x.phase === 'production');
+    const memo = { program: p.id, qty: 10, unitPrice: 80, customer: '국영 항공사' };
+    const h = {
+      rng: R.createRng(rngSeed),
+      final: true,
+      remember: (k, v) => ((memo[k] = v), v),
+      recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+      expense: (amt) => (charged += amt),
+      order: () => (ordered += 1),
+    };
+    return opt.after.apply(s, h);
+  };
+  // 여러 시드로 양쪽 갈래를 모두 지난다.
+  for (let i = 0; i < 12; i++) run(i + 1);
+  assert.ok(charged > 0, '종료 정산에서도 예산 삭감이 청구되어야 한다');
+  assert.strictEqual(ordered, 0, '인도할 분기가 없는데 추가 발주를 넣으면 안 된다');
+});
+
+test('서방 형식증명: 평판이 높을 때 산 인증은 평판이 떨어져도 그 기종을 지킨다', () => {
+  // 벽이 0인 시점의 구매를 막지 않는 이유 — 인증은 영구적이고 평판은 내려간다
+  // (국영 발주를 받을 때마다 −2). 그래서 이건 죽은 지출이 아니라 보험이다.
+  const s = E.newGame(4214, 'uac');
+  s.cash += 60000;
+  const wall = E.companyTrait(s).foreignBid;
+  const insured = s.programs.find((p) => p.segment === 'narrow');
+  const bare = s.programs.find((p) => p.segment === 'wide');
+
+  s.reputation = wall.fadeTo + 5;
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, insured), 0, '이 시점에는 벽이 이미 0이다');
+  assert.ok(E.startForeignCert(s, insured.id).ok, '그래도 살 수 있어야 한다');
+  const spec = E.foreignCertSpec(s);
+  for (let i = 0; i < spec.quarters + 4 && !E.foreignCertified(insured); i++) {
+    s.reputation = wall.fadeTo + 5;
+    E.endTurn(s);
+  }
+  assert.ok(E.foreignCertified(insured));
+
+  // 평판이 떨어지면 벽이 되살아나지만, 인증 기종만은 면제 상태로 남는다.
+  s.reputation = 50;
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, insured), 0, '보험이 값을 해야 한다');
+  assert.ok(B.homeBias(s, { airlineId: 'panamer' }, bare) < 0, '안 산 기종에는 벽이 되살아난다');
+});

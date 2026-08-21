@@ -195,10 +195,7 @@
       // 지금 남은 감점을 그대로 보여 준다. "평판을 올리면 녹는다"가 숫자로 보여야
       // 그게 벽이 아니라 숙제라는 것이 전달된다. 표본 항공사는 그 지역에서 찾는다 —
       // 특정 id 를 박아 두면 지역 목록을 손보는 순간 조용히 0 을 보여주게 된다.
-      const sample = AIRLINES.find((a) => (t.foreignBid.regions || []).includes(a.home));
-      const now = sample
-        ? Math.abs(B.homeBias({ trait: { foreignBid: t.foreignBid }, reputation: s.reputation }, { airlineId: sample.id }))
-        : 0;
+      const now = currentWallPenalty(s);
       items.push({
         good: false,
         label: `${(t.foreignBid.regions || []).join('·')} 항공사`,
@@ -281,7 +278,21 @@
     if (fc) {
       return `<button disabled>서방 형식증명 심사 중 · ${fc.left}분기</button>`;
     }
-    return `<button data-action="foreign-cert" data-id="${p.id}">서방 형식증명 · ${cost} · ${spec.quarters}분기</button>`;
+    // 지금 벽이 0이면 사도 당장 오르는 점수가 없다. 막지는 않는다 — 인증은
+    // 영구적이고 평판은 오르내리므로(국영 발주를 받을 때마다 −2), 평판이 높을 때
+    // 사 두는 것은 보험으로서 유효하다. 대신 **지금은 값을 하지 않는다**는 사실을
+    // 라벨에 적는다: 막으면 "잘 나갈 때 미리 사 두는" 정상적인 수가 사라진다.
+    const inert = currentWallPenalty(s) === 0;
+    return `<button data-action="foreign-cert" data-id="${p.id}">서방 형식증명 · ${cost} · ${spec.quarters}분기${inert ? ' <span class="muted">(지금은 벽 0 — 보험)</span>' : ''}</button>`;
+  }
+
+  /** 지금 이 회사에 남아 있는 벽 감점의 크기 (인증 안 받은 기종 기준). */
+  function currentWallPenalty(s) {
+    const wall = (s.trait || {}).foreignBid;
+    if (!wall) return 0;
+    const sample = AIRLINES.find((a) => (wall.regions || []).includes(a.home));
+    if (!sample) return 0;
+    return Math.abs(B.homeBias({ trait: { foreignBid: wall }, reputation: s.reputation }, { airlineId: sample.id }));
   }
 
   /** 벽이 선 회사에서만 뜨는 안내 — 이 기종이 낯선 시장에서 어떤 처지인가. */
@@ -291,9 +302,15 @@
     const wall = (s.trait || {}).foreignBid || {};
     const regions = (wall.regions || []).join('·');
     if (p.foreignCert && p.foreignCert.done) {
-      return `<p class="hint good">${esc(regions)} 항공사 앞에서 이 기종은 더 이상 낯선 제조사가 아니다 — 벽 감점이 면제된다.</p>`;
+      return `<p class="hint good">${esc(regions)} 항공사 앞에서 이 기종은 더 이상 낯선 제조사가 아니다 — 벽 감점이 면제된다. 평판이 떨어져도 이 기종만은 그대로다.</p>`;
     }
-    return `<p class="hint">${esc(regions)} 항공사는 우리 인증을 믿지 않는다. 평판 ${wall.fadeTo}까지 올려 회사 전체의 벽을 녹이거나, <b>이 기종 하나만</b> 상대 당국의 형식증명을 사서 지금 뚫어라.</p>`;
+    const left = currentWallPenalty(s);
+    if (left === 0) {
+      // 벽이 0인데 버튼이 그냥 열려 있으면 "사면 좋아지겠지"로 읽힌다. 지금 값이
+      // 0이라는 것과, 그럼에도 살 이유가 무엇인지를 같이 적는다.
+      return `<p class="hint">평판 ${Math.round(s.reputation)}이라 ${esc(regions)} 벽은 지금 <b>0</b>이다 — 인증을 사도 당장 오르는 점수는 없다. 다만 인증은 영구적이고 평판은 내려갈 수 있다(국영 발주를 받을 때마다 −2). 지금 사는 것은 그때를 위한 보험이다.</p>`;
+    }
+    return `<p class="hint">${esc(regions)} 항공사는 우리 인증을 믿지 않는다 — 지금 <b>−${left}점</b>. 평판 ${wall.fadeTo}까지 올려 회사 전체의 벽을 녹이거나, <b>이 기종 하나만</b> 상대 당국의 형식증명을 사서 지금 뚫어라.</p>`;
   }
 
   function renderOverview(s, folds) {
