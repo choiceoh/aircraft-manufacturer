@@ -2168,13 +2168,103 @@
   }
 
   /**
+   * 엔진을 갈아 끼우면 이 기종이 어떻게 되나 — **엔진만 다른 두 평가**의 차이.
+   *
+   * 엔진에서 유도되는 값을 손으로 하나씩 패치하지 않는다. 원가·정가·연비·객실·
+   * 결함 위험이 전부 엔진을 타는데, 그중 하나라도 빠뜨리면 그게 그대로 버그가
+   * 된다(정가를 빠뜨려 국산화한 기체가 서방 정가로 팔리던 것이 그 예다).
+   * 엔진이 아닌 항은 두 평가에 똑같이 들어가 비율에서 상쇄되므로, 아래 스펙
+   * 되짚기가 완벽하지 않아도 결과는 정확하다. 재평가로 통째로 갈아치우지 않는
+   * 이유는 그 사이 쌓인 것(개량·품질 투자·인증 주사위)이 지워지기 때문이다.
+   *
+   * 완성 시점의 실제 적용(tickLocalEngine)과 착수 전 예고(생산 탭 카드)가 **이
+   * 함수 하나**를 쓴다. 예고를 엔진 배수로 따로 계산하면 카드가 −16%를 적어 놓고
+   * 실제로는 −18%가 나오는 식으로 갈라진다 — 그 카드는 거짓말을 하는 것이다.
+   *
+   * 상태는 건드리지 않는다. 바뀔 값을 계산해서 돌려줄 뿐이다.
+   */
+  function localEngineImpact(s, p, from, to, liveYear) {
+    // 옛 엔진은 **설계 당시** 연도로, 새 엔진은 **바뀐 기체가 보이는** 연도로
+    // 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이 얹힌다.
+    const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
+    // 이중화였는지는 옛 평가가 그대로 재현해야 이중화 할증(원가 +3%)이 비율에서
+    // 빠진다 — 대안을 접는 것이 국산화가 파는 값의 일부다.
+    const hadDual = !!(p.dualSource || p.altEngine);
+    // 원형 계보를 빼먹으면 파생형이 두 평가 모두에서 신규 설계로 잡힌다. 그러면
+    // 재장착 감점(연비 −3)도, 파생형이 원형에서 물려받는 이중화 여부도 어긋난다.
+    //
+    // 새 평가의 계보는 **원형과 함께 옮긴다**. 국산화는 그 엔진을 단 우리 기종을
+    // 전부 갈아 끼우므로 계보 전체가 같은 분기에 같이 움직인다. 파생형에만 재장착
+    // 감점을 물리면, 나란히 국산 엔진으로 옮겨 간 원형과 파생형이 서로 다른 값을
+    // 내게 된다 — 착수 방식이 달랐다는 이유만으로.
+    const anc = p.derivedFrom;
+    const ancOld = anc ? { ...anc, dualSource: hadDual } : null;
+    const ancNew = anc ? { ...anc, dualSource: false, engine: anc.engine === from.id ? to.id : anc.engine } : null;
+    const base = {
+      segment: p.segment, seats: p.seats, range: p.range, tech: p.tech,
+      fuselage: p.fuselage, wingMat: p.wingMat, abreast: p.abreast, wing: p.wing,
+      fuelMargin: p.fuelMargin, etops: !!p.etops, growth: !!p.growth,
+      maintainable: !!p.maintainable, engines: p.engines || 2,
+      domesticEngines: [from.id, to.id],
+      // 조기 접근으로 착수한 기종(UAC 의 SaM146)은 이 맥락이 없으면 옛 엔진이
+      // 설계 당시 연도에 "못 사는 엔진"으로 잡혀 평가가 통째로 어긋난다 —
+      // exact 가 깨져 비율이 전부 1이 되고, 국산화가 아무 값도 안 바꾼다.
+      earlyEngines: Object.keys(s.engineEarlyAccess || {}),
+    };
+    // 옛 평가는 **있던 그대로**(이중화 포함), 새 평가는 **될 그대로**(단일 국산).
+    const evOld = evaluate({ ...base, engine: from.id, year: designYear, dualSource: hadDual, derivedFrom: ancOld });
+    const evNew = evaluate({ ...base, engine: to.id, year: liveYear, dualSource: false, derivedFrom: ancNew });
+
+    // 둘 중 하나라도 요청한 엔진으로 안 잡히면(그 시점에 못 사는 엔진 등) 비율이
+    // 엉뚱해진다. 그때는 엔진 배수만으로 물러선다 — 틀린 값보다 거친 값이 낫다.
+    const exact = evOld.engine === from.id && evNew.engine === to.id;
+    const ratio = (a, b) => (exact && b ? a / b : 1);
+    // 공급사 성능 패키지는 그 공급사 엔진에 붙은 값이다 — 엔진이 내려가면 함께 나간다.
+    const eff = clamp(p.efficiency - (p.enginePipGain || 0), 1, 99);
+    return {
+      exact,
+      hadDual,
+      ancNew,
+      unitCostBase: exact
+        ? Math.round(p.unitCostBase * ratio(evNew.unitCostBase, evOld.unitCostBase) * 10) / 10
+        : Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10,
+      listPrice: Math.round(p.listPrice * ratio(evNew.listPrice, evOld.listPrice) * 10) / 10,
+      efficiency: clamp(Math.round(eff + (exact ? evNew.efficiency - evOld.efficiency : to.eff - from.eff)), 1, 99),
+      comfort: clamp(Math.round(p.comfort + (exact ? evNew.comfort - evOld.comfort : to.comfort - from.comfort)), 1, 99),
+      defectRisk:
+        Math.round(clamp(p.defectRisk * ratio(evNew.defectRisk, evOld.defectRisk), 0.02, CONFIG.defectRiskMax) * 1000) / 1000,
+      engineImmature: exact ? evNew.engineImmature : !!p.engineImmature,
+    };
+  }
+
+  /**
+   * 착수 전 예고 — 이 사업을 끝내면 걸린 기종들이 실제로 어떻게 바뀌나.
+   * 완성 시점(지금 + 최소 분기)의 연도로 잡는다. 그때가 새 엔진이 실제로 보이는
+   * 시점이고, 성숙도 프리미엄이 그 연도를 탄다.
+   */
+  function localEnginePreview(s, target) {
+    const from = target && target.engine;
+    const to = target && root.AirlinerEngines.get(target.replacement);
+    if (!from || !to) return [];
+    const liveYear = yearOf(s.turn + localEngineQuarters(s, target));
+    return target.programs.map((p) => {
+      const im = localEngineImpact(s, p, from, to, liveYear);
+      return {
+        program: p,
+        exact: im.exact,
+        // 원가·정가는 비율로, 연비·객실은 점수 차로 — 화면이 쓰는 그대로.
+        cost: p.unitCostBase ? im.unitCostBase / p.unitCostBase - 1 : 0,
+        listPrice: p.listPrice ? im.listPrice / p.listPrice - 1 : 0,
+        efficiency: im.efficiency - p.efficiency,
+        comfort: im.comfort - p.comfort,
+        defectRisk: im.defectRisk - p.defectRisk,
+      };
+    });
+  }
+
+  /**
    * 국산화 진행 — 매 분기 정산에서 부른다. 자금과 기간이 **둘 다** 차면 완성되고,
    * 그 엔진을 달고 있던 우리 기종이 전부 갈아탄다.
-   *
-   * 갈아타기는 `evaluate` 를 다시 돌리지 않는다. 그 사이 개량(PIP·윙렛·객실)과
-   * 품질 투자, 인증 주사위가 이미 값을 바꿔 놨기 때문에, 재평가하면 그 이력이
-   * 통째로 지워진다. 엔진 항목은 원가에 곱으로, 연비·객실에 합으로 들어가므로
-   * **차이만 얹는다** — 개량이 하는 것과 같은 방식이다.
    */
   function tickLocalEngine(s) {
     const proj = s.localEngineProject;
@@ -2202,49 +2292,10 @@
       if (p.phase === 'cancelled' || p.phase === 'sold') continue;
       if (p.engine !== from.id) continue;
 
-      // 엔진에서 유도되는 값을 손으로 하나씩 패치하지 않는다. 원가·정가·연비·객실·
-      // 결함 위험이 전부 엔진을 타는데, 그중 하나라도 빠뜨리면 그게 그대로 버그가
-      // 된다(정가를 빠뜨려 국산화한 기체가 서방 정가로 팔리던 것이 그 예다).
-      //
-      // 대신 **엔진만 다른 두 평가**를 만들어 그 차이를 얹는다. 엔진이 아닌 항은
-      // 두 평가에 똑같이 들어가 비율에서 상쇄되므로, 아래 스펙 되짚기가 완벽하지
-      // 않아도 결과는 정확하다. 재평가로 통째로 갈아치우지 않는 이유는 그 사이
-      // 쌓인 것(개량·품질 투자·인증 주사위)이 지워지기 때문이다.
-      //
-      // 옛 엔진은 **설계 당시** 연도로, 새 엔진은 **바뀐 기체가 보이는** 연도로
-      // 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이 얹힌다.
-      const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
-      // 이중화였는지는 대안을 접기 **전에** 잡아 둔다 — 옛 평가가 그 상태를 그대로
-      // 재현해야 이중화 할증(원가 +3%)이 비율에서 빠진다.
-      const hadDual = !!(p.dualSource || p.altEngine);
-      const base = {
-        segment: p.segment, seats: p.seats, range: p.range, tech: p.tech,
-        fuselage: p.fuselage, wingMat: p.wingMat, abreast: p.abreast, wing: p.wing,
-        fuelMargin: p.fuelMargin, etops: !!p.etops, growth: !!p.growth,
-        maintainable: !!p.maintainable, engines: p.engines || 2,
-        domesticEngines: [from.id, to.id],
-        // 조기 접근으로 착수한 기종(UAC 의 SaM146)은 이 맥락이 없으면 옛 엔진이
-        // 설계 당시 연도에 "못 사는 엔진"으로 잡혀 평가가 통째로 어긋난다 —
-        // exact 가 깨져 비율이 전부 1이 되고, 국산화가 아무 값도 안 바꾼다.
-        earlyEngines: Object.keys(s.engineEarlyAccess || {}),
-      };
-      // 옛 평가는 **있던 그대로**(이중화 포함), 새 평가는 **될 그대로**(단일 국산).
-      // 대안 인증을 접으면서 그 할증도 함께 빠지는 것이 이 짝의 값이다.
-      const evOld = evaluate({ ...base, engine: from.id, year: designYear, dualSource: hadDual });
-      const evNew = evaluate({ ...base, engine: to.id, year: liveYear, dualSource: false });
+      const im = localEngineImpact(s, p, from, to, liveYear);
 
-      // 둘 중 하나라도 요청한 엔진으로 안 잡히면(그 시점에 못 사는 엔진 등) 비율이
-      // 엉뚱해진다. 그때는 엔진 배수만으로 물러선다 — 틀린 값보다 거친 값이 낫다.
-      const exact = evOld.engine === from.id && evNew.engine === to.id;
-      const ratio = (a, b) => (exact && b ? a / b : 1);
-
-      // 공급사 성능 패키지는 그 공급사 엔진에 붙은 값이다. 엔진이 내려가면 함께
-      // 나가야 하고, 카운터도 풀어야 새 공급사의 패키지를 받을 수 있다.
-      const pip = p.enginePipGain || 0;
-      if (pip) {
-        p.efficiency = clamp(p.efficiency - pip, 1, 99);
-        p.enginePipGain = 0;
-      }
+      // 공급사 성능 패키지 카운터도 풀어야 새 공급사의 패키지를 받을 수 있다.
+      p.enginePipGain = 0;
 
       // 이중화 기체는 서방 대안 인증을 함께 접는다. 안 그러면 국산 원가·국가
       // 발주 우대·공급 차질 면역을 받으면서 대안 공급사의 선호 가산(+2)까지
@@ -2257,21 +2308,21 @@
         p.dualSource = false;
       }
 
-      p.unitCostBase = exact
-        ? Math.round(p.unitCostBase * ratio(evNew.unitCostBase, evOld.unitCostBase) * 10) / 10
-        : Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
-      p.listPrice = Math.round(p.listPrice * ratio(evNew.listPrice, evOld.listPrice) * 10) / 10;
-      p.efficiency = clamp(Math.round(p.efficiency + (exact ? evNew.efficiency - evOld.efficiency : to.eff - from.eff)), 1, 99);
-      p.comfort = clamp(Math.round(p.comfort + (exact ? evNew.comfort - evOld.comfort : to.comfort - from.comfort)), 1, 99);
-      p.defectRisk =
-        Math.round(clamp(p.defectRisk * ratio(evNew.defectRisk, evOld.defectRisk), 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
+      p.unitCostBase = im.unitCostBase;
+      p.listPrice = im.listPrice;
+      p.efficiency = im.efficiency;
+      p.comfort = im.comfort;
+      p.defectRisk = im.defectRisk;
+      if (im.exact) p.engineImmature = im.engineImmature;
 
       p.engine = to.id;
       // 엔진에서 나온 **표시용 캐시**도 함께 간다. 안 고치면 국산화한 Tu-204 가
-      // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
+      // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다. 원형 계보에 박힌
+      // 엔진도 그중 하나다 — 원형이 국산으로 옮겨 갔는데 파생형의 계보만 서방
+      // 엔진으로 남으면, 다음 세대 국산화가 이 기체를 재장착으로 잘못 읽는다.
       p.engineName = to.name;
       p.engineMaker = to.maker;
-      if (exact) p.engineImmature = evNew.engineImmature;
+      if (p.derivedFrom && p.derivedFrom.engine === from.id) p.derivedFrom = im.ancNew;
 
       // 개발비·개발기간·필요인력은 **일부러 그대로 둔다.** 엔진이 그 값들에도
       // 들어가지만, 이미 착수해 진행 중인 개발의 계약을 도중에 다시 쓰는 셈이고,
@@ -4724,6 +4775,8 @@
     localEngineTargets,
     localEngineCost,
     localEngineQuarters,
+    localEngineImpact,
+    localEnginePreview,
     hasDomesticEngine,
     foreignCertSpec,
     foreignCertified,

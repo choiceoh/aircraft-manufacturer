@@ -8376,3 +8376,130 @@ test('국산화: 대안을 접으면 이중화 원가 할증도 함께 빠진다
     `이중화 할증이 빠져야 한다 (${p.unitCostBase} vs ${single.unitCostBase})`,
   );
 });
+
+test('국산화: 파생형은 원형과 함께 옮겨 간다 — 계보의 엔진도 따라간다', () => {
+  // 회귀 — 쌍 평가가 원형 계보(derivedFrom)를 빼고 돌아, 파생형이 두 평가 모두에서
+  // 신규 설계로 잡혔다. 계보에 박힌 엔진도 서방 것으로 남아, 다음 세대 국산화가
+  // 이 기체를 "재장착"으로 잘못 읽는다.
+  const s = E.newGame(4325, 'uac');
+  s.cash += 200000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  const r = E.launchProgram(s, E.derivativeSpec(tu, 25), 'Tu-204-300');
+  assert.ok(r.ok, r.error);
+  const d = r.program;
+  assert.strictEqual(d.derivedFrom.engine, 'cfm56-5b', '원형의 서방 엔진을 계보에 담고 있다');
+  const before = { parent: tu.efficiency, deriv: d.efficiency };
+
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(d.engine, 'ps90a');
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a', '원형이 옮겨 갔으면 계보도 함께 옮겨야 한다');
+  // 국산화는 계보 전체를 같은 분기에 갈아 끼운다. 파생형에만 재장착 감점(−3)이
+  // 붙으면, 나란히 옮겨 간 원형과 파생형이 착수 방식 때문에 갈라진다.
+  assert.strictEqual(
+    d.efficiency - before.deriv,
+    tu.efficiency - before.parent,
+    '원형과 파생형이 같은 폭으로 움직여야 한다',
+  );
+});
+
+test('국산화: 서방 엔진을 달았던 파생형은 계보로 돌아오며 재장착 감점이 풀린다', () => {
+  const s = E.newGame(4326, 'uac');
+  s.cash += 400000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(tu.engine, 'ps90a');
+
+  // 국산 원형에 일부러 서방 엔진을 단 파생형 — 이 시점에 이미 재장착이다.
+  const spec = E.derivativeSpec(tu, 25);
+  spec.engine = 'cfm56-5b';
+  const r = E.launchProgram(s, spec, 'Tu-204-300W');
+  assert.ok(r.ok, r.error);
+  const d = r.program;
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a');
+  const before = d.efficiency;
+
+  // 재장착 국산화로 계보 엔진으로 되돌린다.
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(d.engine, 'ps90a');
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a', '계보는 그대로다 — 옮겨 간 것은 파생형 쪽이다');
+
+  // 엔진 점수만 보면 −4 인데, 재장착 감점 3 이 풀리므로 실제로는 −1 이다.
+  const raw = Eng.get('ps90a').eff - Eng.get('cfm56-5b').eff;
+  assert.ok(d.efficiency - before > raw, `재장착 감점이 풀려야 한다 (${d.efficiency - before} vs ${raw})`);
+  assert.strictEqual(d.efficiency, tu.efficiency, '계보로 돌아왔으면 원형과 같은 값이다');
+});
+
+test('국산화: 카드가 적는 증감이 실제로 적용되는 값이다', () => {
+  // 회귀 — 카드가 엔진 배수(costMult 비)로 어림해 −16%를 적었는데, 국산화가
+  // 이중화 대안까지 접으면서 실제로는 −18%가 나왔다. 예고와 결과가 갈리면
+  // 그 카드는 거짓말을 하는 것이다.
+  for (const targetId of ['cfm56-5b', 'pw4000', 'cf34-3']) {
+    const s = E.newGame(4327, 'uac');
+    s.cash += 200000;
+    if (targetId === 'cfm56-5b') {
+      const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+      p.dualSource = true;
+      p.altEngine = 'v2500';
+    }
+    const target = () => E.localEngineTargets(s).find((x) => x.engine.id === targetId);
+    assert.ok(target(), `${targetId}: 후보로 잡혀야 한다`);
+    assert.ok(E.startLocalEngine(s, targetId).ok);
+    E.fundLocalEngine(s, s.localEngineProject.cost);
+
+    // 비교 기준은 **갈아타기 직전 분기**다. 개량(PIP)·공급가 변동이 그 사이에
+    // 값을 흔들므로, 착수 시점과 비교하면 그 흔들림까지 예고 오차로 잡힌다.
+    let pre = [];
+    let before = [];
+    for (let i = 0; i < 20 && s.localEngineProject; i++) {
+      const t = target();
+      pre = E.localEnginePreview(s, t);
+      before = t.programs.map((p) => ({ id: p.id, name: p.name, cost: p.unitCostBase, eff: p.efficiency }));
+      E.endTurn(s);
+    }
+    assert.strictEqual(s.localEngineProject, null, `${targetId}: 끝나야 비교할 것이 있다`);
+    assert.strictEqual(pre.length, before.length, '걸린 기종마다 한 줄씩 나와야 한다');
+
+    before.forEach((b, i) => {
+      const p = s.programs.find((x) => x.id === b.id);
+      assert.strictEqual(p.name, pre[i].program.name, '예고와 실제가 같은 기종을 가리켜야 한다');
+      assert.strictEqual(
+        Math.round(pre[i].cost * 100),
+        Math.round((p.unitCostBase / b.cost - 1) * 100),
+        `${targetId}/${p.name}: 예고한 원가 증감이 실제와 같아야 한다`,
+      );
+      assert.strictEqual(pre[i].efficiency, p.efficiency - b.eff, `${targetId}/${p.name}: 연비도 마찬가지다`);
+    });
+  }
+});
+
+test('국산화: 이중화 기체의 예고는 엔진 배수보다 더 내려간다', () => {
+  // 대안 인증을 함께 접으면서 이중화 할증(원가 +3%)도 빠지기 때문이다.
+  // 엔진 배수만 보는 카드는 그만큼을 빼먹고 적는다.
+  const s = E.newGame(4329, 'uac');
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+  const solo = E.localEnginePreview(s, E.localEngineTargets(s).find((x) => x.engine.id === 'cfm56-5b'))[0].cost;
+  p.dualSource = true;
+  p.altEngine = 'v2500';
+  const dual = E.localEnginePreview(s, E.localEngineTargets(s).find((x) => x.engine.id === 'cfm56-5b'))[0].cost;
+  const raw = Eng.get('ps90a').costMult / Eng.get('cfm56-5b').costMult - 1;
+  assert.ok(dual < solo, `이중화 기체가 더 많이 내려가야 한다 (${dual} vs ${solo})`);
+  assert.ok(
+    Math.round(dual * 100) < Math.round(raw * 100),
+    `엔진 배수(${Math.round(raw * 100)}%)보다 더 내려가야 한다 (${Math.round(dual * 100)}%)`,
+  );
+});
+
+test('국산화: 예고는 상태를 건드리지 않는다', () => {
+  const s = E.newGame(4328, 'uac');
+  const before = JSON.stringify(E.serialize ? E.serialize(s) : s);
+  const t = E.localEngineTargets(s)[0];
+  E.localEnginePreview(s, t);
+  assert.strictEqual(JSON.stringify(E.serialize ? E.serialize(s) : s), before, '읽기만 해야 한다');
+});

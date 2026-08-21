@@ -1117,8 +1117,24 @@
              const to = Engines.get(t.replacement);
              const cost = E.localEngineCost(s, t);
              const q = E.localEngineQuarters(s, t);
-             const dEff = to.eff - t.engine.eff;
-             const dCost = Math.round((to.costMult / t.engine.costMult - 1) * 100);
+             // 엔진 배수(to.costMult / from.costMult)로 어림하지 않는다. 국산화는
+             // 이중화 대안까지 함께 접으므로 실제 원가 하락이 그보다 크고(−16%로
+             // 적어 놓고 −18%가 나온다), 연비는 급별 환산을 타서 엔진 점수 차와
+             // 다르다. 완성 시점에 실제로 적용할 그 계산을 그대로 불러 적는다.
+             const pre = E.localEnginePreview(s, t);
+             // dir: 1 이득 · -1 손해 · 0 그대로. 걸린 기종이 서로 다른 방향이면
+             // 어느 색도 거짓이므로 중립으로 적는다.
+             const span = (vals, fmt, dir) => {
+               const uniq = [...new Set(vals)].sort((a, b) => a - b);
+               const lo = uniq[0];
+               const hi = uniq[uniq.length - 1];
+               // 걸린 기종마다 값이 다르면 한 숫자로 못 적는다 — 범위로 적는다.
+               const text = uniq.length > 1 ? `${fmt(lo)}~${fmt(hi)}` : fmt(lo);
+               const cls = dir(lo) === dir(hi) && dir(lo) !== 0 ? (dir(lo) > 0 ? 'good' : 'bad') : 'muted';
+               return `<span class="${cls}">${text}</span>`;
+             };
+             const pct = (v) => `${v > 0 ? '+' : ''}${v}%`;
+             const pt = (v) => `${v > 0 ? '+' : ''}${v}`;
              // 착수 자체는 돈이 안 든다 — 자금은 뒤에서 채워 넣는다. 임의의 현금
              // 문턱으로 버튼을 잠그면 화면은 막는데 엔진은 허용하는, 서로 다른
              // 규칙 두 개가 생긴다.
@@ -1126,9 +1142,11 @@
                  <b>${esc(t.engine.name)} → ${esc(to.name)}</b>
                  <span>${money(cost)} · 최소 ${q}분기${t.refit ? ' <b>(재장착 — 엔진은 이미 우리 것)</b>' : ''}</span>
                  <span class="muted">대상: ${esc(t.programs.map((x) => x.name).join(' · '))}</span>
-                 <span><span class="${dCost < 0 ? 'good' : 'bad'}">생산원가 ${dCost > 0 ? '+' : ''}${dCost}%</span> · <span class="${
-                   dEff > 0 ? 'good' : dEff < 0 ? 'bad' : 'muted'
-                 }">연비 ${dEff > 0 ? '+' : ''}${dEff}</span></span>
+                 <span>생산원가 ${span(
+                   pre.map((x) => Math.round(x.cost * 100)),
+                   pct,
+                   (v) => (v < 0 ? 1 : v > 0 ? -1 : 0),
+                 )} · 연비 ${span(pre.map((x) => x.efficiency), pt, (v) => (v > 0 ? 1 : v < 0 ? -1 : 0))}</span>
                </button>`;
            })
            .join('')}`
