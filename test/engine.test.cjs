@@ -8540,17 +8540,18 @@ test('설계 스펙은 한 곳에서 읽는다 — 파생형 시드와 엔진 �
   const s = E.newGame(4341, 'uac');
   const p = s.programs.find((x) => x.phase === 'production');
   const spec = E.programSpec(p);
-  for (const k of ['segment', 'seats', 'range', 'tech', 'material', 'fuselage', 'wingMat', 'engine', 'abreast', 'wing', 'fuelMargin', 'etops', 'growth', 'maintainable', 'engines', 'dualSource']) {
+  for (const k of ['segment', 'seats', 'range', 'tech', 'material', 'fuselage', 'wingMat', 'engine', 'abreast', 'wing', 'fuelMargin', 'etops', 'growth', 'maintainable', 'engines', 'dualSource', 'research', 'experience']) {
     assert.ok(k in spec, `${k} 칸이 있어야 한다`);
   }
   // 파생형 시드는 이 스펙 위에 좌석만 옮기고 계보를 얹은 것이다.
   const seed = E.derivativeSpec(p, 20);
   for (const [k, v] of Object.entries(spec)) {
-    // 연구만은 물려받지 않는다 — 파생형도 지금 그리는 설계라 오늘의 연구를 쓴다.
-    if (k === 'seats' || k === 'research') continue;
+    // 착수 시점의 값(연구·경험)만은 물려받지 않는다 — 파생형도 지금 그리는 설계다.
+    if (k === 'seats' || k === 'research' || k === 'experience') continue;
     assert.deepStrictEqual(seed[k], v, `파생형 시드의 ${k} 가 원형 스펙과 달라졌다`);
   }
   assert.strictEqual(seed.research, undefined, '연구는 시드에 실리면 안 된다');
+  assert.strictEqual(seed.experience, undefined, '경험도 마찬가지다');
   assert.ok(seed.derivedFrom, '계보는 시드 쪽에만 붙는다');
 });
 
@@ -8773,4 +8774,83 @@ test('국산화: 자회사는 런칭 파트너를 제안하지 않는다', () =>
   const h = { remember: (k, v) => ((memo[k] = v), v), recall: (k, f) => (memo[k] === undefined ? f : memo[k]) };
   ev.text(s, h);
   assert.ok(!Eng.get(memo.engine).domestic, `국산 엔진이 잡히면 안 된다 (${memo.engine})`);
+});
+
+test('국산화: 착수 시점의 조직 경험도 두 평가에 함께 들어간다', () => {
+  // 회귀 — 경험은 결함 위험에 **배수**로 들어가서 대개 상쇄되지만, 위험 상한
+  // (defectRiskMax)에 닿으면 상한에서 잘린 만큼이 한쪽에만 남아 깨진다.
+  const spec = {
+    segment: 'wide', seats: 330, range: 12000, tech: 95,
+    fuselage: 'composite', wingMat: 'composite', engine: 'ps90a',
+    fuelMargin: 0.02, abreast: 9, wing: 35, etops: true,
+  };
+  const s = E.newGame(4391, 'uac');
+  s.cash += 900000;
+  s.localEngines = ['ps90a'];
+  const p = E.launchProgram(s, spec, 'HiRisk').program;
+  // 경험 1점 위에서 그린 설계로 맞춘다.
+  p.experience = 1;
+  p.defectRisk = D.evaluate({ ...spec, domesticEngines: ['ps90a', 'pd35'], year: 2014, experience: 1 }).defectRisk;
+
+  s.turn = (2011 - 1998) * 4;
+  runLocal(s, 'ps90a', 'pd35');
+  assert.strictEqual(p.engine, 'pd35');
+
+  const year = 1998 + s.turn / 4;
+  const fresh = (xp) =>
+    D.evaluate({ ...spec, engine: 'pd35', domesticEngines: ['ps90a', 'pd35'], year, experience: xp }).defectRisk;
+  assert.ok(fresh(0) >= Data.CONFIG.defectRiskMax, '상한에 닿는 설계라야 이 검사가 의미가 있다');
+  assert.strictEqual(p.defectRisk, fresh(1), '같은 경험 위의 신규 설계와 맞아야 한다');
+  assert.notStrictEqual(p.defectRisk, fresh(0), '경험을 빠뜨리면 상한에 눌려 위험이 낮게 잡힌다');
+});
+
+test('마이그레이션: 옛 세이브의 착수 시점 연구를 되짚는다', () => {
+  // 완료 시점을 적어 둔 적이 없어 정확한 복원은 안 된다. 대신 **확실히 없었던
+  // 것만** 걷어 낸다 — 연구는 정해진 분기를 채워야 끝나므로, 착수 분기가 그보다
+  // 이르면 그 연구는 그때 존재할 수 없었다.
+  const aero = Data.RESEARCH_PROJECTS.find((x) => x.id === 'aero');
+  const s = E.newGame(4392, 'uac');
+  s.cash += 900000;
+  s.research = { active: null, progress: {}, done: { aero: true } };
+  const late = E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5000, tech: 70, material: 'aluminum', engine: 'cfm56-5b' }, 'Late').program;
+  late.launchTurn = aero.quarters + 2;
+  for (const q of s.programs) delete q.research;
+
+  const back = JSON.parse(JSON.stringify(s));
+  E.ensureShape(back);
+  for (const q of back.programs) {
+    if (q.launchTurn < aero.quarters) {
+      assert.deepStrictEqual(q.research, {}, `${q.name}: 연구가 끝날 수 없던 시점이다`);
+    } else {
+      assert.deepStrictEqual(q.research, { aero: true }, `${q.name}: 완료된 연구를 되짚어야 한다`);
+    }
+  }
+
+  // 되짚은 연구가 실제로 갈아타기의 값을 맞춘다 — 상한에 닿은 설계에서 1점.
+  const spec = {
+    segment: 'narrow', seats: 180, range: 5200, tech: 88,
+    fuselage: 'composite', wingMat: 'composite', engine: 'cfm56-5b',
+    fuelMargin: 0.02, abreast: 6, wing: 45,
+  };
+  const t = E.newGame(4393, 'uac');
+  t.cash += 900000;
+  t.research = { active: null, progress: {}, done: { aero: true } };
+  const p = E.launchProgram(t, spec, 'HiEff').program;
+  p.launchTurn = aero.quarters + 2;
+  assert.strictEqual(p.efficiency, 99, '상한에 닿은 설계라야 이 검사가 의미가 있다');
+  delete p.research;
+
+  const old = JSON.parse(JSON.stringify(t));
+  const back2 = old.programs.find((x) => x.name === 'HiEff');
+  E.ensureShape(old);
+  assert.deepStrictEqual(back2.research, { aero: true });
+  const r = E.startLocalEngine(old, 'cfm56-5b', 'ps90a');
+  assert.ok(r.ok, r.error);
+  E.fundLocalEngine(old, old.localEngineProject.cost);
+  for (let i = 0; i < 40 && old.localEngineProject; i++) {
+    old.cash += 6000;
+    E.endTurn(old);
+  }
+  const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(old), year: 1998 + old.turn / 4 });
+  assert.strictEqual(back2.efficiency, fresh.efficiency, '되짚은 연구 위의 신규 설계와 맞아야 한다');
 });

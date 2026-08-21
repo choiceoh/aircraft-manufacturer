@@ -766,6 +766,28 @@
       if (p.etopsCertified === undefined) p.etopsCertified = !!p.etops && p.phase === 'production';
     }
 
+    // 착수 시점의 연구 기록이 없던 세이브. 통째로 비워 두면 연구 뒤에 그린 기체가
+    // 자기 보정을 잃은 채로 평가돼, 엔진을 갈아 끼울 때 값이 어긋난다(연비 상한에
+    // 닿은 설계에서 1점).
+    //
+    // 완료 시점을 적어 둔 적이 없어 정확한 복원은 안 된다. 대신 **확실히 없었던
+    // 것만 걷어 낸다**: 연구는 프로젝트마다 정해진 분기를 채워야 끝나므로, 착수
+    // 분기가 그 길이보다 이르면 그 연구는 그때 존재할 수 없었다. 승계 기종
+    // (launchTurn 이 음수)이 복합재 연구를 달고 있는 것 같은 일은 이걸로 막힌다.
+    // 남는 것은 추정이지만, 지금까지처럼 통째로 비우는 쪽보다 낫다.
+    for (const p of s.programs) {
+      if (p.research && typeof p.research === 'object') continue;
+      const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
+      const filled = {};
+      for (const [id, doneFlag] of Object.entries((s.research && s.research.done) || {})) {
+        if (!doneFlag) continue;
+        const proj = RESEARCH_PROJECTS.find((x) => x.id === id);
+        if (proj && born < proj.quarters) continue;
+        filled[id] = true;
+      }
+      p.research = filled;
+    }
+
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
     // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
     // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
@@ -1120,16 +1142,20 @@
       dualSource: !!p.dualSource,
       // **착수 시점의** 장기 연구다. 완료된 연구는 그 뒤 설계에만 값을 하고 이미
       // 나온 기체를 소급해 고치지 않으므로, 지금 연구 목록으로 되짚으면 기체가
-      // 갖지도 않은 보정을 얹게 된다. 옛 세이브는 이 칸이 없다 — 빈 것으로 읽는다.
+      // 갖지도 않은 보정을 얹게 된다. 옛 세이브는 ensureShape 가 채워 준다.
       research: p.research || {},
+      // 조직 경험도 같은 성질이다 — 착수 시점의 값이 결함 위험 배수로 들어가
+      // 있다. 배수라 대개 상쇄되지만 위험 상한(defectRiskMax)에 닿으면 깨진다.
+      experience: p.experience || 0,
     };
   }
 
   /** 파생형 착수용 설계 시드 — 원형의 기술/소재를 물려받는다. */
   function derivativeSpec(base, seatDelta) {
     const seg = SEGMENTS[base.segment];
-    // 연구만은 물려받지 않는다. 파생형도 **지금 그리는 설계**라 오늘의 연구를 쓴다.
-    const { research, ...inherited } = programSpec(base);
+    // 연구와 경험만은 물려받지 않는다. 파생형도 **지금 그리는 설계**라 착수 시점의
+    // 값은 오늘 것을 쓴다(파생형은 애초에 경험 할인을 받지 않는다).
+    const { research, experience, ...inherited } = programSpec(base);
     return {
       // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화도 함께.
       ...inherited,
