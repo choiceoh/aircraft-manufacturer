@@ -8088,6 +8088,37 @@ test('국산 엔진: 국산을 주엔진으로 고르면 이중화가 붙지 않
   assert.strictEqual(dom.unitCostBase, plain.unitCostBase);
 });
 
+test('국산화: 성숙한 엔진으로 갈아타면 옛 엔진의 초기 위험도 함께 나간다', () => {
+  // 회귀 — 새 엔진의 성숙도만 얹고 옛 엔진 몫은 그대로 뒀더니, 갓 나온 엔진으로
+  // 설계한 **개발 중** 기종이 성숙한 엔진으로 갈아탄 뒤에도 그 프리미엄을 계속
+  // 지고 다녔다. 한 번도 안 떠 본 기체가 이미 내려간 엔진의 초기 위험을 안고
+  // 갈 이유가 없다 — defectRisk 는 앞으로의 확률이지 지난 이력이 아니다.
+  const s = E.newGame(4316, 'uac');
+  s.cash += 80000;
+  for (let i = 0; i < 6; i++) E.endTurn(s); // BR715(eis 1999)가 열릴 때까지
+
+  const spec = { segment: 'narrow', seats: 180, range: 5200, tech: 50, material: 'aluminum', engine: 'br715' };
+  const r = E.launchProgram(s, spec, '신형');
+  assert.ok(r.ok, r.error);
+  const p = r.program;
+  assert.strictEqual(p.engine, 'br715');
+  assert.ok(Eng.maturityRisk(Eng.get('br715'), E.yearOf(s.turn)) > 1, '갓 나온 엔진이어야 이 검사가 의미가 있다');
+
+  E.startLocalEngine(s, 'br715');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(p.engine, 'ps90a');
+  assert.strictEqual(p.phase, 'dev', '개발 중에 갈아탄 경우를 재는 검사다');
+
+  // 같은 시점에 그 엔진으로 새로 설계한 기체와 같아야 한다.
+  const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(s) });
+  assert.strictEqual(fresh.engine, 'ps90a');
+  assert.ok(
+    Math.abs(p.defectRisk - fresh.defectRisk) < 0.005,
+    `갈아탄 기체와 신규 설계가 같아야 한다 (${p.defectRisk} vs ${fresh.defectRisk})`,
+  );
+});
+
 test('국산화: 갓 나온 엔진으로 갈아타면 초기 위험을 새로 떠안는다', () => {
   // 회귀 — 갈아타기가 riskMult 비율만 적용해, 같은 시점에 그 엔진으로 **새로
   // 설계한** 기체보다 갈아탄 기체가 오히려 안전했다(광고와 반대).

@@ -2209,14 +2209,28 @@
       p.unitCostBase = Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
       p.efficiency = clamp(Math.round(p.efficiency + (to.eff - from.eff)), 1, 99);
       p.comfort = clamp(Math.round(p.comfort + (to.comfort - from.comfort)), 1, 99);
-      // 성숙도까지 얹는다. 갓 나온 엔진으로 갈아타면 그 초기 트러블을 온전히
-      // 새로 떠안는 것이 맞다 — 안 그러면 같은 시점에 그 엔진으로 **새로 설계한**
-      // 기체보다 갈아탄 기체가 안전해지는, 광고와 반대인 구멍이 생긴다.
-      // 옛 엔진 쪽 성숙도는 나누지 않는다: 그건 이미 운항 실적으로 씻겨 나갔고,
-      // p.defectRisk 는 그 사이 인증 주사위·품질 투자를 지나온 값이다.
-      const maturity = root.AirlinerEngines.maturityRisk(to, yearOf(s.turn));
+      // 결함 위험에서 **엔진 몫을 통째로 갈아 끼운다** — 기본 위험 배수와 성숙도
+      // 프리미엄 둘 다.
+      //
+      // 성숙도까지 옮기는 이유: 갓 나온 엔진으로 갈아타면 그 초기 트러블을 온전히
+      // 새로 떠안아야 하고(안 그러면 같은 시점에 그 엔진으로 새로 설계한 기체보다
+      // 갈아탄 기체가 안전해진다), 반대로 **옛 엔진의 프리미엄은 함께 나가야 한다**.
+      // defectRisk 는 앞으로의 결함 확률이지 지난 이력이 아니고, 그 확률을 올려
+      // 놓았던 엔진이 기체에서 내려갔기 때문이다. 개발 중 기종이면 특히 분명하다:
+      // 한 번도 안 떠 본 기체가 옛 엔진의 초기 위험을 계속 지고 다닐 이유가 없다
+      // (측정: 1999년 BR715 로 착수한 개발기가 성숙한 PS-90A 로 갈아탄 뒤에도
+      // 0.246 — 같은 시점 PS-90A 신규 설계는 0.179 였다).
+      //
+      // 나눌 기준은 **설계 당시 연도**다. 승계기는 launchTurn 이 -40 이지만 평가는
+      // yearOf(0) 으로 했으므로 그 아래로는 내려가지 않게 잡는다.
+      const Engines = root.AirlinerEngines;
+      const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
+      const wasMature = Engines.maturityRisk(from, designYear);
+      const nowMature = Engines.maturityRisk(to, yearOf(s.turn));
       p.defectRisk =
-        Math.round(clamp((p.defectRisk * to.riskMult * maturity) / from.riskMult, 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
+        Math.round(
+          clamp((p.defectRisk * to.riskMult * nowMature) / (from.riskMult * wasMature), 0.02, CONFIG.defectRiskMax) * 1000,
+        ) / 1000;
       swapped.push(p.name);
     }
     // engineRelations(공급사별 인도 실적)는 손대지 않는다. 이미 인도한 기체는
