@@ -793,7 +793,10 @@
    * 결정을 좌우하는 숫자만 뽑아 늘 보이게 둔다 (나머지 평가는 아래 미리보기 그대로).
    */
   function renderDesignSummary(s, spec) {
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
+    // 미리보기·착수와 **같은 맥락**이어야 한다. 여기만 손으로 조합해 두면 국산
+    // 엔진 해금·장기 연구가 빠져, 고른 엔진이 서방 기본값으로 되돌아간 값을
+    // 붙박이 요약이 보여 준다(같은 화면에서 미리보기와 숫자가 갈린다).
+    const ev = D.evaluate({ ...spec, ...E.designContext(s) });
     const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
     const affordable = s.cash >= upfront;
     const cell = (label, value, tone) =>

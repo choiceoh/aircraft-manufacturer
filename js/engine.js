@@ -2059,6 +2059,9 @@
   // (0.6 에서 −1.5, 1.9 에서 −1.8) 시대를 갈아엎을 만큼은 아니다 — 이 축의 본질은
   // 유가가 아니라 **곳간**이다. 현금이 급한 회사가 파는 것이 수주 경쟁력이다.
 
+  /** 계약한 엔진과 다른 것을 받게 된 항공사의 관계 하락. */
+  const LOCAL_ENGINE_SWAP_RELATION = 4;
+
   function localEngineSpec(s) {
     return companyTrait(s).localEngine || null;
   }
@@ -2192,46 +2195,85 @@
 
     const swapped = [];
     const dropped = [];
+    const upset = new Set();
+    // 갈아탄 기체가 실제로 보이는 분기 — tickLocalEngine 은 s.turn++ **전에** 돈다.
+    const liveYear = yearOf(s.turn + 1);
     for (const p of s.programs) {
       if (p.phase === 'cancelled' || p.phase === 'sold') continue;
       if (p.engine !== from.id) continue;
-      p.engine = to.id;
+
+      // 엔진에서 유도되는 값을 손으로 하나씩 패치하지 않는다. 원가·정가·연비·객실·
+      // 결함 위험이 전부 엔진을 타는데, 그중 하나라도 빠뜨리면 그게 그대로 버그가
+      // 된다(정가를 빠뜨려 국산화한 기체가 서방 정가로 팔리던 것이 그 예다).
+      //
+      // 대신 **엔진만 다른 두 평가**를 만들어 그 차이를 얹는다. 엔진이 아닌 항은
+      // 두 평가에 똑같이 들어가 비율에서 상쇄되므로, 아래 스펙 되짚기가 완벽하지
+      // 않아도 결과는 정확하다. 재평가로 통째로 갈아치우지 않는 이유는 그 사이
+      // 쌓인 것(개량·품질 투자·인증 주사위)이 지워지기 때문이다.
+      //
+      // 옛 엔진은 **설계 당시** 연도로, 새 엔진은 **바뀐 기체가 보이는** 연도로
+      // 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이 얹힌다.
+      const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
+      const base = {
+        segment: p.segment, seats: p.seats, range: p.range, tech: p.tech,
+        fuselage: p.fuselage, wingMat: p.wingMat, abreast: p.abreast, wing: p.wing,
+        fuelMargin: p.fuelMargin, etops: !!p.etops, growth: !!p.growth,
+        maintainable: !!p.maintainable, engines: p.engines || 2,
+        domesticEngines: [from.id, to.id],
+      };
+      const evOld = evaluate({ ...base, engine: from.id, year: designYear });
+      const evNew = evaluate({ ...base, engine: to.id, year: liveYear });
+
+      // 둘 중 하나라도 요청한 엔진으로 안 잡히면(그 시점에 못 사는 엔진 등) 비율이
+      // 엉뚱해진다. 그때는 엔진 배수만으로 물러선다 — 틀린 값보다 거친 값이 낫다.
+      const exact = evOld.engine === from.id && evNew.engine === to.id;
+      const ratio = (a, b) => (exact && b ? a / b : 1);
+
+      // 공급사 성능 패키지는 그 공급사 엔진에 붙은 값이다. 엔진이 내려가면 함께
+      // 나가야 하고, 카운터도 풀어야 새 공급사의 패키지를 받을 수 있다.
+      const pip = p.enginePipGain || 0;
+      if (pip) {
+        p.efficiency = clamp(p.efficiency - pip, 1, 99);
+        p.enginePipGain = 0;
+      }
+
       // 이중화 기체는 서방 대안 인증을 함께 접는다. 안 그러면 국산 원가·국가
       // 발주 우대·공급 차질 면역을 받으면서 대안 공급사의 선호 가산(+2)까지
-      // 챙기는, 양쪽을 다 갖는 구멍이 된다 — 국산화가 파는 것이 정확히 그
-      // 수주 경쟁력인데 그걸 안 파는 셈이 된다. 남의 공급망을 떠나기로 한
-      // 사업이므로 그 인증을 유지하지 않는 것이 규칙으로도 맞다.
+      // 챙기는, 양쪽을 다 갖는 구멍이 된다.
       if (p.altEngine) {
         dropped.push(p.name);
         p.altEngine = null;
         p.dualSource = false;
       }
-      p.unitCostBase = Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
-      p.efficiency = clamp(Math.round(p.efficiency + (to.eff - from.eff)), 1, 99);
-      p.comfort = clamp(Math.round(p.comfort + (to.comfort - from.comfort)), 1, 99);
-      // 결함 위험에서 **엔진 몫을 통째로 갈아 끼운다** — 기본 위험 배수와 성숙도
-      // 프리미엄 둘 다.
-      //
-      // 성숙도까지 옮기는 이유: 갓 나온 엔진으로 갈아타면 그 초기 트러블을 온전히
-      // 새로 떠안아야 하고(안 그러면 같은 시점에 그 엔진으로 새로 설계한 기체보다
-      // 갈아탄 기체가 안전해진다), 반대로 **옛 엔진의 프리미엄은 함께 나가야 한다**.
-      // defectRisk 는 앞으로의 결함 확률이지 지난 이력이 아니고, 그 확률을 올려
-      // 놓았던 엔진이 기체에서 내려갔기 때문이다. 개발 중 기종이면 특히 분명하다:
-      // 한 번도 안 떠 본 기체가 옛 엔진의 초기 위험을 계속 지고 다닐 이유가 없다
-      // (측정: 1999년 BR715 로 착수한 개발기가 성숙한 PS-90A 로 갈아탄 뒤에도
-      // 0.246 — 같은 시점 PS-90A 신규 설계는 0.179 였다).
-      //
-      // 나눌 기준은 **설계 당시 연도**다. 승계기는 launchTurn 이 -40 이지만 평가는
-      // yearOf(0) 으로 했으므로 그 아래로는 내려가지 않게 잡는다.
-      const Engines = root.AirlinerEngines;
-      const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
-      const wasMature = Engines.maturityRisk(from, designYear);
-      const nowMature = Engines.maturityRisk(to, yearOf(s.turn));
+
+      p.unitCostBase = exact
+        ? Math.round(p.unitCostBase * ratio(evNew.unitCostBase, evOld.unitCostBase) * 10) / 10
+        : Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
+      p.listPrice = Math.round(p.listPrice * ratio(evNew.listPrice, evOld.listPrice) * 10) / 10;
+      p.efficiency = clamp(Math.round(p.efficiency + (exact ? evNew.efficiency - evOld.efficiency : to.eff - from.eff)), 1, 99);
+      p.comfort = clamp(Math.round(p.comfort + (exact ? evNew.comfort - evOld.comfort : to.comfort - from.comfort)), 1, 99);
       p.defectRisk =
-        Math.round(
-          clamp((p.defectRisk * to.riskMult * nowMature) / (from.riskMult * wasMature), 0.02, CONFIG.defectRiskMax) * 1000,
-        ) / 1000;
+        Math.round(clamp(p.defectRisk * ratio(evNew.defectRisk, evOld.defectRisk), 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
+
+      p.engine = to.id;
+      // 화면·경력 보고서가 읽는 캐시다. 안 고치면 국산화한 Tu-204 가 20년 뒤
+      // 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
+      p.engineName = to.name;
+      p.engineMaker = to.maker;
+
+      // 이미 계약된 주문은 그 엔진을 보고 서명한 것이다. 주문마다 엔진 구성을
+      // 따로 들고 다니게 하는 대신(생산·인도 회계를 통째로 갈라야 한다), 계약과
+      // 다른 것을 받게 된 항공사의 관계를 깎는다 — 잔고가 두꺼울 때 갈아타는
+      // 것이 실제로 비싸지도록.
+      for (const o of s.backlog) {
+        if (o.programId === p.id && o.remaining > 0 && o.airlineId && o.airlineId !== 'gov' && o.airlineId !== 'state') {
+          upset.add(o.airlineId);
+        }
+      }
       swapped.push(p.name);
+    }
+    for (const aid of upset) {
+      s.relations[aid] = clamp((s.relations[aid] ?? 40) - LOCAL_ENGINE_SWAP_RELATION, 0, 100);
     }
     // engineRelations(공급사별 인도 실적)는 손대지 않는다. 이미 인도한 기체는
     // 실제로 그 공급사 엔진을 달고 나갔고, 그 이력까지 지우면 장부가 거짓이 된다.
@@ -2240,8 +2282,10 @@
       s,
       'good',
       swapped.length
-        ? `${to.name} 국산화 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — 생산원가가 내려가고 공급이 우리 손에 들어왔다. 대신 연비는 처진다.${
+        ? `${to.name} 국산화 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — 생산원가가 내려가고 공급이 우리 손에 들어왔다.${
             dropped.length ? ` ${dropped.join(' · ')}의 서방 대안 엔진 인증은 함께 접었다.` : ''
+          }${
+            upset.size ? ` 다만 ${from.name}으로 계약한 잔고가 남아 있어 ${upset.size}개 항공사의 관계가 깎였다.` : ''
           }`
         : `${to.name} 개발 완료. 갈아 끼울 기체는 없지만, 이제 설계에서 고를 수 있다.`,
     );
