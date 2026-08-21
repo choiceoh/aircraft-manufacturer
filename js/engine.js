@@ -2214,15 +2214,24 @@
       // 옛 엔진은 **설계 당시** 연도로, 새 엔진은 **바뀐 기체가 보이는** 연도로
       // 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이 얹힌다.
       const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
+      // 이중화였는지는 대안을 접기 **전에** 잡아 둔다 — 옛 평가가 그 상태를 그대로
+      // 재현해야 이중화 할증(원가 +3%)이 비율에서 빠진다.
+      const hadDual = !!(p.dualSource || p.altEngine);
       const base = {
         segment: p.segment, seats: p.seats, range: p.range, tech: p.tech,
         fuselage: p.fuselage, wingMat: p.wingMat, abreast: p.abreast, wing: p.wing,
         fuelMargin: p.fuelMargin, etops: !!p.etops, growth: !!p.growth,
         maintainable: !!p.maintainable, engines: p.engines || 2,
         domesticEngines: [from.id, to.id],
+        // 조기 접근으로 착수한 기종(UAC 의 SaM146)은 이 맥락이 없으면 옛 엔진이
+        // 설계 당시 연도에 "못 사는 엔진"으로 잡혀 평가가 통째로 어긋난다 —
+        // exact 가 깨져 비율이 전부 1이 되고, 국산화가 아무 값도 안 바꾼다.
+        earlyEngines: Object.keys(s.engineEarlyAccess || {}),
       };
-      const evOld = evaluate({ ...base, engine: from.id, year: designYear });
-      const evNew = evaluate({ ...base, engine: to.id, year: liveYear });
+      // 옛 평가는 **있던 그대로**(이중화 포함), 새 평가는 **될 그대로**(단일 국산).
+      // 대안 인증을 접으면서 그 할증도 함께 빠지는 것이 이 짝의 값이다.
+      const evOld = evaluate({ ...base, engine: from.id, year: designYear, dualSource: hadDual });
+      const evNew = evaluate({ ...base, engine: to.id, year: liveYear, dualSource: false });
 
       // 둘 중 하나라도 요청한 엔진으로 안 잡히면(그 시점에 못 사는 엔진 등) 비율이
       // 엉뚱해진다. 그때는 엔진 배수만으로 물러선다 — 틀린 값보다 거친 값이 낫다.

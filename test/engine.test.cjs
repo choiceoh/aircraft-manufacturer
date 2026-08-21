@@ -8317,3 +8317,62 @@ test('설계 요약은 미리보기·착수와 같은 맥락을 쓴다', () => {
   assert.notStrictEqual(western.engine, 'ps90a', '옛 경로는 서방 기본값으로 되돌린다 — 그게 이 회귀의 원인이었다');
   assert.ok(!html.includes(E.fmtMoney(western.devCost)), '요약에 그 값이 남아 있으면 안 된다');
 });
+
+test('국산화: 조기 접근 엔진으로 착수한 기종도 제대로 갈아탄다', () => {
+  // 회귀 — 옛 엔진을 평가할 때 조기 접근 맥락을 안 넘겨, SaM146 으로 착수한
+  // 기종은 그 엔진이 "설계 당시 못 사는 엔진"으로 잡혔다. 그러면 exact 가 깨져
+  // 비율이 전부 1이 되고, 국산화가 **아무 값도 안 바꾼다**.
+  const s = E.newGame(4323, 'uac');
+  s.cash += 90000;
+  for (let i = 0; i < 44; i++) E.endTurn(s); // 2009 — UAC 의 SaM146 조기 접근이 열린다
+
+  const spec = { segment: 'regional', seats: 98, range: 3050, tech: 55, material: 'aluminum', engine: 'sam146' };
+  const r = E.launchProgram(s, spec, 'SSJ');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.program.engine, 'sam146', '조기 접근으로 잡혀야 이 검사가 의미가 있다');
+  const p = r.program;
+  const before = { risk: p.defectRisk, price: p.listPrice };
+
+  assert.ok(E.startLocalEngine(s, 'sam146').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(p.engine, 'd436');
+
+  assert.notStrictEqual(p.defectRisk, before.risk, '값이 하나도 안 움직이면 갈아탄 것이 아니다');
+  assert.notStrictEqual(p.listPrice, before.price);
+
+  const fresh = D.evaluate({ ...spec, engine: 'd436', ...E.designContext(s) });
+
+  // 정가는 그 사이 아무것도 건드리지 않으므로 신규 설계와 정확히 맞아야 한다.
+  assert.ok(Math.abs(p.listPrice - fresh.listPrice) < 1, `정가가 신규 설계와 맞아야 한다 (${p.listPrice} vs ${fresh.listPrice})`);
+
+  // 결함 위험은 **정확히 같을 수 없다** — 그 사이 설계 동결에서 인증 주사위가
+  // 한 번 굴러 값을 흔들어 놓기 때문이다(그게 이 게임의 규칙이다). 여기서 볼 것은
+  // "비율이 1로 죽지 않았는가", 즉 옛 엔진 몫이 실제로 빠졌는가다.
+  assert.ok(p.defectRisk < before.risk * 0.95, `옛 엔진의 초기 위험이 빠져야 한다 (${before.risk} → ${p.defectRisk})`);
+});
+
+test('국산화: 대안을 접으면 이중화 원가 할증도 함께 빠진다', () => {
+  // 회귀 — 대안 인증만 지우고 원가에 박힌 이중화 할증(+3%)은 남겨, 아무 혜택도
+  // 없는 기체가 그 값을 계속 물었다.
+  const s = E.newGame(4324, 'uac');
+  s.cash += 90000;
+  const spec = { segment: 'narrow', seats: 180, range: 5200, tech: 50, material: 'aluminum', engine: 'cfm56-5b', dualSource: true };
+  const r = E.launchProgram(s, spec, 'DS');
+  assert.ok(r.ok, r.error);
+  const p = r.program;
+  assert.ok(p.altEngine, '이중화로 잡혀야 이 검사가 의미가 있다');
+
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(p.engine, 'ps90a');
+  assert.strictEqual(p.dualSource, false);
+
+  // 단일 공급 국산 설계와 원가가 같아야 한다 — 할증이 남아 있으면 더 비싸다.
+  const single = D.evaluate({ ...spec, engine: 'ps90a', dualSource: false, ...E.designContext(s) });
+  assert.ok(
+    Math.abs(p.unitCostBase - single.unitCostBase) < 0.5,
+    `이중화 할증이 빠져야 한다 (${p.unitCostBase} vs ${single.unitCostBase})`,
+  );
+});
