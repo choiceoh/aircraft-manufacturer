@@ -6972,6 +6972,68 @@ test('사풍: 옛 세이브는 고른 제조사에서 사풍을 되찾는다', (
   assert.ok(!d.trait.focus && !d.trait.home, '기준 회사는 보정 없는 사풍이어야 한다');
 });
 
+test('사풍: 배수 0 은 유효한 값이다 — 꺼 둔 규칙이 조용히 켜지면 안 된다', () => {
+  // 회귀 — 배수를 `|| 1` 로 읽으면 "아예 없다"는 뜻의 0 이 기준값 1 로 되살아난다.
+  // 이 체계는 이미 UAC 의 aid.tensionMult = 0 으로 그 표기를 쓰고 있다.
+
+  // 개발비 배수 0 — 극단값이지만 1 로 되살아나지 않는다는 것이 요점이다.
+  const s = E.newGame(4115, 'embraer');
+  s.trait = { ...s.trait, focus: { regional: { cost: 0 } } };
+  const spec = { segment: 'regional', seats: 90, range: 3000, tech: 55, material: 'aluminum', engine: 'cf34-8' };
+  assert.strictEqual(D.evaluate({ ...spec, ...E.designContext(s) }).devCost, 0, '개발비 배수 0 이 살아야 한다');
+
+  // 런치 에이드 지원율 0 — "국가가 한 푼도 안 댄다"
+  const noAid = E.newGame(4115, 'airbus');
+  noAid.trait = { ...noAid.trait, aid: { rateMult: 0 } };
+  assert.strictEqual(E.launchAidRate(noAid), 0, '지원율 0 이 기준값으로 되살아나면 안 된다');
+
+  // 특수기 자격 문턱 배수 0 — "실적을 따지지 않는다"
+  const anyRecord = E.newGame(4115, 'boeing');
+  anyRecord.trait = { ...anyRecord.trait, gov: { deliveredMult: 0 } };
+  for (const p of anyRecord.programs) p.delivered = 0;
+  const tanker = Data.GOV_MISSIONS.find((m) => m.id === 'tanker');
+  anyRecord.programs.push({
+    id: 'prog-zero-test', name: '무실적 광동체', segment: 'wide', phase: 'production',
+    range: tanker.minRange + 500, delivered: 0, devCost: 12000, listPrice: 180, govMission: null,
+  });
+  anyRecord.reputation = 50;
+  anyRecord.turn = 20;
+  assert.ok(Dec.get('gov_special').weight(anyRecord) > 0, '문턱 배수 0 이면 무실적 기체도 후보여야 한다');
+
+  // 지원 수익 배수 0 — "군 지원 계약이 아예 없다"
+  const noSustain = E.newGame(4115, 'boeing');
+  noSustain.trait = { ...noSustain.trait, gov: { sustainMult: 0 } };
+  const prog = noSustain.programs[0];
+  prog.govMission = 'tanker';
+  noSustain.fleets = { gov: { [prog.id]: 40 } };
+  noSustain.backlog = [];
+  noSustain.rfps = [];
+  const before = noSustain.cash;
+  E.endTurn(noSustain);
+  const withZero = noSustain.cash - before;
+
+  const full = E.newGame(4115, 'boeing');
+  full.trait = { ...full.trait, gov: { sustainMult: 1 } };
+  const prog2 = full.programs[0];
+  prog2.govMission = 'tanker';
+  full.fleets = { gov: { [prog2.id]: 40 } };
+  full.backlog = [];
+  full.rfps = [];
+  const before2 = full.cash;
+  E.endTurn(full);
+  assert.ok(withZero < full.cash - before2, '지원 수익 배수 0 이 기준값으로 되살아나면 안 된다');
+});
+
+test('사풍: 데네브의 name·note 는 표기일 뿐 규칙이 아니다', () => {
+  // README 가 못박는 불변식 — 기준 회사에는 **보정 필드**가 하나도 없어야 한다.
+  // name/note 는 화면용이라 이 목록 밖이다.
+  const deneb = E.PLAYABLE_COMPANIES.find((c) => c.id === 'deneb');
+  for (const key of ['focus', 'deriv', 'home', 'aid', 'gov', 'foreignBid']) {
+    assert.strictEqual(deneb.trait[key], undefined, `기준 회사에 ${key} 보정이 붙으면 안 된다`);
+  }
+  assert.ok(deneb.trait.name, '표기용 이름은 있어야 한다 — 화면이 빈 카드를 그리면 안 된다');
+});
+
 test('사풍: 흡수된 회사로 시작한 옛 세이브도 사풍을 찾는다 (투폴레프 → UAC)', () => {
   // 회귀 — 투폴레프는 한때 단독 플레이어블이었고, 그 세이브의 playerMakers 는
   // ['tupolev'] 다. 지금 그 자리를 잇는 프리셋은 UAC(['tupolev','sukhoi'])라

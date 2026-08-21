@@ -111,7 +111,7 @@
       if (f.time !== undefined && f.time !== 1) bits.push(`기간 ${pct(f.time)}`);
       if (bits.length) {
         items.push({
-          good: (f.cost || 1) < 1,
+          good: (f.cost ?? 1) < 1,
           label: `${SEGMENTS[segId].name} 설계`,
           text: bits.join(' · '),
         });
@@ -121,7 +121,7 @@
       const bits = [];
       if (t.deriv.cost !== undefined && t.deriv.cost !== 1) bits.push(`개발비 ${pct(t.deriv.cost)}`);
       if (t.deriv.time !== undefined && t.deriv.time !== 1) bits.push(`기간 ${pct(t.deriv.time)}`);
-      if (bits.length) items.push({ good: (t.deriv.cost || 1) < 1, label: '파생형 개발', text: bits.join(' · ') });
+      if (bits.length) items.push({ good: (t.deriv.cost ?? 1) < 1, label: '파생형 개발', text: bits.join(' · ') });
     }
     if ((t.home || []).length) {
       const names = t.home.map((id) => (AIRLINES.find((a) => a.id === id) || {}).name).filter(Boolean);
@@ -157,7 +157,7 @@
       if (gov.deliveredMult !== undefined && gov.deliveredMult !== 1) bits.push(`자격 실적 문턱 ×${gov.deliveredMult}`);
       if (gov.winBonus) bits.push(`낙찰 확률 ${gov.winBonus > 0 ? '+' : '−'}${Math.abs(Math.round(gov.winBonus * 100))}%p`);
       if (gov.sustainMult !== undefined && gov.sustainMult !== 1) bits.push(`지원 수익 ×${gov.sustainMult}`);
-      if (bits.length) items.push({ good: (gov.winBonus || 0) >= 0 && (gov.sustainMult || 1) >= 1, label: '정부 특수기 사업', text: bits.join(' · ') });
+      if (bits.length) items.push({ good: (gov.winBonus ?? 0) >= 0 && (gov.sustainMult ?? 1) >= 1, label: '정부 특수기 사업', text: bits.join(' · ') });
     }
 
     const list = items.length

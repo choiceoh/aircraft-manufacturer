@@ -166,7 +166,9 @@
     // 사풍 — 군을 오래 상대한 회사는 더 적은 실적으로도 후보에 오른다. 항속·평판
     // 문턱은 그대로다: 그건 회사의 이력이 아니라 임무가 요구하는 물리다.
     const govT = ((s.trait || {}).gov) || {};
-    const minDelivered = Math.ceil(m.minDelivered * (govT.deliveredMult || 1));
+    // 배수 0 은 유효한 값이다 ("실적을 따지지 않는다"). ||는 그것을 1 로 되살려
+    // 문턱을 통째로 되돌린다 — 이 사풍 체계는 이미 tensionMult: 0 을 쓰고 있다.
+    const minDelivered = Math.ceil(m.minDelivered * (govT.deliveredMult ?? 1));
     const eligible = s.programs.filter(
       (p) =>
         p.phase === 'production' &&

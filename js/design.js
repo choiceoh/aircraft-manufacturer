@@ -243,9 +243,10 @@
     const houseDeriv = derivative ? spec.houseDeriv || null : null;
     for (const house of [houseFocus, houseDeriv]) {
       if (!house) continue;
-      devCost *= house.cost === undefined ? 1 : house.cost;
-      devQuarters *= house.time === undefined ? 1 : house.time;
-      engineersNeeded *= house.eng === undefined ? 1 : house.eng;
+      // ?? 다 — 배수 0 은 유효한 값이고, ||는 그것을 1 로 되살린다.
+      devCost *= house.cost ?? 1;
+      devQuarters *= house.time ?? 1;
+      engineersNeeded *= house.eng ?? 1;
     }
 
     // FBW 연구 — 전자식 조종은 설계 반복을 줄인다. 파생형에도 붙는다:

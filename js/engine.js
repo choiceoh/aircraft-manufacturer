@@ -1124,7 +1124,7 @@
     const aid = Math.round(p.devCost * launchAidRate(s));
     s.cash += aid;
     p.launchAid = { amount: aid, repaid: 0 };
-    const tension = LAUNCH_AID_TENSION * (aidT.tensionMult === undefined ? 1 : aidT.tensionMult);
+    const tension = LAUNCH_AID_TENSION * (aidT.tensionMult ?? 1);
     s.tradeTension += tension;
     pushLog(
       s,
@@ -1139,7 +1139,7 @@
   /** 이 회사가 실제로 받는 런치 에이드 지원율. 화면도 이 값을 써야 버튼과 결과가 맞는다. */
   function launchAidRate(s) {
     const aid = companyTrait(s).aid || {};
-    return LAUNCH_AID_RATE * (aid.rateMult === undefined ? 1 : aid.rateMult);
+    return LAUNCH_AID_RATE * (aid.rateMult ?? 1);
   }
 
   /** 설계 평가에 실어 보낼 공급사 계약 맥락 — 조기 접근 엔진과 독점 공급사. */
@@ -3032,7 +3032,8 @@
   function govSustainment(s) {
     // 사풍 — 오래 군을 상대한 회사는 지원 계약도 두껍게 쓴다. 반대로 방산이
     // 남의 집인 회사는 같은 기체로도 같은 계약을 못 받는다.
-    const mult = (companyTrait(s).gov || {}).sustainMult || 1;
+    // 0 은 유효한 값이다 ("군 지원 계약이 아예 없다"). ||는 그것을 1 로 되살린다.
+    const mult = (companyTrait(s).gov || {}).sustainMult ?? 1;
     let sum = 0;
     for (const p of s.programs) {
       if (!p.govMission) continue;
