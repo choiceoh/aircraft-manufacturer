@@ -162,7 +162,7 @@
   }
 
   // 게임 종료 뒤에도 허용되는 행동 — 나머지는 저장 상태를 바꿔 최종 성적과 어긋나게 만든다.
-  const ALLOWED_AFTER_END = new Set(['tab', 'new-game', 'new-game-as', 'close-modal']);
+  const ALLOWED_AFTER_END = new Set(['tab', 'new-game', 'new-game-as', 'new-game-scenario', 'close-modal']);
 
   /**
    * 종료 후 잠금. 클릭뿐 아니라 슬라이더(input/change)도 막아야 한다 —
@@ -437,6 +437,10 @@
         startNewGame(btn.dataset.company);
         break;
 
+      case 'new-game-scenario':
+        startNewGame(null, btn.dataset.id);
+        break;
+
       case 'close-modal':
         closeModal();
         break;
@@ -589,6 +593,13 @@
           : `${s.company}는 ${P.num(g.delivered)}기의 여객기를 세상에 내보냈다.`
       }</p>
       <div class="grade ${g.grade}">${g.grade}</div>
+      ${
+        g.scenario
+          ? `<p class="go-reason"><b>[시나리오 · ${P.esc(g.scenario.name)}]</b> ${
+              g.scenario.achieved ? '🏆 목표 달성' : '목표 실패'
+            } — ${P.esc(g.scenario.goalText)} (${P.num(g.scenario.progress)}/${P.num(g.scenario.target)}${P.esc(g.scenario.unit || '')})</p>`
+          : ''
+      }
       <table class="spec">
         <tr><th>최종 점수</th><td>${P.num(g.score)}</td></tr>
         <tr><th>누적 인도</th><td>${P.num(g.delivered)}기</td></tr>
@@ -676,9 +687,9 @@
     return (t ^ (t << 13) ^ (t >>> 7)) >>> 0;
   }
 
-  function startNewGame(companyId) {
+  function startNewGame(companyId, scenarioId) {
     const seed = randomSeed();
-    ui.state = E.newGame(seed, companyId);
+    ui.state = E.newGame(seed, companyId, scenarioId);
     delete ui.state.pendingCompanyChoice;
     ui.tab = 'overview';
     ui.spec = D.defaultSpec('narrow', E.yearOf(ui.state ? ui.state.turn : 0));
@@ -686,8 +697,14 @@
     ui.designName = '';
     closeModal();
     render();
+    const st = E.scenarioStatus(ui.state);
     const flagship = ui.state.programs[0];
-    toast(`${ui.state.company} 경영을 시작한다. ${flagship ? flagship.name + '이(가)' : '주력기가'} 버텨주는 동안 후속기를 띄워라.`, 'good');
+    toast(
+      st
+        ? `[${st.name}] ${st.goalText} — 이 산 하나를 위해 20년을 쓴다.`
+        : `${ui.state.company} 경영을 시작한다. ${flagship ? flagship.name + '이(가)' : '주력기가'} 버텨주는 동안 후속기를 띄워라.`,
+      'good',
+    );
   }
 
   /** 새 게임 — 어느 회사로 20년을 시작할지 고른다. 실존 제조사는 경쟁 명단에서 빠진다. */
@@ -700,10 +717,21 @@
           <span class="muted">주력 ${P.esc(legacies)} · 자본 ${money(c.cash)} · 엔지니어 ${P.num(c.engineers)}명</span>
         </button>`;
     }).join('');
+    const scenarios = globalThis.AirlinerData.SCENARIOS.map((sc) => {
+      const company = E.PLAYABLE_COMPANIES.find((c) => c.id === sc.company);
+      return `<button class="mat" data-action="new-game-scenario" data-id="${sc.id}">
+          <b>${P.esc(sc.name)} <span class="muted">— ${P.esc(company ? company.name : sc.company)}</span></b>
+          <span>${P.esc(sc.desc)}</span>
+          <span class="muted">목표: ${P.esc(sc.goalText)}</span>
+        </button>`;
+    }).join('');
     openModal(
       `<h2 id="modal-title">어느 회사로 시작할까</h2>
        <p class="muted">${firstRun ? '' : '현재 진행 상황은 사라진다. '}실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
        <div class="mats">${cards}</div>
+       <h3 class="sub">시나리오 — 오를 산을 정하고 시작한다</h3>
+       <p class="muted">회사·시작 조건·목표가 묶여 있다. 목표를 채워도 판은 끝까지 간다 — 파산하면 어떤 목표든 실패다.</p>
+       <div class="mats">${scenarios}</div>
        <div class="row"><button class="ghost" data-action="close-modal">취소</button></div>`,
       true,
     );

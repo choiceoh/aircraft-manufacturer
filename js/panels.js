@@ -83,6 +83,27 @@
       </table>`;
   }
 
+  /** 시나리오 목표 카드 — 오르는 산이 어디까지 왔나. 자유 경영이면 아무것도 없다. */
+  function scenarioCard(s) {
+    const st = E.scenarioStatus(s);
+    if (!st) return '';
+    const pct = Math.max(0, Math.min(100, Math.round((st.progress / st.target) * 100)));
+    const state = st.failed
+      ? '<span class="tag" style="color:var(--bad)">실패 확정</span>'
+      : s.scenarioAchievedTurn
+        ? '<span class="tag good">목표 달성 — 파산만 피하면 된다</span>'
+        : st.finalOnly
+          ? '<span class="muted">판정은 종료 시점에</span>'
+          : '';
+    return `
+      <section class="card">
+        <h3>시나리오 — ${esc(st.name)}</h3>
+        <p class="muted">${esc(st.goalText)} ${state}</p>
+        <div class="row between"><b>${num(st.progress)} / ${num(st.target)}${esc(st.unit || '')}</b><span class="muted">${pct}%</span></div>
+        ${bar(pct, 'accent')}
+      </section>`;
+  }
+
   function renderOverview(s) {
     const warnings = [];
 
@@ -124,6 +145,7 @@
     const rows = s.history.slice(-24);
 
     return `
+      ${scenarioCard(s)}
       ${mandateCard(s)}
       ${decisionCard(s)}
       ${settlementCard(last, prev)}

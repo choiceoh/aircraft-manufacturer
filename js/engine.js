@@ -29,6 +29,7 @@
     AFTERMARKET_TIERS,
     FREIGHTER,
     GOV_MISSIONS,
+    SCENARIOS,
     RESEARCH_PROJECTS,
     TAKEOVER,
     RIVAL_DRIFT_LIMIT,
@@ -158,7 +159,10 @@
     return PLAYABLE_COMPANIES.find((c) => c.id === id) || PLAYABLE_COMPANIES[0];
   }
 
-  function newGame(seed, companyName) {
+  function newGame(seed, companyName, scenarioId) {
+    // 시나리오는 회사를 강제한다 — 목표와 시작 조건이 그 회사 전제로 잡혀 있다.
+    const scenario = scenarioId ? SCENARIOS.find((x) => x.id === scenarioId) || null : null;
+    if (scenario) companyName = scenario.company;
     // companyName 이 프리셋 id 면 그 회사로 시작한다. 아니면 기준 회사에 그 이름을 붙인다
     // (옛 호출·테스트 호환 — newGame(seed) / newGame(seed, '내 회사') 모두 그대로 돈다).
     const isPresetId = PLAYABLE_COMPANIES.some((c) => c.id === companyName);
@@ -285,6 +289,19 @@
 
     pushLog(s, 'info', `${s.company} 경영을 인계받았다. 자본금 ${fmtMoney(s.cash)}, 차입금 ${fmtMoney(s.debt)}. ${preset.intro}`);
     pushLog(s, 'info', `20년 안에 후속기를 띄워 시장을 잡아라. ${s.programs[0] ? s.programs[0].name : '주력기'}의 수명은 길지 않다.`);
+
+    // 시나리오 — 시작 조건을 덮어쓰고 산 하나를 세운다. 로그·수주·드라마 시드가
+    // 모두 잡힌 뒤에 적용해, 같은 시드의 자유 경영과 전개가 일치한다(현금·부채만 다르다).
+    if (scenario) {
+      s.scenario = scenario.id;
+      if (scenario.tweaks) {
+        if (typeof scenario.tweaks.cash === 'number') s.cash = scenario.tweaks.cash;
+        if (typeof scenario.tweaks.debt === 'number') s.debt = scenario.tweaks.debt;
+        s.stats.peakDebt = Math.max(s.stats.peakDebt || 0, s.debt);
+      }
+      pushLog(s, 'event', `[시나리오 · ${scenario.name}] ${scenario.desc}`);
+      pushLog(s, 'event', `목표: ${scenario.goalText}. 파산하면 어떤 목표든 실패다.`);
+    }
     return s;
   }
 
@@ -1448,6 +1465,8 @@
     settleFinance(s, report);
 
     s.stats.peakShare = Math.max(s.stats.peakShare || 0, marketShare(s));
+    // 시나리오 목표 — 단조 목표는 채우는 순간 기념하고, 무너진 목표는 그 자리에서 알린다.
+    tickScenario(s);
 
     s.history.push({
       turn: s.turn,
@@ -3629,6 +3648,96 @@
     return fired;
   }
 
+  // ─────────────────────────────── 시나리오 ───────────────────────────────
+
+  /**
+   * 시나리오 목표의 진행도와 판정. 화면(개요 카드·종료 화면)과 종료 정산이 같이 쓴다.
+   *
+   *   progress/target : 진행도 막대용 숫자
+   *   achieved        : 목표 자체를 채웠나 (파산 여부는 종료 정산이 따로 본다)
+   *   failed          : 되돌릴 수 없이 실패했나 (무결점의 첫 운항 정지처럼)
+   *   finalOnly       : 종료 시점에만 판정이 서는 목표 (점수·무결점) — 중간 기념이 없다
+   */
+  function scenarioStatus(s) {
+    const scen = s.scenario ? SCENARIOS.find((x) => x.id === s.scenario) : null;
+    if (!scen) return null;
+    const out = { id: scen.id, name: scen.name, goalText: scen.goalText, failed: false, finalOnly: false };
+    switch (scen.id) {
+      case 'wide_dream': {
+        out.progress = s.programs.filter((p) => p.segment === 'wide').reduce((a, p) => a + (p.delivered || 0), 0);
+        out.target = 100;
+        out.unit = '기';
+        break;
+      }
+      case 'phoenix': {
+        // 잿더미의 증명은 점수가 아니라 인도다 — 회생 증자를 써도 기체는 진짜다.
+        out.progress = s.stats.delivered;
+        out.target = scen.targetDelivered;
+        out.unit = '기';
+        break;
+      }
+      case 'red_star': {
+        // 서랍에서 물려받은 그 프로그램이라야 한다 — 이름으로 찾는다(시딩이 고정한다).
+        const ssj = s.programs.find((p) => p.name === scen.targetProgramName);
+        out.progress = ssj ? ssj.delivered || 0 : 0;
+        out.target = scen.targetDelivered;
+        out.unit = '기';
+        // 목표 전에 팔거나 접었으면 끝이다 — 도면이 없는 꿈은 이룰 수 없다.
+        // (150기를 채운 **뒤의** 매각은 이미 세운 기록을 무르지 않는다.)
+        out.failed = (!ssj || ssj.phase === 'sold' || ssj.phase === 'cancelled') && out.progress < out.target;
+        break;
+      }
+      case 'clean_sheet': {
+        out.finalOnly = true;
+        out.progress = s.stats.delivered;
+        out.target = scen.targetDelivered;
+        out.unit = '기';
+        // 운항 정지는 되돌릴 수 없다 — 첫 번째에 시나리오가 끝난다.
+        out.failed = (s.stats.majorDefects || 0) > 0;
+        break;
+      }
+      case 'successor': {
+        // 백지 설계라야 한다 — 파생·승계·인수는 후계가 아니라 연명이다.
+        const clean = s.programs.filter(
+          (p) => p.segment === 'narrow' && !p.derivedFrom && !p.legacy && !p.acquired && p.certTurn !== null && p.certTurn !== undefined,
+        );
+        out.progress = clean.length ? Math.max(...clean.map((p) => p.delivered || 0)) : 0;
+        out.target = scen.targetDelivered;
+        out.unit = '기';
+        break;
+      }
+      default:
+        return null;
+    }
+    out.achieved = !out.failed && out.progress >= out.target;
+    return out;
+  }
+
+  /**
+   * 시나리오 분기 판정 — 단조 증가 목표는 채우는 순간 기념한다.
+   * 최종 성패는 종료 정산이 확정한다: 파산하면 어떤 목표든 실패다.
+   */
+  function tickScenario(s) {
+    const st = scenarioStatus(s);
+    if (!st) return;
+    if (st.failed && !s.scenarioFailedTurn) {
+      s.scenarioFailedTurn = s.turn;
+      pushLog(s, 'bad', `[시나리오 · ${st.name}] 목표가 무너졌다 — ${st.goalText}은(는) 더 이상 이룰 수 없다.`);
+      return;
+    }
+    if (!st.finalOnly && st.achieved && !s.scenarioAchievedTurn) {
+      s.scenarioAchievedTurn = s.turn;
+      pushLog(s, 'good', `[시나리오 · ${st.name}] 목표 달성! ${st.goalText} — 이제 이 판은 기록으로 남는다. 종료까지 파산만 피하면 된다.`);
+    }
+  }
+
+  /** 종료 정산 — 성패를 확정해 gameOver 에 싣는다. 파산은 무조건 실패다. */
+  function settleScenario(s, bankrupt) {
+    const st = scenarioStatus(s);
+    if (!st) return null;
+    return { id: st.id, name: st.name, goalText: st.goalText, progress: st.progress, target: st.target, unit: st.unit, achieved: !bankrupt && st.achieved };
+  }
+
   /** 남은 차입 여유까지 끌어와도 음수면 지급불능. */
   function isInsolvent(s) {
     return s.cash + Math.max(0, CONFIG.maxDebt - s.debt) < 0;
@@ -3641,7 +3750,7 @@
     // debt >= maxDebt 가 아니라 "남은 여유까지 합쳐 음수인가"로 본다.
     if (isInsolvent(s)) {
       const lastTurn = typeof lastTurnOverride === 'number' ? lastTurnOverride : s.turn;
-      s.gameOver = { reason: 'bankrupt', lastTurn, ...finalScore(s, true) };
+      s.gameOver = { reason: 'bankrupt', lastTurn, ...finalScore(s, true), scenario: settleScenario(s, true) };
       pushLog(s, 'bad', '자금이 완전히 고갈되고 차입 한도도 소진됐다. 회사는 법정관리에 들어간다.');
       return true;
     }
@@ -3653,7 +3762,7 @@
     // turn 은 이미 다음 인덱스(80)로 올라가 있다. 그대로 표시하면 존재하지 않는
     // 2018년 1분기가 뜨므로, 마지막으로 경영한 분기를 따로 남긴다.
     const lastTurn = Math.max(0, s.turn - 1);
-    s.gameOver = { reason: 'complete', lastTurn, ...finalScore(s, false) };
+    s.gameOver = { reason: 'complete', lastTurn, ...finalScore(s, false), scenario: settleScenario(s, false) };
     s.log.unshift({
       turn: lastTurn,
       label: turnLabel(lastTurn),
@@ -4027,6 +4136,7 @@
     stopResearch,
     acquireProgram,
     rollMarketNews,
+    scenarioStatus,
     closeLine,
     toggleLine,
     sellStock,
