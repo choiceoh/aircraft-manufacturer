@@ -6612,3 +6612,56 @@ test('되돌릴 수 없는 행동은 네이티브 confirm 을 쓰지 않는다',
     assert.ok(/voidRefundFor/.test(block) && /askConfirm/.test(block), `${action} 이 위약금을 확인 대화에 싣지 않는다`);
   }
 });
+
+test('접힌 섹션은 지금 고른 값을 제목 옆에 남긴다', () => {
+  // 접어 두는 대가로 "무엇을 감췄는지" 까지 감추면, 열어 보는 것 말고는 확인할 방법이 없다.
+  const s = E.newGame(1401);
+  const spec = D.defaultSpec('narrow', E.yearOf(s.turn));
+  const html = P.renderDesign(s, spec, '');
+  const engine = (globalThis.AirlinerEngines.resolve('narrow', spec.engine, E.yearOf(s.turn)) || {}).name;
+  assert.ok(engine, '표본 엔진을 못 찾았다 — 이 검사가 무의미해진다');
+  const summary = html.slice(html.indexOf('data-fold="design-engine"'), html.indexOf('data-fold="design-engine"') + 200);
+  assert.ok(summary.includes(engine), `접힌 엔진 섹션이 지금 엔진(${engine})을 말해야 한다`);
+
+  const prod = P.renderProduction(s);
+  const sourcing = Data.OUTSOURCING[s.outsourcing].name;
+  const line = prod.slice(prod.indexOf('data-fold="prod-sourcing"'), prod.indexOf('data-fold="prod-sourcing"') + 200);
+  assert.ok(line.includes(sourcing), '접힌 조달 전략이 지금 고른 수준을 말해야 한다');
+});
+
+test('접힘 상태는 기본값을 뒤집는 토글로 기억된다', () => {
+  const s = E.newGame(1402);
+  const spec = D.defaultSpec('narrow', E.yearOf(s.turn));
+  // 기본 접힘 섹션: 집합에 넣으면 열린다.
+  const closed = P.renderDesign(s, spec, '');
+  const opened = P.renderDesign(s, spec, '', new Set(['design-engine']));
+  const at = (html) => html.slice(html.indexOf('data-fold="design-engine"') - 60, html.indexOf('data-fold="design-engine"'));
+  assert.ok(!/open/.test(at(closed)), '기본은 접혀 있어야 한다');
+  assert.ok(/open/.test(at(opened)), '펼쳐 둔 섹션이 다시 그려도 열려 있어야 한다');
+});
+
+test('기록 탭은 최근 것만 펼치고 나머지는 접는다', () => {
+  const s = E.newGame(1403);
+  for (let i = 0; i < 30 && !s.gameOver; i++) E.endTurn(s);
+  assert.ok(s.log.length > 24, '표본이 되려면 기록이 충분히 쌓여야 한다 (' + s.log.length + ')');
+  const html = P.renderLog(s);
+  assert.ok(/data-fold="log-older"/.test(html), '이전 기록이 접혀 있어야 한다');
+  assert.ok(html.includes(`${s.log.length - 24}건`), '접은 건수를 밝혀야 한다 — 지운 것이 아니다');
+  // 접었을 뿐이라 내용은 그대로 있어야 한다 (검색·읽기가 막히면 안 된다).
+  const last = s.log[s.log.length - 1];
+  assert.ok(html.includes(P.esc(last.text)), '접힌 쪽 기록이 통째로 빠졌다');
+});
+
+test('개요는 손볼 게 없으면 빈 경고 카드를 세우지 않는다', () => {
+  const s = E.newGame(1404);
+  s.cash = 20000;
+  s.debt = 0;
+  s.decision = null;
+  s.lines = [];
+  s.programs = s.programs.filter((p) => p.phase !== 'production');
+  const html = P.renderOverview(s);
+  assert.ok(!/경영 경고/.test(html), '경고가 없는데 카드만 서 있으면 그것도 스크롤이다');
+  // 경고가 생기면 다시 선다.
+  s.cash = 100;
+  assert.ok(/경영 경고/.test(P.renderOverview(s)), '경고가 생겼는데 카드가 안 선다');
+});

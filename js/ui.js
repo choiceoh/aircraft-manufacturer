@@ -60,30 +60,32 @@
       void panel.offsetWidth;
       panel.className = 'panel enter';
     }
+    // 접이 섹션이 있는 패널은 모두 같은 집합(ui.folds)을 받는다 — 어느 탭에서 접었든
+    // 다시 그려도 그대로 있어야 한다.
     switch (ui.tab) {
       case 'design':
-        panel.innerHTML = P.renderDesign(s, ui.spec, ui.designName);
+        panel.innerHTML = P.renderDesign(s, ui.spec, ui.designName, ui.folds);
         break;
       case 'programs':
-        panel.innerHTML = P.renderPrograms(s);
+        panel.innerHTML = P.renderPrograms(s, ui.folds);
         break;
       case 'production':
-        panel.innerHTML = P.renderProduction(s);
+        panel.innerHTML = P.renderProduction(s, ui.folds);
         break;
       case 'rfps':
         panel.innerHTML = P.renderRfps(s, ui.discountDraft, ui.folds);
         break;
       case 'finance':
-        panel.innerHTML = P.renderFinance(s);
+        panel.innerHTML = P.renderFinance(s, ui.folds);
         break;
       case 'trends':
-        panel.innerHTML = P.renderTrends(s);
+        panel.innerHTML = P.renderTrends(s, ui.folds);
         break;
       case 'log':
-        panel.innerHTML = P.renderLog(s);
+        panel.innerHTML = P.renderLog(s, ui.folds);
         break;
       default:
-        panel.innerHTML = P.renderOverview(s);
+        panel.innerHTML = P.renderOverview(s, ui.folds);
     }
     save();
   }
