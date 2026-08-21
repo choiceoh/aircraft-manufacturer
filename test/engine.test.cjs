@@ -7977,3 +7977,85 @@ test('국산화: 사업을 걸어도 결정론은 그대로다', () => {
   };
   assert.strictEqual(run(), run(), '같은 시드·같은 조작은 같은 결과여야 한다');
 });
+
+test('사풍: 축이 새로 생겨도 옛 세이브가 그 기능을 받는다 (없는 칸만 채운다)', () => {
+  // 회귀 — 사풍 복원이 "trait 이 통째로 없을 때"만 돌아서, trait 은 있는데 새 축이
+  // 없는 세이브(PR 마다 생기는 훨씬 흔한 경우)가 그 기능을 20년 내내 못 봤다.
+  const s = E.newGame(4311, 'uac');
+  delete s.trait.localEngine;
+  delete s.localEngineProject;
+  delete s.localEngines;
+  E.ensureShape(s);
+  assert.ok(E.localEngineSpec(s), '새로 생긴 축이 채워져야 한다');
+  assert.ok(E.localEngineTargets(s).length > 0, '기능이 실제로 열려야 한다');
+
+  // 이미 있는 칸은 건드리지 않는다 — 진행 중인 판의 규칙이 도중에 바뀌면 안 된다.
+  const t = E.newGame(4311, 'uac');
+  t.trait.foreignBid = { regions: ['북미'], penalty: 99, fadeFrom: 0, fadeTo: 1 };
+  delete t.trait.localEngine;
+  E.ensureShape(t);
+  assert.strictEqual(t.trait.foreignBid.penalty, 99, '있는 칸은 그대로여야 한다');
+  assert.ok(t.trait.localEngine, '없는 칸만 채운다');
+});
+
+test('사풍: 상태의 trait 이 공용 프리셋을 가리키면 안 된다', () => {
+  // 회귀 — newGame 이 프리셋의 trait 객체를 그대로 물리고 있었다. 상태가 공용
+  // 카탈로그를 가리키면 ensureShape 의 채우기가 그 카탈로그를 오염시켜, 한 판에서
+  // UAC 를 불러오는 것만으로 같은 프로세스의 다른 회사 프리셋이 바뀐다.
+  const preset = E.PLAYABLE_COMPANIES.find((c) => c.id === 'uac');
+  const snapshot = JSON.stringify(preset.trait);
+
+  const s = E.newGame(4312, 'uac');
+  assert.notStrictEqual(s.trait, preset.trait, '상태는 프리셋 객체를 물면 안 된다');
+  s.trait.foreignBid = null;
+  s.trait.__scribble = 1;
+  E.ensureShape(s);
+  assert.strictEqual(JSON.stringify(preset.trait), snapshot, '프리셋이 오염되면 안 된다');
+
+  // 데네브 프리셋도 마찬가지 — 기준선이 다른 회사의 축을 물려받으면 안 된다.
+  const deneb = E.PLAYABLE_COMPANIES.find((c) => c.id === 'deneb');
+  assert.deepStrictEqual(Object.keys(deneb.trait).sort(), ['name', 'note']);
+});
+
+test('국산화: 자회사는 독점 공급 계약의 상대가 아니다', () => {
+  // 회귀 — 국산화 뒤 인도분이 UEC 로 쌓여 최대 공급사가 되면, 자기 자회사와
+  // "독점 공급 계약"을 맺고 자기 돈으로 자기에게 리베이트를 주면서 다른 공급사
+  // 설계에 8% 할증을 무는 계약을 사게 됐다.
+  const s = E.newGame(4313, 'uac');
+  s.engineRelations = { UEC: 400 };
+  assert.strictEqual(Dec.get('engine_exclusive').weight(s), 0, '자회사만 있으면 제안이 없어야 한다');
+
+  // 서방 공급사가 섞여 있으면 그쪽으로 제안이 간다.
+  s.engineRelations = { UEC: 400, CFM: 80 };
+  assert.ok(Dec.get('engine_exclusive').weight(s) > 0);
+  const memo = {};
+  const h = { rng: R.createRng(2), remember: (k, v) => ((memo[k] = v), v), recall: (k, f) => (memo[k] === undefined ? f : memo[k]) };
+  Dec.get('engine_exclusive').text(s, h);
+  assert.strictEqual(memo.maker, 'CFM', `자회사가 아니라 실제 거래처가 상대여야 한다 (집힌 값: ${memo.maker})`);
+});
+
+test('국산화: 이중화 기체는 서방 대안 인증을 함께 접는다', () => {
+  // 회귀 — 주엔진만 갈아 끼우면 국산 원가·국가 발주 우대·공급 차질 면역을
+  // 받으면서 대안 공급사의 선호 가산(+2)까지 챙기는, 양쪽을 다 갖는 구멍이 됐다.
+  const s = E.newGame(4314, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  tu.altEngine = 'v2500';
+  tu.dualSource = true;
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(tu.engine, 'ps90a');
+  assert.ok(!tu.altEngine, '서방 대안 인증이 남아 있으면 안 된다');
+  assert.strictEqual(tu.dualSource, false);
+
+  // 이제 어느 항공사에도 선호 가산을 못 받는다 — 국산화가 파는 것이 그 경쟁력이다.
+  let rfp = null;
+  for (let i = 0; i < 40 && !rfp; i++) {
+    rfp = s.rfps.find((r) => r.segment === 'narrow' && !B.scoreBid(s, r, tu, 0).blocked);
+    if (!rfp) E.endTurn(s);
+  }
+  if (rfp) assert.ok(B.scoreBid(s, rfp, tu, 0).enginePref <= 0, '국산 단일 공급이면 선호 가산이 없다');
+});

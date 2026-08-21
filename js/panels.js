@@ -1069,13 +1069,16 @@
       const moneyPct = proj.cost > 0 ? (proj.funded / proj.cost) * 100 : 100;
       const timePct = need > 0 ? (proj.quarters / need) * 100 : 100;
       const left = Math.max(0, proj.cost - proj.funded);
-      const steps = [left, Math.round(proj.cost * 0.25), Math.round(proj.cost * 0.5)]
-        .filter((v, i, a) => v > 0 && a.indexOf(v) === i)
+      // 지금 낼 수 있는 만큼을 **항상** 하나 넣는다. 정액 단위(25%·50%)만 두면
+      // 곳간이 그 아래인 플레이어는 버튼이 전부 잠긴 채, 엔진은 받아 주는
+      // 금액을 화면으로는 넣을 방법이 없다 — 착수는 공짜라 그 상태가 흔하다.
+      const affordable = Math.min(Math.floor(s.cash), left);
+      const steps = [left, Math.round(proj.cost * 0.5), Math.round(proj.cost * 0.25), affordable]
+        .filter((v, i, a) => v > 0 && a.indexOf(v) === i && v <= left)
+        .sort((a, b) => a - b)
+        .filter((v) => v <= s.cash)
         .slice(0, 3)
-        .map(
-          (v) =>
-            `<button data-action="fund-local-engine" data-amount="${v}" ${s.cash >= v ? '' : 'disabled'}>+${money(v)}</button>`,
-        )
+        .map((v) => `<button data-action="fund-local-engine" data-amount="${v}">+${money(v)}</button>`)
         .join('');
       return foldCard(
         folds,
@@ -1088,7 +1091,12 @@
          ${bar(moneyPct, 'prog')}
          <div class="row between"><span>기간</span><span>${proj.quarters} / ${need}분기</span></div>
          ${bar(timePct, 'ramp')}
-         <div class="row">${steps || '<span class="muted">개발비는 다 채웠다 — 남은 것은 기간이다.</span>'}</div>
+         <div class="row">${
+           steps ||
+           (left <= 0
+             ? '<span class="muted">개발비는 다 채웠다 — 남은 것은 기간이다.</span>'
+             : '<span class="muted">지금은 넣을 현금이 없다. 한 푼이라도 생기면 그만큼 넣을 수 있다.</span>')
+         }</div>
          <div class="row"><button class="danger" data-action="cancel-local-engine">개발 중단</button></div>`,
       );
     }

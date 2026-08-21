@@ -293,7 +293,11 @@
       // 상태에 복사해 둔다: 세이브만 있고 프리셋 id 는 없는 판(이름을 직접 지은
       // 데네브)도 자기 특성을 잃지 않아야 하고, 프리셋 값을 나중에 손봐도
       // 진행 중인 판의 규칙이 도중에 바뀌지 않는다.
-      trait: preset.trait || {},
+      //
+      // **얕은 복사가 필수다.** 프리셋 객체를 그대로 물리면 상태가 공용 카탈로그를
+      // 가리키게 되고, ensureShape 의 사풍 채우기가 그 카탈로그를 통째로 오염시킨다
+      // (한 판에서 UAC 를 불러오면 그 프로세스의 데네브 프리셋에 UAC 축이 붙는 식).
+      trait: { ...(preset.trait || {}) },
       turn: 0,
       nextId: 1,
       cash: preset.cash,
@@ -821,7 +825,7 @@
     // 불러오는 순간 "특색 없는 보잉"이 되면 안 된다. 다만 시작 관계 보정은
     // newGame 한 번뿐인 효과라 소급하지 않는다 (그 판의 관계는 이미 20년치
     // 영업의 결과이지, 출발선이 아니다).
-    if (!s.trait || typeof s.trait !== 'object') {
+    {
       const makers = s.playerMakers || [];
       const exact = PLAYABLE_COMPANIES.find(
         (c) => c.makers.length === makers.length && c.makers.every((m) => makers.includes(m)),
@@ -837,7 +841,21 @@
         (makers.length
           ? PLAYABLE_COMPANIES.find((c) => c.makers.length && makers.every((m) => c.makers.includes(m)))
           : null);
-      s.trait = (absorbed || companyPreset('deneb')).trait || {};
+      const preset = (absorbed || companyPreset('deneb')).trait || {};
+      if (!s.trait || typeof s.trait !== 'object') {
+        s.trait = { ...preset };
+      } else {
+        // 사풍은 있는데 **새로 생긴 축이 없는** 세이브 — PR 마다 축이 하나씩 늘기
+        // 때문에 이 경우가 훨씬 흔하다. 없는 칸만 채운다:
+        //   · 이미 있는 칸은 건드리지 않는다 — 진행 중인 판의 규칙이 프리셋을
+        //     손볼 때마다 도중에 바뀌면 안 된다(사풍을 상태에 복사해 둔 이유).
+        //   · 없는 칸은 채운다 — 안 그러면 옛 UAC 세이브가 UEC 국산화를
+        //     20년 내내 못 보게 된다. 새 기능이 옛 판에서 통째로 사라지는 것은
+        //     "규칙이 안 바뀐다"가 아니라 그냥 버그다.
+        for (const [k, v] of Object.entries(preset)) {
+          if (!(k in s.trait)) s.trait[k] = v;
+        }
+      }
     }
     if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;
@@ -2173,10 +2191,21 @@
     if (!s.localEngines.includes(to.id)) s.localEngines.push(to.id);
 
     const swapped = [];
+    const dropped = [];
     for (const p of s.programs) {
       if (p.phase === 'cancelled' || p.phase === 'sold') continue;
       if (p.engine !== from.id) continue;
       p.engine = to.id;
+      // 이중화 기체는 서방 대안 인증을 함께 접는다. 안 그러면 국산 원가·국가
+      // 발주 우대·공급 차질 면역을 받으면서 대안 공급사의 선호 가산(+2)까지
+      // 챙기는, 양쪽을 다 갖는 구멍이 된다 — 국산화가 파는 것이 정확히 그
+      // 수주 경쟁력인데 그걸 안 파는 셈이 된다. 남의 공급망을 떠나기로 한
+      // 사업이므로 그 인증을 유지하지 않는 것이 규칙으로도 맞다.
+      if (p.altEngine) {
+        dropped.push(p.name);
+        p.altEngine = null;
+        p.dualSource = false;
+      }
       p.unitCostBase = Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
       p.efficiency = clamp(Math.round(p.efficiency + (to.eff - from.eff)), 1, 99);
       p.comfort = clamp(Math.round(p.comfort + (to.comfort - from.comfort)), 1, 99);
@@ -2190,7 +2219,9 @@
       s,
       'good',
       swapped.length
-        ? `${to.name} 국산화 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — 생산원가가 내려가고 공급이 우리 손에 들어왔다. 대신 연비는 처진다.`
+        ? `${to.name} 국산화 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — 생산원가가 내려가고 공급이 우리 손에 들어왔다. 대신 연비는 처진다.${
+            dropped.length ? ` ${dropped.join(' · ')}의 서방 대안 엔진 인증은 함께 접었다.` : ''
+          }`
         : `${to.name} 개발 완료. 갈아 끼울 기체는 없지만, 이제 설계에서 고를 수 있다.`,
     );
   }

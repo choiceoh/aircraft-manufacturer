@@ -135,7 +135,11 @@
 
   /** 인도 실적이 가장 두터운 엔진 공급사 — 독점 계약 제안의 주체. */
   function topEngineMaker(s) {
-    const entries = Object.entries(s.engineRelations || {});
+    // 우리 자회사(국산 엔진 공급사)는 거래처가 아니다. 빼지 않으면 국산화한
+    // 회사가 자기 자회사와 "독점 공급 계약"을 맺고, 자기 돈으로 자기에게
+    // 리베이트를 주면서 다른 공급사 설계에 8% 할증을 무는 계약을 사게 된다.
+    const domestic = new Set(Engines.ENGINES.filter((e) => e.domestic).map((e) => e.maker));
+    const entries = Object.entries(s.engineRelations || {}).filter(([maker]) => !domestic.has(maker));
     if (!entries.length) return null;
     const [maker, units] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
     return { maker, units };
