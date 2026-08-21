@@ -92,8 +92,16 @@
       const ours = Object.values((s.fleets && s.fleets[a.id]) || {}).reduce((x, y) => x + y, 0);
       const constraint =
         a.field === 'short' ? '짧은 활주로' : a.field === 'hot' ? '고온고지' : a.rangeBand[1] >= ETOPS_RANGE_KM ? 'ETOPS' : '—';
+      // 사풍의 지리를 표에 얹는다. 본국 고객과 "벽이 선 시장"이 어디인지는 매 분기
+      // 입찰 점수에 들어가는 값이라, 화면 어딘가에 한 번은 적혀 있어야 한다.
+      const trait = s.trait || {};
+      const homeTag = (trait.home || []).includes(a.id) ? ' <span class="good">본국</span>' : '';
+      const wallTag =
+        !homeTag && trait.foreignBid && (trait.foreignBid.regions || []).includes(a.home)
+          ? ' <span class="bad">낯선 시장</span>'
+          : '';
       return `<tr>
-          <td>${esc(a.name)}</td>
+          <td>${esc(a.name)}${homeTag}${wallTag}</td>
           <td>${SEGMENTS[a.bias].name}</td>
           <td>${lo}~${hi}석</td>
           <td>${num(a.rangeBand[0])}~${num(a.rangeBand[1])}km</td>
@@ -147,6 +155,93 @@
     return out;
   }
 
+  /**
+   * 회사 특성(사풍) — 이 회사가 남들과 다르게 적용받는 규칙들.
+   *
+   * 값이 화면에 없으면 없는 규칙이나 마찬가지다: 개발비가 왜 싼지, 왜 저 항공사에서만
+   * 점수가 잘 나오는지 플레이어가 설명할 수 없으면 그건 특색이 아니라 잡음이다.
+   * 그래서 프리셋의 배수를 그대로 문장으로 풀어 쓴다 — 숫자가 바뀌면 문장도 바뀐다.
+   */
+  function houseCard(s, folds) {
+    const t = s.trait || {};
+    if (!t.name) return '';
+
+    const pct = (m) => `${m > 1 ? '+' : '−'}${Math.round(Math.abs(m - 1) * 100)}%`;
+    const items = [];
+
+    for (const [segId, f] of Object.entries(t.focus || {})) {
+      const bits = [];
+      if (f.cost !== undefined && f.cost !== 1) bits.push(`개발비 ${pct(f.cost)}`);
+      if (f.time !== undefined && f.time !== 1) bits.push(`기간 ${pct(f.time)}`);
+      if (bits.length) {
+        items.push({
+          good: (f.cost ?? 1) < 1,
+          label: `${SEGMENTS[segId].name} 설계`,
+          text: bits.join(' · '),
+        });
+      }
+    }
+    if (t.deriv) {
+      const bits = [];
+      if (t.deriv.cost !== undefined && t.deriv.cost !== 1) bits.push(`개발비 ${pct(t.deriv.cost)}`);
+      if (t.deriv.time !== undefined && t.deriv.time !== 1) bits.push(`기간 ${pct(t.deriv.time)}`);
+      if (bits.length) items.push({ good: (t.deriv.cost ?? 1) < 1, label: '파생형 개발', text: bits.join(' · ') });
+    }
+    if ((t.home || []).length) {
+      const names = t.home.map((id) => (AIRLINES.find((a) => a.id === id) || {}).name).filter(Boolean);
+      items.push({ good: true, label: '본국·전통 고객', text: `${names.join(' · ')} — 수주전 +${B.HOME_BID_BONUS}점` });
+    }
+    if (t.foreignBid) {
+      // 지금 남은 감점을 그대로 보여 준다. "평판을 올리면 녹는다"가 숫자로 보여야
+      // 그게 벽이 아니라 숙제라는 것이 전달된다. 표본 항공사는 그 지역에서 찾는다 —
+      // 특정 id 를 박아 두면 지역 목록을 손보는 순간 조용히 0 을 보여주게 된다.
+      const sample = AIRLINES.find((a) => (t.foreignBid.regions || []).includes(a.home));
+      const now = sample
+        ? Math.abs(B.homeBias({ trait: { foreignBid: t.foreignBid }, reputation: s.reputation }, { airlineId: sample.id }))
+        : 0;
+      items.push({
+        good: false,
+        label: `${(t.foreignBid.regions || []).join('·')} 항공사`,
+        text: `수주전 −${t.foreignBid.penalty}점에서 시작해 평판 ${t.foreignBid.fadeTo}에서 사라진다 — 지금 −${now}점`,
+      });
+    }
+    const aid = t.aid || {};
+    if (aid.rateMult !== undefined && aid.rateMult !== 1) {
+      items.push({
+        good: aid.rateMult > 1,
+        label: '정부 런치 에이드',
+        text: `개발비의 ${Math.round(E.launchAidRate(s) * 100)}% (기준 ${Math.round(E.LAUNCH_AID_RATE * 100)}%)${
+          aid.tensionMult === 0 ? ' · 무역 긴장 없음' : aid.tensionMult !== undefined && aid.tensionMult !== 1 ? ` · 무역 긴장 ×${aid.tensionMult}` : ''
+        }`,
+      });
+    }
+    const gov = t.gov || {};
+    if (gov.deliveredMult !== undefined || gov.winBonus !== undefined || gov.sustainMult !== undefined) {
+      const bits = [];
+      if (gov.deliveredMult !== undefined && gov.deliveredMult !== 1) bits.push(`자격 실적 문턱 ×${gov.deliveredMult}`);
+      if (gov.winBonus) bits.push(`낙찰 확률 ${gov.winBonus > 0 ? '+' : '−'}${Math.abs(Math.round(gov.winBonus * 100))}%p`);
+      if (gov.sustainMult !== undefined && gov.sustainMult !== 1) bits.push(`지원 수익 ×${gov.sustainMult}`);
+      if (bits.length) items.push({ good: (gov.winBonus ?? 0) >= 0 && (gov.sustainMult ?? 1) >= 1, label: '정부 특수기 사업', text: bits.join(' · ') });
+    }
+
+    const list = items.length
+      ? `<ul class="events">${items
+          .map((i) => `<li><b class="${i.good ? 'good' : 'bad'}">${esc(i.label)}</b> — ${esc(i.text)}</li>`)
+          .join('')}</ul>`
+      : '<p class="muted">보정 없는 기준선이다 — 모든 규칙이 표준값 그대로 적용된다.</p>';
+
+    // 사풍은 한 판 내내 바뀌지 않는 규칙이라 매 분기 스크롤로 지나칠 이유가 없다.
+    // 대신 어느 회사로 굴리는 중인지는 접힌 제목에 그대로 남는다.
+    return foldCard(
+      folds,
+      'ov-house',
+      '회사 특성',
+      esc(t.name),
+      `<p class="muted">${esc(t.note || '')}</p>
+       ${list}`,
+    );
+  }
+
   function renderOverview(s, folds) {
     const warnings = [];
 
@@ -191,6 +286,8 @@
       ${mandateCard(s)}
       ${decisionCard(s)}
       ${settlementCard(last, prev)}
+
+      ${houseCard(s, folds)}
 
       ${foldCard(
         folds,
@@ -515,7 +612,7 @@
    * 그리면 여기가 옛 상태로 남아 실제 착수 결과와 어긋난다.
    */
   function renderDesignOptions(s, spec) {
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
+    const ev = D.evaluate({ ...spec, ...E.designContext(s) });
     const family = ev.inFamily
       ? `<button class="mat on" disabled>
           <b>패밀리 승계</b><span>원형이 이미 패밀리라 공통 구조·조종석을 그대로 물려받는다. 선투자는 뿌리에서 한 번만 하므로 <b>추가 비용이 없다</b>.</span>
@@ -618,7 +715,7 @@
   function renderDesignPreview(s, spec, designName) {
     // 미리보기는 항상 "지금" 기준으로 평가한다. spec.year 를 들고 다니면 분기가
     // 지나도 갱신되지 않아, 이미 살 수 없는 엔진으로 계산된 값을 보여주게 된다.
-    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
+    const ev = D.evaluate({ ...spec, ...E.designContext(s) });
     const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
     const seg = SEGMENTS[spec.segment];
 
@@ -715,7 +812,7 @@
             p.engines === 4 ? '4발 ✓' : p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'
           }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${p.altEngine ? ' · 이중화' : ''}${
             p.familyId ? ' · 패밀리' : ''
-          }${p.derivative ? ' · 파생형' : ''}${p.govMission ? ' · 특수기 파생' : ''}</td></tr>`,
+          }${p.derivative ? ' · 파생형' : ''}${p.govMission ? ' · 특수기 파생' : ''}${p.acquired ? ' · 인수 프로그램' : ''}</td></tr>`,
         );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
@@ -758,7 +855,7 @@
                   풍동·목업 ${p.windTunnel ? '완료 (±8%)' : p.progress >= 50 ? '시기 지남' : `· ${money(p.devCost * E.WIND_TUNNEL_COST_RATE)}`}
                 </button>
                 <button data-action="launch-aid" data-id="${p.id}" ${p.launchAid || p.progress >= 50 ? 'disabled' : ''}>
-                  정부 지원 ${p.launchAid ? '수령함' : p.progress >= 50 ? '시기 지남' : `+${money(p.devCost * E.LAUNCH_AID_RATE)} · 긴장↑`}
+                  정부 지원 ${p.launchAid ? '수령함' : p.progress >= 50 ? '시기 지남' : `+${money(p.devCost * E.launchAidRate(s))}${((s.trait || {}).aid || {}).tensionMult === 0 ? '' : ' · 긴장↑'}`}
                 </button>
                 <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
               </div>
@@ -938,6 +1035,7 @@
     // 설정(조달·신설·개량·서비스)은 접는다.
     return `
       ${servicesCard(s, folds)}
+      ${researchCard(s, folds)}
       ${foldCard(
         folds,
         'prod-sourcing',
@@ -967,6 +1065,48 @@
       )}
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
+  }
+
+  /**
+   * 장기 기술 연구 — 스컹크웍스. 분기마다 돈을 태워 몇 년 뒤 회사 상수를 바꾼다.
+   * 효과는 완료 이후의 신규 설계·생산에만 붙는다.
+   */
+  function researchCard(s, folds) {
+    const R = root.AirlinerData.RESEARCH_PROJECTS;
+    const research = s.research || { active: null, progress: {}, done: {} };
+    const rows = R.map((proj) => {
+      const done = research.done[proj.id];
+      const active = research.active === proj.id;
+      const prog = research.progress[proj.id] || 0;
+      if (done) return `<div class="line"><div class="row between"><b>${esc(proj.name)}</b><span class="tag good">완료 — ${esc(proj.effect)}</span></div></div>`;
+      const status = active
+        ? `<span class="tag">${prog}/${proj.quarters}분기 진행 중 · 분기 ${money(proj.costPerQuarter)}</span>
+           <button data-action="research-stop">중단</button>`
+        : `<button data-action="research-start" data-id="${proj.id}" ${research.active ? 'disabled' : ''}>
+             착수 · 분기 ${money(proj.costPerQuarter)} × ${proj.quarters - prog}분기</button>`;
+      return `<div class="line"><div class="row between"><b>${esc(proj.name)}</b>${prog > 0 && !active ? `<span class="muted">진행 ${prog}/${proj.quarters}</span>` : ''}</div>
+        <p class="hint">${esc(proj.desc)} <b>${esc(proj.effect)}.</b></p>
+        <div class="row">${status}</div></div>`;
+    }).join('');
+    // 연구소는 하나뿐이라 화면에서 매번 확인할 것은 "지금 무엇이 돌고 있나" 하나다.
+    // 그 한 줄을 제목에 올리고 프로젝트 목록은 접는다.
+    const running = research.active ? R.find((x) => x.id === research.active) : null;
+    const doneCount = Object.keys(research.done || {}).length;
+    const head = running
+      ? `${esc(running.name)} ${research.progress[running.id] || 0}/${running.quarters}분기`
+      : doneCount
+        ? `${doneCount}건 완료 · 진행 중 없음`
+        : '<span class="muted">진행 중 없음</span>';
+
+    return foldCard(
+      folds,
+      'prod-research',
+      '장기 기술 연구',
+      head,
+      `<p class="muted">연구소는 하나다 — 한 번에 한 프로젝트. 완료된 연구는 <b>그 이후의 신규 설계·생산</b>에 영구히 적용된다.
+         이미 나는 기체는 소급되지 않는다. 중단하면 진행분은 남는다.</p>
+       ${rows}`,
+    );
   }
 
   /**
@@ -1211,6 +1351,10 @@
     return `<table class="spec">
         <tr><th>입찰 점수</th><td><b>${sc.total}</b> ${bar(sc.total, 'score')}${
           sc.termBonus ? ` <span class="${sc.termBonus > 0 ? 'good' : 'bad'}">(조건 ${sc.termBonus > 0 ? '+' : ''}${sc.termBonus})</span>` : ''
+        }${
+          sc.homeBias
+            ? ` <span class="${sc.homeBias > 0 ? 'good' : 'bad'}">(${sc.homeBias > 0 ? '본국 +' : '낯선 시장 '}${sc.homeBias})</span>`
+            : ''
         }</td></tr>
         <tr><th>대당 가격</th><td>${money(sc.price)} <span class="muted">(정가 ${money(p.listPrice)})</span></td></tr>
         <tr><th>현재 대당 원가</th><td>${money(unitCost)}</td></tr>
@@ -1325,7 +1469,7 @@
       const o = B.bestOffering(s, seg, Math.round(sg.seats.ref), Math.round(sg.range.ref));
       const mine = s.programs.filter((p) => p.segment === seg && p.phase === 'production');
       const ours = mine.length ? mine.map((p) => esc(p.name)).join(', ') : '<span class="muted">없음</span>';
-      const pool = Fleet.availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker)).length;
+      const pool = Fleet.availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker) && !(s.acquiredTypes || {})[t.id]).length;
       return `<tr>
         <th>${sg.name}</th>
         <td>${o ? `<b>${esc(o.name)}</b>` : '—'} <span class="muted">· 판매 중 ${pool}종 · 우리: ${ours}</span></td>

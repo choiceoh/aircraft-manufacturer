@@ -549,6 +549,18 @@
         break;
       }
 
+      case 'research-start': {
+        const r = E.startResearch(s, btn.dataset.id);
+        act(r, r.ok ? '연구에 착수했다.' : null);
+        break;
+      }
+
+      case 'research-stop': {
+        const r = E.stopResearch(s);
+        act(r, r.ok ? '연구를 중단했다.' : null);
+        break;
+      }
+
       case 'raise': {
         const r = E.raiseEquity(s, Number(btn.dataset.amt));
         act(r, r.ok ? '증자를 마쳤다. 지분이 희석됐다.' : null);
@@ -899,15 +911,19 @@
   function openCompanyPicker(firstRun) {
     const cards = E.PLAYABLE_COMPANIES.map((c) => {
       const legacies = c.legacies.map((l) => l.name).join(' · ');
+      // 사풍은 20년 내내 살아 있는 규칙 차이라, 고르기 **전에** 보여야 한다.
+      // 시작 자본만 적어 두면 회사 선택이 난이도 슬라이더로 읽힌다.
+      const trait = c.trait || {};
       return `<button class="mat" data-action="new-game-as" data-company="${c.id}">
           <b>${P.esc(c.name)} <span class="muted">— ${P.esc(c.difficulty)}</span></b>
           <span>${P.esc(c.desc)}</span>
+          ${trait.name ? `<span><b class="accent">${P.esc(trait.name)}</b> — ${P.esc(trait.note || '')}</span>` : ''}
           <span class="muted">주력 ${P.esc(legacies)} · 자본 ${money(c.cash)} · 엔지니어 ${P.num(c.engineers)}명</span>
         </button>`;
     }).join('');
     openModal(
       `<h2 id="modal-title">어느 회사로 시작할까</h2>
-       <p class="muted">${firstRun ? '' : '현재 진행 상황은 사라진다. '}실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
+       <p class="muted">${firstRun ? '' : '현재 진행 상황은 사라진다. '}실존 제조사를 고르면 그 회사는 경쟁 명단에서 빠지고, 1998년의 실제 위치를 본뜬 승계 상태로 시작한다. 회사마다 <b>사풍</b>이 달라 개발비·본국 시장·정부 사업의 규칙이 다르게 적용된다. 등급 문턱은 데네브 기준이다 — 거인의 점수는 쉽게 나온다.</p>
        <div class="mats">${cards}</div>
        <div class="row"><button class="ghost" data-action="close-modal">취소</button></div>`,
       true,

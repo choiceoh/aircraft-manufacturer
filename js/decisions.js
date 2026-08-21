@@ -18,7 +18,7 @@
 (function (root) {
   'use strict';
 
-  const { AIRLINES, CONFIG, SEGMENTS, FIELD_REQUIREMENT, ETOPS_RANGE_KM, GOV_MISSIONS, GOV_BID_MODES, GOV_PROPOSAL_COST } = root.AirlinerData;
+  const { AIRLINES, CONFIG, SEGMENTS, FIELD_REQUIREMENT, ETOPS_RANGE_KM, GOV_MISSIONS, GOV_BID_MODES, GOV_PROPOSAL_COST, TAKEOVER } = root.AirlinerData;
   const Fleet = root.AirlinerFleet;
   const Engines = root.AirlinerEngines;
 
@@ -142,19 +142,40 @@
   const gwaWa = (w) => w + (batchim(w) ? '과' : '와');
 
   /**
+   * 인수 매물 — 결함 파동(양수 위기) 중인 경쟁 기종. 가중치와 문구가 같은 것을
+   * 가리키도록 결정적으로 고른다(첫 번째 위기 기종).
+   */
+  function takeoverTarget(s) {
+    for (const [typeId, c] of Object.entries(s.rivalCrises || {})) {
+      if (!(c && c.amount > 0)) continue;
+      if ((s.acquiredTypes || {})[typeId]) continue;
+      const t = Fleet.AIRCRAFT.find((x) => x.id === typeId);
+      // 이미 우리 제조사의 기종이면(플레이어블 제조사) 매물이 아니다.
+      if (t && !(s.playerMakers || []).includes(t.maker)) return t;
+    }
+    return null;
+  }
+
+  /**
    * 정부 특수기 사업 — 이 임무에 응모할 수 있는 우리 기종.
    * "검증된 기체"가 자격이다: 세그먼트·항속에 더해 인도 실적 문턱이 있다.
    * 같은 기종은 평생 한 사업만 한다(개조 라인이 그 임무에 묶인다).
    */
   function govFit(s, m) {
     if ((m.minReputation || 0) > (s.reputation || 0)) return null;
+    // 사풍 — 군을 오래 상대한 회사는 더 적은 실적으로도 후보에 오른다. 항속·평판
+    // 문턱은 그대로다: 그건 회사의 이력이 아니라 임무가 요구하는 물리다.
+    const govT = ((s.trait || {}).gov) || {};
+    // 배수 0 은 유효한 값이다 ("실적을 따지지 않는다"). ||는 그것을 1 로 되살려
+    // 문턱을 통째로 되돌린다 — 이 사풍 체계는 이미 tensionMult: 0 을 쓰고 있다.
+    const minDelivered = Math.ceil(m.minDelivered * (govT.deliveredMult ?? 1));
     const eligible = s.programs.filter(
       (p) =>
         p.phase === 'production' &&
         !p.govMission &&
         m.segments.includes(p.segment) &&
         p.range >= m.minRange &&
-        (p.delivered || 0) >= m.minDelivered,
+        (p.delivered || 0) >= minDelivered,
     );
     if (!eligible.length) return null;
     // 실적이 가장 두터운 기종이 유력 후보다 — 정부는 검증을 산다.
@@ -179,8 +200,11 @@
   /** 낙찰 확률 — 입찰 방식이 기본값을, 평판이 보정을 정한다. */
   function govWinChance(s, mode) {
     const base = (GOV_BID_MODES[mode] || GOV_BID_MODES.fixed).winBase;
+    // 사풍 — 심사관이 아는 이름인가. 방산이 집인 회사는 유리하고, 여객기만
+    // 만들어 온 회사는 같은 제안서로도 밀린다.
+    const bonus = (((s.trait || {}).gov) || {}).winBonus || 0;
     // 평판 0은 유효한 값(최악)이다 — ||는 0을 50으로 되살려 바닥 평판이 보정을 피해 간다.
-    return Math.max(0.15, Math.min(0.85, base + ((s.reputation ?? 50) - 50) * 0.005));
+    return Math.max(0.15, Math.min(0.85, base + bonus + ((s.reputation ?? 50) - 50) * 0.005));
   }
 
   /**
@@ -1068,7 +1092,7 @@
         const convCost = Math.round(p.devCost * m.convRate);
         // 경쟁 상대 — 그 세그먼트에서 실제로 팔고 있는 제조사가 맞불을 놓는다.
         const year = CONFIG.startYear + Math.floor(s.turn / 4);
-        const rivals = Fleet.availableTypes(p.segment, year).filter((t) => !(s.playerMakers || []).includes(t.maker));
+        const rivals = Fleet.availableTypes(p.segment, year).filter((t) => !(s.playerMakers || []).includes(t.maker) && !(s.acquiredTypes || {})[t.id]);
         const rivalType = rivals.length ? rivals.reduce((a, b) => (b.power > a.power ? b : a)) : null;
         const rivalMaker = rivalType && Fleet.MAKER_BY_ID[rivalType.maker];
         h.remember('mission', m.id);
@@ -1103,6 +1127,66 @@
           detail: '여객 사업에 집중한다. 공고는 몇 년 뒤에나 다시 온다',
           fallback: true,
           apply: () => '특수기 사업을 넘겼다. 개조 라인을 세울 여력은 여객기에 쓴다.',
+        },
+      ],
+    },
+
+    // ── 경쟁사 프로그램 인수 — A220 이야기 ──
+    {
+      id: 'rival_takeover',
+      name: '흔들리는 프로그램 — 인수 제안',
+      // 결함 파동(양수 위기) 중인 경쟁 기종만 매물로 나온다. 몇 년에 한 번 오는
+      // 큰 기회라 쿨다운이 길다 — 상시 후보면 위기 자체가 쇼핑 목록이 된다.
+      weight: (s) => {
+        if (s.turn - (s.lastTakeoverOfferTurn ?? -99) < TAKEOVER.cooldown) return 0;
+        if (s.cash < 1200) return 0;
+        return takeoverTarget(s) ? 6 : 0;
+      },
+      text: (s, h) => {
+        const t = takeoverTarget(s);
+        s.lastTakeoverOfferTurn = s.turn;
+        const maker = Fleet.MAKER_BY_ID[t.maker];
+        const seg = SEGMENTS[t.segment];
+        const fullPrice = Math.round(seg.devBase * TAKEOVER.fullRate);
+        const bpPrice = Math.round(seg.devBase * TAKEOVER.blueprintRate);
+        const qty = h.rng.int(TAKEOVER.backlogQty[0], TAKEOVER.backlogQty[1]);
+        h.remember('type', t.id);
+        h.remember('qty', qty);
+        return (
+          `결함 파동에 짓눌린 ${iGa(maker ? maker.name : t.maker)} <b>${t.name}</b> 프로그램(${seg.name} ${t.seats}석 · ${t.range.toLocaleString('en-US')}km)을 매물로 내놨다. ` +
+          `통째 인수는 ${money(fullPrice)} — 라인과 손해 보는 승계 계약 ${qty}기, 남의 설계라는 위험까지 함께다. ` +
+          `도면·형식증명만 사면 ${money(bpPrice)}. 에어버스가 C시리즈를 이렇게 가져갔다.`
+        );
+      },
+      options: [
+        {
+          id: 'full',
+          label: '통째로 인수한다',
+          detail: '헐값. 라인·기존 선단 지원이 딸려오지만, 저마진 승계 계약과 높은 결함 위험도 함께다',
+          apply: (s, h) => {
+            const r = root.AirlinerEngine.acquireProgram(s, h.recall('type'), 'full', { backlogQty: h.recall('qty') });
+            return r.ok
+              ? `계약서에 서명했다. ${r.program.name}은 이제 우리 기종이다 — 통합이 끝나면 인도가 시작된다.`
+              : `인수는 무산됐다 — ${r.error}`;
+          },
+        },
+        {
+          id: 'blueprint',
+          label: '도면과 형식증명만 산다',
+          detail: '몇 배 비싸다. 대신 부채 없이 깨끗하게 시작한다 — 라인은 우리가 세운다',
+          apply: (s, h) => {
+            const r = root.AirlinerEngine.acquireProgram(s, h.recall('type'), 'blueprint');
+            return r.ok
+              ? `${r.program.name}의 도면과 형식증명을 가져왔다. 라인을 세우는 것부터가 우리 일이다.`
+              : `인수는 무산됐다 — ${r.error}`;
+          },
+        },
+        {
+          id: 'pass',
+          label: '지나가게 둔다',
+          detail: '남의 위기에 손대지 않는다. 프로그램은 다른 곳으로 넘어가거나 사라진다',
+          fallback: true,
+          apply: () => '매물을 넘겼다. 그 프로그램의 운명은 남의 이야기로 남는다.',
         },
       ],
     },

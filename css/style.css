@@ -58,6 +58,9 @@ h2 {
 .bad {
   color: var(--bad);
 }
+.accent {
+  color: var(--accent);
+}
 
 /* ── 상단 고정 영역 (HUD + 탭) ── */
 .topbar {
