@@ -2,7 +2,9 @@
 <html lang="ko">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover: 노치 단말에서 하단 액션 바를 세이프에어리어까지 깔기 위해 필요하다. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
     <title>에어라이너 — 여객기 제조사 경영</title>
     <link rel="stylesheet" href="css/style.css" />
     <link
@@ -11,8 +13,12 @@
     />
   </head>
   <body>
-    <header id="hud" class="hud"></header>
-    <nav id="tabs" class="tabs"></nav>
+    <!-- HUD와 탭은 한 덩어리로 고정된다. 따로 sticky 를 걸면 HUD 높이가 화면 폭에 따라
+         달라져 탭의 top 값을 맞출 수 없다. -->
+    <div class="topbar">
+      <header id="hud" class="hud"></header>
+      <nav id="tabs" class="tabs"></nav>
+    </div>
     <main id="panel" class="panel"></main>
 
     <!-- 턴 정산·오류가 이 토스트로만 전달되므로 라이브 리전으로 선언한다. -->
@@ -22,10 +28,8 @@
       <div class="modal-card"><div class="modal-body"></div></div>
     </div>
 
-    <footer class="foot">
-      <span>에어라이너 · 20년간 여객기 제조사를 경영한다</span>
-      <button class="ghost small" data-action="new-game">새 게임</button>
-    </footer>
+    <!-- 하단 액션 바 — 엄지가 닿는 자리. 내용은 ui.js 가 그린다(할 일 배지가 상태를 탄다). -->
+    <footer id="foot" class="foot"></footer>
 
     <!-- 순서 중요: 아래로 갈수록 위 모듈에 의존한다 (전역 네임스페이스 IIFE) -->
     <script src="js/rng.js"></script>

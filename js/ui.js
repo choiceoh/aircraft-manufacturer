@@ -23,6 +23,9 @@
     discountDraft: {},
     // 설계 미리보기가 통째로 교체돼도 입력한 기종명이 날아가지 않게 보관한다.
     designName: '',
+    // 수주 공고에서 펼쳐 둔 배경 설명. 패널을 통째로 다시 그려도 방금 읽던 곳이
+    // 접히지 않도록 여기에 기억한다 (details 의 open 상태는 innerHTML 교체로 날아간다).
+    folds: new Set(),
     // 다음 렌더에서 한 번만 재생할 연출. 슬라이더를 움직일 때마다 화면이 페이드되면
     // 오히려 조작이 굼떠 보이므로, 탭 전환·분기 종료에서만 켠다.
     animate: null,
@@ -47,6 +50,8 @@
     ui.animate = null;
     renderHud(s, anim === 'turn');
     renderTabs(s);
+    renderFoot(s);
+    measureTopbar();
 
     const panel = document.getElementById('panel');
     // 클래스를 지웠다 다시 붙여야 같은 애니메이션이 다시 재생된다.
@@ -66,7 +71,7 @@
         panel.innerHTML = P.renderProduction(s);
         break;
       case 'rfps':
-        panel.innerHTML = P.renderRfps(s, ui.discountDraft);
+        panel.innerHTML = P.renderRfps(s, ui.discountDraft, ui.folds);
         break;
       case 'finance':
         panel.innerHTML = P.renderFinance(s);
@@ -112,6 +117,8 @@
             ? '<span class="muted">· 경영 종료</span>'
             : `<span class="muted">· ${CONFIG.totalTurns - s.turn}분기 남음</span>`
         }</div>
+        <!-- 진행을 지우는 버튼은 엄지가 늘 얹히는 하단이 아니라 여기 둔다. -->
+        <button class="ghost small hud-new" data-action="new-game">새 게임</button>
       </div>
       <div class="hud-stats">
         ${hudStat('현금', money(s.cash), s.cash < 500 ? 'bad' : '', delta('cash', money))}
@@ -122,7 +129,17 @@
         ${hudStat('연료지수', fuel.toFixed(2), trend(fuel))}
         ${hudStat('수요지수', demand.toFixed(2), trend(demand) === 'up' ? 'good' : trend(demand) === 'down' ? 'bad' : '')}
       </div>
-      <button class="next" data-action="next-turn">분기 종료 ▸</button>`;
+      <button class="next hud-next" data-action="next-turn">분기 종료 ▸</button>`;
+  }
+
+  /**
+   * 고정 헤더의 실제 높이를 CSS 변수로 넘긴다.
+   * 설계 요약 바가 그 아래에 붙어야 하는데, 헤더 높이는 화면 폭·회사명 길이에 따라
+   * 달라져 CSS 만으로는 알 수 없다.
+   */
+  function measureTopbar() {
+    const bar = document.querySelector('.topbar');
+    if (bar) document.documentElement.style.setProperty('--topbar-h', bar.offsetHeight + 'px');
   }
 
   function hudStat(label, value, tone, delta) {
@@ -130,11 +147,63 @@
   }
 
   function renderTabs(s) {
-    document.getElementById('tabs').innerHTML = TABS.map((t) => {
+    // 탭 배지는 "여기 손댈 게 있다"를 뜻한다. 좁은 화면에서는 개요의 경영 경고를
+    // 읽으러 가는 것 자체가 스크롤 비용이라, 어느 탭에 일이 남았는지 여기서 알린다.
+    const byTab = {};
+    for (const t of P.todoList(s)) byTab[t.tab] = (byTab[t.tab] || 0) + 1;
+
+    const el = document.getElementById('tabs');
+    el.innerHTML = TABS.map((t) => {
       let badge = '';
-      if (t.id === 'rfps' && s.rfps.length) badge = `<i>${s.rfps.length}</i>`;
+      if (byTab[t.id]) badge = `<i class="todo">${byTab[t.id]}</i>`;
+      else if (t.id === 'rfps' && s.rfps.length) badge = `<i>${s.rfps.length}</i>`;
       return `<button class="tab ${t.id === ui.tab ? 'on' : ''}" data-action="tab" data-tab="${t.id}">${t.name}${badge}</button>`;
     }).join('');
+
+    // 탭이 여덟 개라 좁은 화면에서는 가로로 넘친다. 지금 보고 있는 탭이 스크롤 밖에
+    // 있으면 어디에 있는지 알 수 없으므로 늘 화면 안으로 끌어온다.
+    const on = el.querySelector('.tab.on');
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }
+
+  /**
+   * 하단 액션 바 — 엄지가 닿는 자리에 이번 분기의 행동만 남긴다.
+   * 분기 종료는 80번 누르는 버튼인데 HUD 안에 있으면 좁은 화면에서 손이 화면 꼭대기까지
+   * 올라가야 한다. 남은 할 일 개수를 옆에 붙여 두어 "빠뜨린 게 있나"를 누르기 전에 안다.
+   */
+  function renderFoot(s) {
+    const foot = document.getElementById('foot');
+    if (!foot) return;
+    if (s.gameOver) {
+      foot.innerHTML = `<span class="muted">경영 종료 · 기록을 살펴보라</span>
+        <button class="next" data-action="new-game">새 게임 ▸</button>`;
+      return;
+    }
+    const todos = P.todoList(s);
+    foot.innerHTML = `
+      ${
+        todos.length
+          ? `<button class="todo-btn" data-action="todo">할 일 <i>${todos.length}</i></button>`
+          : '<span class="muted">손봐야 할 일 없음</span>'
+      }
+      <button class="next foot-next" data-action="next-turn">분기 종료 ▸</button>`;
+  }
+
+  /** 할 일 시트 — 눌러서 그 탭으로 바로 건너뛴다. */
+  function openTodoSheet() {
+    const items = P.todoList(ui.state);
+    const name = (id) => (TABS.find((t) => t.id === id) || {}).name || id;
+    const body = items.length
+      ? `<ul class="todo-list">${items
+          .map(
+            (t) => `<li><button data-action="goto-tab" data-tab="${t.tab}">
+              <b>${P.esc(name(t.tab))}</b><span>${P.esc(t.text)}</span>
+            </button></li>`,
+          )
+          .join('')}</ul>`
+      : '<p class="muted">지금 손봐야 할 일은 없다. 분기를 넘겨도 좋다.</p>';
+    openModal(`<h2 id="modal-title">지금 할 일</h2>${body}
+      <div class="row modal-actions"><button class="ghost" data-action="close-modal">닫기</button></div>`);
   }
 
   function toast(text, tone) {
@@ -148,6 +217,27 @@
   }
 
   // ─────────────────────────────── 행동 처리 ───────────────────────────────
+
+  /**
+   * 확인 대화 — 네이티브 confirm() 을 쓰지 않는다.
+   *
+   * 좁은 화면에서 OS 팝업은 게임 밖 화면처럼 끼어들고, 무엇보다 **금액을 강조할 수 없다**.
+   * 위약금이 얼마나 나가는지가 한 줄 평문에 묻히면 "손절" 버튼이 파산 버튼이 된다.
+   * 되돌릴 수 없는 행동은 전부 이 대화를 지난다.
+   */
+  let pendingConfirm = null;
+
+  function askConfirm(opts, onOk) {
+    pendingConfirm = onOk;
+    openModal(`
+      <h2 id="modal-title">${P.esc(opts.title)}</h2>
+      ${opts.body}
+      <div class="row modal-actions">
+        <button class="ghost" data-action="close-modal">취소</button>
+        ${opts.altHtml || ''}
+        <button class="${opts.okClass || (opts.danger ? 'danger' : 'primary')}" data-action="confirm-ok">${P.esc(opts.ok || '진행')}</button>
+      </div>`);
+  }
 
   /** engine 호출 결과를 그대로 토스트로 흘려보내는 공통 래퍼 */
   function act(result, okMsg) {
@@ -174,7 +264,33 @@
     return true;
   }
 
+  /**
+   * 탭 이동 — 스크롤을 맨 위로 되돌린다.
+   * 좁은 화면에서 긴 패널을 한참 내려 보다 탭을 바꾸면, 새 패널의 한가운데가
+   * 펼쳐진 채 시작해 지금 어디를 보고 있는지 알 수 없다.
+   */
+  function gotoTab(tab) {
+    if (ui.tab !== tab) ui.animate = 'tab';
+    ui.tab = tab;
+    render();
+    scrollTop();
+  }
+
+  function scrollTop() {
+    if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
+  }
+
   function onClick(ev) {
+    // 접었다 편 자리는 기억해 둔다 — 후보를 고르면 패널을 통째로 다시 그리는데,
+    // 그때마다 방금 펼쳐 읽던 공고 배경이 도로 접히면 같은 곳을 계속 다시 연다.
+    const sum = ev.target.closest('summary[data-fold]');
+    if (sum) {
+      const id = sum.dataset.fold;
+      if (ui.folds.has(id)) ui.folds.delete(id);
+      else ui.folds.add(id);
+      return;
+    }
+
     const btn = ev.target.closest('[data-action]');
     if (!btn || btn.disabled) return;
     const s = ui.state;
@@ -187,10 +303,30 @@
 
     switch (a) {
       case 'tab':
-        if (ui.tab !== btn.dataset.tab) ui.animate = 'tab';
-        ui.tab = btn.dataset.tab;
-        render();
+        gotoTab(btn.dataset.tab);
         break;
+
+      case 'goto-tab':
+        closeModal();
+        gotoTab(btn.dataset.tab);
+        break;
+
+      case 'todo':
+        openTodoSheet();
+        break;
+
+      case 'confirm-ok': {
+        const fn = pendingConfirm;
+        closeModal();
+        if (fn) fn();
+        break;
+      }
+
+      case 'goto-preview': {
+        const el = document.getElementById('design-preview');
+        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        break;
+      }
 
       case 'next-turn':
         nextTurn();
@@ -316,10 +452,16 @@
         // 선주문이 걸려 있으면 매몰비용보다 위약이 훨씬 클 수 있다. 확인창이
         // 그 돈을 말하지 않으면 "손절"인 줄 알고 누른 버튼이 파산 버튼이 된다.
         const voidCost = E.voidRefundFor ? E.voidRefundFor(s, p) : 0;
-        const voidLine = voidCost > 0 ? `\n미인도 주문 파기로 선수금 반환·위약금 ${money(voidCost)}이 즉시 나갑니다.` : '';
-        if (confirm(`${p.name} 개발을 중단하시겠습니까?\n투입된 ${money(p.spent)}는 회수되지 않고 평판도 떨어집니다.${voidLine}`)) {
-          act(E.cancelProgram(s, btn.dataset.id));
-        }
+        askConfirm(
+          {
+            title: `${p.name} 개발 중단`,
+            body: `<p>투입된 <b>${money(p.spent)}</b>는 회수되지 않고 평판도 떨어진다.</p>
+              ${voidCost > 0 ? `<p class="warn-box">미인도 주문 파기로 선수금 반환·위약금 <b>${money(voidCost)}</b>이 즉시 나간다.</p>` : ''}`,
+            ok: '개발 중단',
+            danger: true,
+          },
+          () => act(E.cancelProgram(s, btn.dataset.id)),
+        );
         break;
       }
 
@@ -344,9 +486,15 @@
         break;
 
       case 'close-line': {
-        if (confirm('이 라인을 폐쇄하시겠습니까? 건설비의 20%만 회수됩니다.')) {
-          act(E.closeLine(s, btn.dataset.id));
-        }
+        askConfirm(
+          {
+            title: '조립 라인 폐쇄',
+            body: '<p>건설비의 <b>20%</b>만 회수된다. 다시 세우려면 처음부터 짓고 램프업도 다시 밟아야 한다.</p>',
+            ok: '폐쇄',
+            danger: true,
+          },
+          () => act(E.closeLine(s, btn.dataset.id)),
+        );
         break;
       }
 
@@ -397,11 +545,25 @@
 
       case 'sell-program': {
         const p = s.programs.find((x) => x.id === btn.dataset.id);
-        const sellVoid = p && E.voidRefundFor ? E.voidRefundFor(s, p) : 0;
-        const sellVoidLine = sellVoid > 0 ? `\n미인도 주문 파기로 선수금 반환·위약금 ${money(sellVoid)}이 매각 대금에서 즉시 나갑니다.` : '';
-        if (p && !confirm(`${p.name} 프로그램을 매각합니다. 되돌릴 수 없고 도면이 경쟁사로 넘어갑니다.${sellVoidLine} 진행할까요?`)) break;
-        const r = E.sellProgram(s, btn.dataset.id);
-        act(r, r.ok ? `${p ? p.name : '프로그램'}을 매각했다.` : null);
+        const sell = () => {
+          const r = E.sellProgram(s, btn.dataset.id);
+          act(r, r.ok ? `${p ? p.name : '프로그램'}을 매각했다.` : null);
+        };
+        if (!p) {
+          sell();
+          break;
+        }
+        const sellVoid = E.voidRefundFor ? E.voidRefundFor(s, p) : 0;
+        askConfirm(
+          {
+            title: `${p.name} 매각`,
+            body: `<p>되돌릴 수 없다. 도면이 경쟁사로 넘어가 그 시장의 경쟁이 세진다.</p>
+              ${sellVoid > 0 ? `<p class="warn-box">미인도 주문 파기로 선수금 반환·위약금 <b>${money(sellVoid)}</b>이 매각 대금에서 즉시 나간다.</p>` : ''}`,
+            ok: '매각',
+            danger: true,
+          },
+          sell,
+        );
         break;
       }
 
@@ -458,6 +620,10 @@
       // 끊기거나 ETOPS 가 값을 하게 된다. 미리보기만 갈면 여기가 옛 상태로 남는다.
       const opts = document.getElementById('design-options');
       if (opts) opts.innerHTML = P.renderDesignOptions(s, ui.spec);
+      // 좁은 화면에서는 평가표가 화면 밖으로 밀린다. 상단에 붙어 따라다니는 요약 바가
+      // 슬라이더를 움직이는 동안 결과를 보여주는 유일한 창이라, 여기서 같이 갈아끼운다.
+      const sum = document.getElementById('design-sum');
+      if (sum) sum.outerHTML = P.renderDesignSummary(s, ui.spec);
     } else if (el.dataset.action === 'share') {
       const p = s.programs.find((x) => x.id === el.dataset.id);
       if (!p) return;
@@ -528,23 +694,39 @@
     // 매 분기 뜨는데 수주 탭에 가도 고를 게 없다. 엔진의 무응찰 감점과 같은 기준을 쓴다.
     const unbid = s.rfps.filter((r) => !s.bids[r.id] && E.canBid(s, r)).length;
     if (unbid && s.rfps.length && ui.tab !== 'rfps') {
-      if (!confirm(`입찰하지 않은 공고가 ${unbid}건 있습니다. 그대로 분기를 종료할까요?`)) {
-        ui.tab = 'rfps';
-        render();
-        return;
-      }
+      askConfirm(
+        {
+          title: `입찰하지 않은 공고 ${unbid}건`,
+          body: '<p>응찰하지 않은 공고는 포기한 것으로 처리되고, 그 항공사와의 <b>관계가 깎인다</b>.</p>',
+          ok: '그대로 분기 종료',
+          okClass: 'ghost',
+          altHtml: '<button class="primary" data-action="goto-tab" data-tab="rfps">공고 보러 가기</button>',
+        },
+        endTurnNow,
+      );
+      return;
     }
 
     // 답하지 않은 사건은 무대응으로 처리된다. 그 사실을 모르고 넘기지 않도록 한 번 묻는다.
     if (s.decision) {
-      if (!confirm(`"${s.decision.name}"에 답하지 않았습니다. 무대응으로 처리하고 분기를 종료할까요?`)) {
-        ui.tab = 'overview';
-        ui.animate = 'tab';
-        render();
-        return;
-      }
+      askConfirm(
+        {
+          title: '답하지 않은 결정',
+          body: `<p>"${P.esc(s.decision.name)}"에 답하지 않았다. 이대로 넘기면 <b>무대응</b>으로 처리된다.</p>`,
+          ok: '무대응으로 종료',
+          okClass: 'ghost',
+          altHtml: '<button class="primary" data-action="goto-tab" data-tab="overview">결정 보러 가기</button>',
+        },
+        endTurnNow,
+      );
+      return;
     }
 
+    endTurnNow();
+  }
+
+  function endTurnNow() {
+    const s = ui.state;
     const r = E.endTurn(s);
     if (!r.ok) {
       toast(r.error, 'bad');
@@ -563,6 +745,8 @@
     ui.tab = 'overview';
     ui.animate = 'turn';
     render();
+    // 정산 결과는 개요 맨 위 결산 카드에 남는다. 스크롤이 아래에 있으면 그걸 못 본다.
+    scrollTop();
     if (s.gameOver) showGameOver(s);
   }
 
@@ -610,6 +794,7 @@
   }
 
   function closeModal() {
+    pendingConfirm = null;
     const modal = document.getElementById('modal');
     modal.classList.remove('show');
     modal.setAttribute('aria-hidden', 'true');
@@ -708,6 +893,10 @@
     document.addEventListener('input', onInput);
     document.addEventListener('change', onChange);
     document.addEventListener('keydown', onKeydown);
+    window.addEventListener('resize', measureTopbar);
+    // 토스트는 화면 아래를 가린다. 다 읽었으면 눌러서 바로 치울 수 있어야 한다.
+    const toastEl = document.getElementById('toast');
+    if (toastEl) toastEl.addEventListener('click', () => (toastEl.className = 'toast'));
     render();
     if (ui.state.gameOver) showGameOver(ui.state);
     else if (saved && !saved.pendingCompanyChoice) toast('저장된 경영을 이어서 진행한다.');

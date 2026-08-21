@@ -83,6 +83,45 @@
       </table>`;
   }
 
+  /**
+   * 지금 손봐야 할 일 — 탭 배지와 하단 액션 바가 이 목록 하나를 같이 쓴다.
+   *
+   * 개요의 "경영 경고"와 내용이 겹치지만 이쪽에는 **어느 탭으로 가야 하는지**가 붙어 있다.
+   * 좁은 화면에서는 경고를 읽으러 개요까지 스크롤하는 것 자체가 비용이라, 화면 어디에
+   * 있든 남은 일의 개수가 보이고 눌러서 그 탭으로 바로 건너뛸 수 있어야 한다.
+   */
+  function todoList(s) {
+    if (!s || s.gameOver) return [];
+    const out = [];
+    if (s.decision) out.push({ tab: 'overview', text: `"${s.decision.name}" 결정에 답하지 않았다` });
+
+    // 응찰 가능한 공고만 센다 — 엔진의 무응찰 감점과 같은 기준이다. 초반처럼 고를 기종이
+    // 없는 공고까지 세면 매 분기 손댈 수 없는 할 일이 배지에 남는다.
+    const unbid = (s.rfps || []).filter((r) => !s.bids[r.id] && E.canBid(s, r)).length;
+    if (unbid) out.push({ tab: 'rfps', text: `응찰할 수 있는 공고 ${unbid}건이 비어 있다` });
+
+    for (const p of s.programs.filter((x) => x.phase === 'production')) {
+      if (orderedBy(s, p.id) > 0 && !s.lines.some((l) => l.programId === p.id)) {
+        out.push({ tab: 'production', text: `${p.name} 수주 잔고가 있는데 조립 라인이 없다` });
+      }
+    }
+    for (const p of s.programs.filter((x) => x.phase === 'dev' && x.share <= 0)) {
+      out.push({ tab: 'programs', text: `${p.name} 개발이 동결됐다 — 인력을 배분하라` });
+    }
+    const idle = s.lines.filter((l) => l.idle).length;
+    if (idle) out.push({ tab: 'production', text: `가동 중지된 라인이 ${idle}개 — 유지비는 계속 나간다` });
+
+    const runway = E.cashRunway(s);
+    if (runway !== null && runway <= 4) {
+      out.push({
+        tab: 'finance',
+        text: runway <= 0 ? '이번 분기 지출을 감당할 현금이 없다' : `${runway}분기 뒤 현금이 마른다`,
+      });
+    }
+    if (s.debt >= CONFIG.maxDebt * 0.9) out.push({ tab: 'finance', text: '차입이 한도에 근접했다' });
+    return out;
+  }
+
   function renderOverview(s) {
     const warnings = [];
 
@@ -344,6 +383,7 @@
       .join('');
 
     return `
+      ${renderDesignSummary(s, spec)}
       <section class="card">
         <h3>세그먼트</h3>
         <p class="muted">${esc(seg.desc)}</p>
@@ -468,6 +508,33 @@
       <span>${label}<b id="lbl-${key}">${num(value)}${unit}</b></span>
       <input type="range" data-action="design-input" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${value}">
     </label>`;
+  }
+
+  /**
+   * 설계 요약 바 — 좁은 화면에서 상단에 붙어 따라다닌다.
+   *
+   * 2단 그리드가 1단으로 접히면 슬라이더는 위, 평가표는 저 아래로 밀린다.
+   * 그러면 값을 움직이면서 그 결과를 볼 수가 없어 설계가 눈감고 하는 일이 된다.
+   * 결정을 좌우하는 숫자만 뽑아 늘 보이게 둔다 (나머지 평가는 아래 미리보기 그대로).
+   */
+  function renderDesignSummary(s, spec) {
+    const ev = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
+    const upfront = Math.round(ev.devCost * CONFIG.launchUpfrontRate);
+    const affordable = s.cash >= upfront;
+    const cell = (label, value, tone) =>
+      `<span class="ds-cell ${tone || ''}"><i>${label}</i><b>${value}</b></span>`;
+    return `<div class="design-sum" id="design-sum">
+        <div class="ds-strip">
+          ${cell('좌석', num(ev.seats) + '석')}
+          ${cell('항속', num(ev.range) + 'km')}
+          ${cell('개발비', money(ev.devCost))}
+          ${cell('착수금', money(upfront), affordable ? '' : 'bad')}
+          ${cell('기간', ev.devQuarters + '+' + ev.certQuarters + '분기')}
+          ${cell('연비', String(ev.efficiency))}
+          ${cell('객실', String(ev.comfort))}
+        </div>
+        <button class="ghost small ds-jump" data-action="goto-preview">평가 ▾</button>
+      </div>`;
   }
 
   /** 설계 미리보기 — 슬라이더를 움직일 때 이 영역만 갈아끼운다. */
@@ -889,7 +956,7 @@
 
   // ─────────────────────────────── 수주 ───────────────────────────────
 
-  function renderRfps(s, discountDraft) {
+  function renderRfps(s, discountDraft, folds) {
     if (!s.rfps.length) return '<div class="card"><p class="muted">이번 분기에는 새 입찰 공고가 없다.</p></div>';
 
     return s.rfps
@@ -906,11 +973,28 @@
         const tier = E.loyaltyTier ? E.loyaltyTier(s, rfp.airlineId) : 0;
         const tierBadge = tier === 2 ? ' <span class="tag good">핵심 고객</span>' : tier === 1 ? ' <span class="tag">단골</span>' : '';
 
+        // 한 공고의 배경 설명만 12행이다. 좁은 화면에서 그걸 다 펼쳐 두면 공고 세 건에
+        // 스크롤이 몇 화면씩 되고, 정작 손대야 할 후보·할인율이 화면 밖으로 밀린다.
+        // 판단에 곧바로 쓰는 값만 칩으로 남기고 배경은 접는다 (펼침 상태는 ui.js 가 기억한다).
+        const open = folds && folds.has(rfp.id);
+        const chips = [
+          `${rfp.segmentName} · ${rfp.reqSeats}석 · ${num(rfp.reqRange)}km`,
+          `가격 민감도 ${rfp.priceSensitivity >= 1.2 ? '매우 높음' : rfp.priceSensitivity >= 1.0 ? '높음' : rfp.priceSensitivity >= 0.8 ? '보통' : '낮음'}`,
+          `경쟁 ${rfp.rivalHint.label}`,
+          `관계 ${Math.round(s.relations[rfp.airlineId] ?? 40)}`,
+        ];
+        if (rfp.reqEtops) chips.push('<b class="warn">ETOPS 필수</b>');
+        if (rfp.reqField) chips.push(`<b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'}</b>`);
+        if (bid) chips.push('<b class="good">응찰 중</b>');
+
         return `<div class="card rfp">
           <div class="row between">
             <h3>${esc(rfp.airlineName)} <span class="muted">${esc(rfp.home)}</span>${tierBadge}</h3>
             <span class="qty">${rfp.qty}기</span>
           </div>
+          <div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join('')}</div>
+          <details class="fold"${open ? ' open' : ''}>
+          <summary data-fold="${rfp.id}">공고 배경 · 요구 조건</summary>
           <table class="spec">
             ${airline && airline.doctrine ? `<tr><th>구매 독트린</th><td><b>${esc(airline.doctrine)}</b> — ${esc(airline.doctrineNote || '')}</td></tr>` : ''}
             ${airline && airline.enginePref ? `<tr><th>선호 엔진</th><td>${esc(airline.enginePref)} <span class="muted">— 맞추면 +2 · 낯선 공급사는 −1 · 이중화는 어느 쪽이든 맞고 감점을 면한다</span></td></tr>` : ''}
@@ -929,6 +1013,7 @@
             <tr><th>우리와의 관계</th><td>${Math.round(s.relations[rfp.airlineId] ?? 40)} / 100</td></tr>
             <tr><th>보유 우리 기체</th><td>${fleetSummary(s, rfp.airlineId)}</td></tr>
           </table>
+          </details>
           ${
             !candidates.length
               ? '<p class="muted">이 세그먼트에 응찰 가능한 기종이 없다. <b>개발 40%</b>부터는 선주문으로 응찰할 수 있다 — 미인증 감점을 받지만 선수금이 개발을 먹인다.</p>'
@@ -1503,11 +1588,13 @@
   }
 
   root.AirlinerPanels = {
+    todoList,
     renderOverview,
     renderTrends,
     mandateCard,
     renderCareer,
     renderDesign,
+    renderDesignSummary,
     renderDesignOptions,
     renderDesignPreview,
     renderPrograms,

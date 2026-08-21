@@ -6534,3 +6534,81 @@ test('정부 특수기: 순위표·경력 보고서도 민항 경계를 지킨�
   assert.notStrictEqual(gov.name, 'gov', '원시 키가 보고서에 노출되면 안 된다');
   assert.match(gov.name, /정부|군/, '정부·군 계정으로 읽혀야 한다');
 });
+
+// ─────────────────────── 좁은 화면 조작 ───────────────────────
+
+test('할 일 목록이 손댈 탭과 함께 나온다', () => {
+  const s = E.newGame(1301);
+  // 깨끗한 출발점 — 첫 분기의 공고·결정이 섞이면 무엇이 잡혔는지 알 수 없다.
+  s.rfps = [];
+  s.decision = null;
+  assert.deepStrictEqual(P.todoList(s), [], '손댈 것이 없으면 빈 목록이어야 한다');
+
+  // 동결된 개발은 프로그램 탭 일이다.
+  assert.ok(E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 50 }, 'DN-200').ok);
+  const dev = s.programs.find((p) => p.name === 'DN-200');
+  dev.share = 0;
+  const frozen = P.todoList(s).find((t) => /동결/.test(t.text));
+  assert.ok(frozen, '동결된 개발이 할 일에 잡혀야 한다');
+  assert.strictEqual(frozen.tab, 'programs', '인력 배분은 프로그램 탭에서 한다');
+
+  // 잔고는 있는데 라인이 없으면 생산 탭 일이다.
+  const legacy = s.programs.find((p) => p.phase === 'production');
+  s.lines = [];
+  const noLine = P.todoList(s).find((t) => /조립 라인이 없다/.test(t.text));
+  assert.ok(noLine, '라인 없는 수주 잔고가 잡혀야 한다');
+  assert.strictEqual(noLine.tab, 'production');
+  assert.ok(noLine.text.includes(legacy.name), '어느 기종인지 말해야 한다');
+
+  // 경영이 끝난 뒤에는 시킬 일이 없다 — 종료 후 조작은 어차피 잠긴다.
+  s.gameOver = { reason: 'end' };
+  assert.deepStrictEqual(P.todoList(s), [], '종료된 판에 할 일이 남으면 안 된다');
+});
+
+test('할 일: 응찰할 수 있는 공고만 센다', () => {
+  const s = E.newGame(1302);
+  s.decision = null;
+  s.bids = {};
+  const biddable = s.rfps.filter((r) => E.canBid(s, r)).length;
+  const listed = P.todoList(s).filter((t) => t.tab === 'rfps');
+  if (biddable) {
+    assert.strictEqual(listed.length, 1, '미입찰 공고는 한 줄로 묶어 알린다');
+    assert.ok(listed[0].text.includes(String(biddable)), `응찰 가능한 ${biddable}건을 세어야 한다`);
+  } else {
+    assert.strictEqual(listed.length, 0, '고를 기종이 없는 공고를 할 일로 세우면 안 된다');
+  }
+  // 다 응찰하면 사라진다.
+  for (const rfp of s.rfps) {
+    const cand = s.programs.find((p) => p.phase === 'production' && p.segment === rfp.segment);
+    if (cand) E.setBid(s, rfp.id, cand.id, 0.1);
+  }
+  assert.strictEqual(P.todoList(s).filter((t) => t.tab === 'rfps').length, 0, '응찰을 마쳤는데 할 일이 남았다');
+});
+
+test('수주 공고는 접힌 채로 나오고, 펼친 것만 열려 있다', () => {
+  const s = E.newGame(1303);
+  if (!s.rfps.length) return;
+  const id = s.rfps[0].id;
+  const closed = P.renderRfps(s, {});
+  assert.ok(/<details class="fold">/.test(closed), '공고 배경은 기본적으로 접혀 있어야 한다');
+  assert.ok(!/<details class="fold" open>/.test(closed), '접어 두기로 한 블록이 열린 채 나왔다');
+  // 칩은 접혀 있어도 보인다 — 판단에 바로 쓰는 값이라 접으면 안 된다.
+  assert.ok(/class="chip"/.test(closed), '요약 칩이 없으면 접힌 카드에서 아무것도 읽을 수 없다');
+
+  const opened = P.renderRfps(s, {}, new Set([id]));
+  assert.ok(/<details class="fold" open>/.test(opened), '펼쳐 둔 공고는 다시 그려도 열려 있어야 한다');
+});
+
+test('되돌릴 수 없는 행동은 네이티브 confirm 을 쓰지 않는다', () => {
+  // 브라우저 기본 팝업은 금액을 강조할 수 없다 — 위약금이 평문에 묻히면
+  // "손절"인 줄 알고 누른 버튼이 파산 버튼이 된다. DOM 이 필요해 실행은 못 하므로
+  // 소스에서 회귀만 막는다.
+  const src = require('node:fs').readFileSync(require('node:path').join(JS, 'ui.js'), 'utf8');
+  assert.ok(!/[^.\w]confirm\(`/.test(src) && !/[^.\w]confirm\('/.test(src), 'ui.js 가 네이티브 confirm 을 다시 쓰고 있다');
+  assert.ok(/function askConfirm\(/.test(src), '확인 대화 헬퍼가 사라졌다');
+  // 위약금이 붙는 두 행동은 반드시 그 금액을 대화에 실어야 한다.
+  for (const action of ["case 'cancel-prog'", "case 'sell-program'"]) {
+    const block = src.slice(src.indexOf(action), src.indexOf(action) + 1400);
+    assert.ok(/voidRefundFor/.test(block) && /askConfirm/.test(block), `${action} 이 위약금을 확인 대화에 싣지 않는다`);
+  }
+});
