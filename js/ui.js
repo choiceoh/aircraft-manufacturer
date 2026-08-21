@@ -389,6 +389,18 @@
         break;
       }
 
+      case 'research-start': {
+        const r = E.startResearch(s, btn.dataset.id);
+        act(r, r.ok ? '연구에 착수했다.' : null);
+        break;
+      }
+
+      case 'research-stop': {
+        const r = E.stopResearch(s);
+        act(r, r.ok ? '연구를 중단했다.' : null);
+        break;
+      }
+
       case 'raise': {
         const r = E.raiseEquity(s, Number(btn.dataset.amt));
         act(r, r.ok ? '증자를 마쳤다. 지분이 희석됐다.' : null);

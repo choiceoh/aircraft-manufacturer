@@ -663,7 +663,7 @@
             p.engines === 4 ? '4발 ✓' : p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'
           }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${p.altEngine ? ' · 이중화' : ''}${
             p.familyId ? ' · 패밀리' : ''
-          }${p.derivative ? ' · 파생형' : ''}${p.govMission ? ' · 특수기 파생' : ''}</td></tr>`,
+          }${p.derivative ? ' · 파생형' : ''}${p.govMission ? ' · 특수기 파생' : ''}${p.acquired ? ' · 인수 프로그램' : ''}</td></tr>`,
         );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
@@ -878,6 +878,7 @@
 
     return `
       ${servicesCard(s)}
+      ${researchCard(s)}
       <section class="card"><h3>조달 전략</h3>
         <p class="muted">외주를 늘리면 단가가 내려가지만 공급망 사고가 길어진다. 787이 실제로 치른 대가다.</p>
         <div class="mats">${sourcingButtons}</div>
@@ -895,6 +896,35 @@
       </section>
       <section class="card"><h3>조립 라인</h3><div class="lines">${lines}</div></section>
       ${stocks ? `<section class="card"><h3>미인도 재고 (화이트테일)</h3><p class="muted">주문 취소 등으로 남은 기체. 오래 쥐고 있으면 유지비가 나간다.</p>${stocks}</section>` : ''}`;
+  }
+
+  /**
+   * 장기 기술 연구 — 스컹크웍스. 분기마다 돈을 태워 몇 년 뒤 회사 상수를 바꾼다.
+   * 효과는 완료 이후의 신규 설계·생산에만 붙는다.
+   */
+  function researchCard(s) {
+    const R = root.AirlinerData.RESEARCH_PROJECTS;
+    const research = s.research || { active: null, progress: {}, done: {} };
+    const rows = R.map((proj) => {
+      const done = research.done[proj.id];
+      const active = research.active === proj.id;
+      const prog = research.progress[proj.id] || 0;
+      if (done) return `<div class="line"><div class="row between"><b>${esc(proj.name)}</b><span class="tag good">완료 — ${esc(proj.effect)}</span></div></div>`;
+      const status = active
+        ? `<span class="tag">${prog}/${proj.quarters}분기 진행 중 · 분기 ${money(proj.costPerQuarter)}</span>
+           <button data-action="research-stop">중단</button>`
+        : `<button data-action="research-start" data-id="${proj.id}" ${research.active ? 'disabled' : ''}>
+             착수 · 분기 ${money(proj.costPerQuarter)} × ${proj.quarters - prog}분기</button>`;
+      return `<div class="line"><div class="row between"><b>${esc(proj.name)}</b>${prog > 0 && !active ? `<span class="muted">진행 ${prog}/${proj.quarters}</span>` : ''}</div>
+        <p class="hint">${esc(proj.desc)} <b>${esc(proj.effect)}.</b></p>
+        <div class="row">${status}</div></div>`;
+    }).join('');
+    return `
+      <section class="card"><h3>장기 기술 연구</h3>
+        <p class="muted">연구소는 하나다 — 한 번에 한 프로젝트. 완료된 연구는 <b>그 이후의 신규 설계·생산</b>에 영구히 적용된다.
+          이미 나는 기체는 소급되지 않는다. 중단하면 진행분은 남는다.</p>
+        ${rows}
+      </section>`;
   }
 
   /**
@@ -1232,7 +1262,7 @@
       const o = B.bestOffering(s, seg, Math.round(sg.seats.ref), Math.round(sg.range.ref));
       const mine = s.programs.filter((p) => p.segment === seg && p.phase === 'production');
       const ours = mine.length ? mine.map((p) => esc(p.name)).join(', ') : '<span class="muted">없음</span>';
-      const pool = Fleet.availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker)).length;
+      const pool = Fleet.availableTypes(seg, year).filter((t) => !(s.playerMakers || []).includes(t.maker) && !(s.acquiredTypes || {})[t.id]).length;
       return `<tr>
         <th>${sg.name}</th>
         <td>${o ? `<b>${esc(o.name)}</b>` : '—'} <span class="muted">· 판매 중 ${pool}종 · 우리: ${ours}</span></td>

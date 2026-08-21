@@ -73,6 +73,10 @@
     const range = clamp(spec.range, seg.range.min, seg.range.max);
     const tech = clamp(spec.tech, 0, 100);
 
+    // 완료된 장기 연구 — engine.researchContext(s)가 넣어 준다.
+    // 효과는 설계 시점에 굳는다: 연구는 미래의 설계를 바꾸지, 나는 기체를 소급하지 않는다.
+    const res = spec.research || {};
+
     // 파생형 판정을 경험 할인보다 먼저 한다 — 파생형은 경험 할인을 받지 않는다.
     // 파생 배율(derivRates)이 "원형의 설계·인증을 물려받는 값"을 이미 전부 담고
     // 있는데, 원형을 완성했다는 사실이 경험으로도 잡히므로 겹치면 이중 할인이다.
@@ -244,6 +248,10 @@
       engineersNeeded *= house.eng === undefined ? 1 : house.eng;
     }
 
+    // FBW 연구 — 전자식 조종은 설계 반복을 줄인다. 파생형에도 붙는다:
+    // 개발 기간의 비율 단축이라 파생 배수와 겹쳐도 이중 할인이 아니다.
+    if (res.fbw) devQuarters *= 0.92;
+
     // 연비 지수(0~100). 기술 투자 + 소재가 좌우하고, 과도한 항속은 구조중량으로 깎인다.
     const rangePenalty = Math.max(0, rangeRatio - 1) * 9;
     // 연료 여유는 공짜가 아니다. 탱크와 보강 구조를 짧은 노선에서도 지고 다닌다 —
@@ -260,13 +268,14 @@
         (growth ? 1 : 0) - (quad ? 7 : 0) - reEngineSqueeze) *
         sec.effPerSeat *
         (0.72 + secFit * 0.28) +
-        wingP.cruiseGain,
+        wingP.cruiseGain +
+        (res.aero ? 3 : 0),
       5,
       99,
     );
 
-    // 객실 쾌적성 — 항공사 프리미엄 노선 평가에 반영.
-    const comfort = clamp(38 + tech * 0.28 + fus.comfortBonus + eng.comfort + sec.comfort * 2.2, 10, 99);
+    // 객실 쾌적성 — 항공사 프리미엄 노선 평가에 반영. FBW 는 비행 품질로도 돌아온다.
+    const comfort = clamp(38 + tech * 0.28 + fus.comfortBonus + eng.comfort + sec.comfort * 2.2 + (res.fbw ? 3 : 0), 10, 99);
 
     // 표준 생산원가: 크기·항속에 비례, 기술/소재가 올린다.
     const unitCostBase =
@@ -295,8 +304,10 @@
 
     // 개발 리스크: 기술을 밀어붙이고 복합재를 쓸수록 결함 확률이 오른다.
     // 엔진 신뢰성과 성숙도가 곱으로 얹힌다 — 신형 엔진 초도 채택이 실제로 위험한 이유.
+    // 복합재 연구는 소재가 얹는 위험만 깎는다 — 기술을 밀어붙인 위험은 그대로다.
+    const matRisk = (fus.riskBonus + wmat.riskBonus) * (res.composite ? 0.6 : 1);
     const defectRisk = clamp(
-      (0.05 + (tech / 100) * 0.22 + fus.riskBonus + wmat.riskBonus) * eng.riskMult * engMaturity * expRisk * (maintainable ? 0.9 : 1),
+      (0.05 + (tech / 100) * 0.22 + matRisk) * eng.riskMult * engMaturity * expRisk * (maintainable ? 0.9 : 1),
       0.03,
       CONFIG.defectRiskMax,
     );
@@ -370,10 +381,11 @@
    * 누적 생산 n번째 기체의 실제 원가 — 학습곡선(87%)을 적용한다.
    * 초기 기체는 표준원가를 크게 웃돌아, 램프업 구간에서 적자가 나는 게 정상이다.
    */
-  function unitCostAt(unitCostBase, cumulativeUnits) {
+  function unitCostAt(unitCostBase, cumulativeUnits, firstUnitPremium) {
     const n = Math.max(1, cumulativeUnits);
     const factor = Math.max(CONFIG.learningFloor, Math.pow(n, CONFIG.learningExponent));
-    return unitCostBase * CONFIG.firstUnitPremium * factor;
+    // 린 생산 연구가 초도기 할증을 낮춘다 — 엔진이 회사 상태에서 넘겨준다.
+    return unitCostBase * (firstUnitPremium || CONFIG.firstUnitPremium) * factor;
   }
 
   /** 설계 기본값 — 세그먼트를 고를 때마다 슬라이더를 이 값으로 되돌린다. */

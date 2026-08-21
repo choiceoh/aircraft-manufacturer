@@ -585,7 +585,7 @@
   function bestOffering(state, segmentId, reqSeats, reqRange) {
     const year = Fleet.yearAt(state.turn, CONFIG.startYear);
     // 이 판의 개발 지연을 얹은 달력으로 본다 — 밀린 기종은 밀린 날부터 문턱이 된다.
-    const pool = Fleet.availableTypes(segmentId, year, state.rivalDelays);
+    const pool = Fleet.availableTypes(segmentId, year, state.rivalDelays).filter((t) => !(state.acquiredTypes || {})[t.id]);
 
     let best = null;
     for (const c of state.competitors) {
