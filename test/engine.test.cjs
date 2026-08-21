@@ -7935,3 +7935,45 @@ test('국산화: 다른 다섯 회사에는 이 사업이 없다', () => {
     assert.deepStrictEqual(E.designContext(s).domesticEngines, []);
   }
 });
+
+test('국산화: 대상 기종이 먼저 죽어도 엔진은 남고, 개발 중 기종도 갈아탄다', () => {
+  // 완성 시점에 갈아 끼울 기체가 하나도 없을 수 있다(그 사이 중단·매각).
+  // 그때도 엔진 자체는 만들어진 것이므로 해금은 살아 있어야 한다 — 넣은 돈이
+  // 통째로 사라지면 "대상을 잃으면 개발비도 잃는다"는 숨은 규칙이 생긴다.
+  const s = E.newGame(4309, 'uac');
+  s.cash += 40000;
+  const ssj = s.programs.find((p) => p.engine === 'cf34-3');
+  assert.ok(ssj && ssj.phase === 'dev', 'UAC 는 서랍 속 설계안을 갖고 시작한다');
+
+  assert.ok(E.startLocalEngine(s, 'cf34-3').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  E.cancelProgram(s, ssj.id);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(s.localEngineProject, null, '대상이 없어도 사업은 끝난다');
+  assert.ok(s.localEngines.includes('d436'), '엔진은 만들어졌으므로 해금은 남는다');
+  assert.strictEqual(ssj.engine, 'cf34-3', '죽은 기종은 건드리지 않는다');
+
+  // 개발 중 기종은 갈아타고 개발을 그대로 이어 간다.
+  const t = E.newGame(4309, 'uac');
+  t.cash += 60000;
+  const dev = t.programs.find((p) => p.phase === 'dev');
+  dev.share = 100;
+  E.startLocalEngine(t, 'cf34-3');
+  E.fundLocalEngine(t, t.localEngineProject.cost);
+  for (let i = 0; i < 20 && t.localEngineProject; i++) E.endTurn(t);
+  assert.strictEqual(dev.engine, 'd436', '개발 중 기종도 갈아탄다');
+  assert.notStrictEqual(dev.phase, 'cancelled', '갈아탔다고 개발이 죽으면 안 된다');
+});
+
+test('국산화: 사업을 걸어도 결정론은 그대로다', () => {
+  const run = () => {
+    const g = E.newGame(4310, 'uac');
+    g.cash += 40000;
+    E.startLocalEngine(g, 'cfm56-5b');
+    E.fundLocalEngine(g, 600);
+    for (let i = 0; i < 14; i++) E.endTurn(g);
+    return JSON.stringify(g);
+  };
+  assert.strictEqual(run(), run(), '같은 시드·같은 조작은 같은 결과여야 한다');
+});

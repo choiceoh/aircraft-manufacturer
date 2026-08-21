@@ -1108,7 +1108,10 @@
              const q = E.localEngineQuarters(s, t);
              const dEff = to.eff - t.engine.eff;
              const dCost = Math.round((to.costMult / t.engine.costMult - 1) * 100);
-             return `<button class="mat" data-action="start-local-engine" data-engine="${t.engine.id}" ${s.cash >= Math.round(cost * 0.1) ? '' : 'disabled'}>
+             // 착수 자체는 돈이 안 든다 — 자금은 뒤에서 채워 넣는다. 임의의 현금
+             // 문턱으로 버튼을 잠그면 화면은 막는데 엔진은 허용하는, 서로 다른
+             // 규칙 두 개가 생긴다.
+             return `<button class="mat" data-action="start-local-engine" data-engine="${t.engine.id}">
                  <b>${esc(t.engine.name)} → ${esc(to.name)}</b>
                  <span>${money(cost)} · 최소 ${q}분기${t.refit ? ' <b>(재장착 — 엔진은 이미 우리 것)</b>' : ''}</span>
                  <span class="muted">대상: ${esc(t.programs.map((x) => x.name).join(' · '))}</span>
