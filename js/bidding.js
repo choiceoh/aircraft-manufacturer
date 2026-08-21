@@ -89,13 +89,15 @@
    */
   const HOME_BID_BONUS = 1.5;
 
-  function homeBias(state, rfp) {
+  function homeBias(state, rfp, program) {
     const trait = (state && state.trait) || {};
     let bias = 0;
     if ((trait.home || []).includes(rfp.airlineId)) bias += HOME_BID_BONUS;
 
     const wall = trait.foreignBid;
-    if (wall) {
+    // 서방 형식증명을 받은 기종은 그 기체에 한해 벽을 면제받는다. 회사 평판이
+    // 아니라 **그 기종의 자격**이 달라진 것이므로, 다른 기종에는 벽이 그대로 선다.
+    if (wall && !(program && program.foreignCert && program.foreignCert.done)) {
       const home = airlineOf(rfp.airlineId).home;
       if ((wall.regions || []).includes(home)) {
         const from = wall.fadeFrom === undefined ? 45 : wall.fadeFrom;
@@ -543,7 +545,7 @@
     // 가산점을 얹은 뒤에도 0~100 계약을 지킨다. 경쟁사 점수는 별도로 상한이
     // 걸려 있어, 여기만 106까지 나가면 비교 척도가 어긋난다.
     const prefBonus = enginePrefBonus(rfp, program);
-    const homeAdj = homeBias(state, rfp);
+    const homeAdj = homeBias(state, rfp, program);
     const bounded = clamp(total + termBonus + flagshipBonus(state) + prefBonus + homeAdj - preorderPenalty, 0, 100);
 
     return {

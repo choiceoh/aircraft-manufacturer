@@ -84,6 +84,8 @@
    *   gov        : 정부 특수기 사업 보정 — 자격 문턱(인도 실적)·낙찰 확률·지원 수익.
    *   aid        : 정부 런치 에이드 보정 — 지원율과 무역 긴장.
    *   foreignBid : 서방 시장 감점. 평판이 오르면 사라진다 — 벽이지 천장이 아니다.
+   *                `certification` 이 있으면 기종별로 값을 치르고 단번에 뚫을 수도 있다.
+   *   stateOrders: 본국 정부·국영 항공사의 무입찰 발주. 곳간의 바닥을 받쳐 주되 단가가 짜다.
    *
    * 균형의 원칙은 설계 축과 같다: **모든 특색은 양방향이다.** 방산이 센 회사는
    * 지원금이 약하고, 지원금이 후한 회사는 무역 분쟁의 표적이 된다.
@@ -169,11 +171,30 @@
       desc: '러시아 통합 항공. Tu-204와 4발 Il-96M, 서랍 속 SSJ-100 설계안 — 다 가졌지만 전부 미완이다.',
       trait: {
         name: '국가의 주문 · 서방의 벽',
-        note: '국가가 개발비를 대고 군이 사 준다. 대신 북미·서유럽 항공사는 인증과 정비망을 믿지 않는다 — 그 불신은 평판으로만 녹는다.',
+        note: '국가가 개발비를 대고 곳간이 비면 발주로 메워 준다. 대신 북미·서유럽 항공사는 인증과 정비망을 믿지 않는다 — 평판으로 천천히 녹거나, 서방 형식증명을 사서 기종별로 단번에 뚫거나.',
         home: ['kosmo'],
         gov: { deliveredMult: 0.4, winBonus: 0.15, sustainMult: 1.15 },
         aid: { rateMult: 1.6, tensionMult: 0 },
-        foreignBid: { regions: ['북미', '서유럽'], penalty: 3, fadeFrom: 45, fadeTo: 75 },
+        foreignBid: {
+          regions: ['북미', '서유럽'],
+          penalty: 3,
+          fadeFrom: 45,
+          fadeTo: 75,
+          // 서방 형식증명(EASA/FAA) — 평판을 기다리는 대신 **기종 하나씩** 값을 치르고
+          // 벽을 지운다. SSJ-100 이 2012년에 EASA 형식증명을 받은 것이 이 항목이다.
+          // 심사는 우리 규제 당국이 아니라 상대 당국이 한다: 돈과 분기를 내고, 그동안
+          // 설계를 고치라는 지적이 붙는다.
+          certification: { costRate: 0.09, quarters: 6, findingChance: 0.4 },
+        },
+        // 국가 발주 — 수출이 막혀도 곳간이 완전히 마르지는 않는다. 대신 단가가 짜서
+        // 여기에 기대면 살아는 남고 크지는 못한다.
+        stateOrders: {
+          customer: '국영 항공사',
+          segments: ['regional', 'narrow', 'wide'],
+          cooldown: 11,
+          qty: [6, 12],
+          priceMult: 0.78,
+        },
       },
       cash: 2200, debt: 4200, engineers: 3800, reputation: 36, rivalDelivered: 380,
       overheadMult: 0.9, scoreMult: 0.8,
@@ -1603,6 +1624,7 @@
     runResearch(s, report);
     tickUpgrades(s, report);
     tickEtopsService(s);
+    tickForeignCert(s, rng, report);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
@@ -1972,6 +1994,102 @@
       `${p.name} 조기 ETOPS 취득에 착수했다 (${fmtMoney(cost)}). 재시험 ${num(addedHours)}시간이 늘고, 취항과 동시에 대양 노선에 들어간다.`,
     );
     return { ok: true, cost };
+  }
+
+  // ─────────────────── 서방 형식증명 (foreignBid.certification) ───────────────────
+  //
+  // "서방의 벽"은 평판으로 천천히 녹는다. 그건 회사 전체의 신뢰가 쌓이는 속도이지,
+  // 특정 기체가 상대 당국의 서류를 통과했느냐와는 다른 문제다. SSJ-100 이 2012년에
+  // EASA 형식증명을 받았을 때 달라진 것은 러시아 항공산업의 평판이 아니라 **그 기종
+  // 하나의 자격**이었다.
+  //
+  // 그래서 이 경로는 기종 단위다: 돈과 분기를 내고, 그 기종에 한해 벽을 지운다.
+  // 평판 경로와 병존한다 — 평판이 이미 높으면 살 것이 없고, 낮을수록 값을 한다.
+
+  function foreignCertSpec(s) {
+    const wall = companyTrait(s).foreignBid;
+    return (wall && wall.certification) || null;
+  }
+
+  /** 이 기종이 낯선 시장에서 벽을 면제받는가. 입찰 점수(bidding)가 이 플래그를 본다. */
+  function foreignCertified(p) {
+    return !!(p && p.foreignCert && p.foreignCert.done);
+  }
+
+  function startForeignCert(s, programId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const spec = foreignCertSpec(s);
+    if (!spec) return { ok: false, error: '이 회사는 서방 형식증명을 따로 받을 것이 없습니다.' };
+    const p = s.programs.find((x) => x.id === programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    // 상대 당국은 도면이 아니라 시험 결과를 본다 — 우리 형식증명 심사에 들어간 뒤부터다.
+    if (p.phase !== 'cert' && p.phase !== 'production') {
+      return { ok: false, error: '형식증명 심사에 들어간 뒤에야 신청할 수 있습니다.' };
+    }
+    if (p.foreignCert) {
+      return { ok: false, error: p.foreignCert.done ? '이미 서방 형식증명을 받았습니다.' : '이미 심사를 진행 중입니다.' };
+    }
+    const cost = Math.round(p.devCost * spec.costRate);
+    if (s.cash < cost) return { ok: false, error: `서방 형식증명 비용 ${fmtMoney(cost)}이 부족합니다.` };
+    s.cash -= cost;
+    s.pending.rdCost += cost;
+    p.spent += cost;
+    p.foreignCert = { left: spec.quarters, done: false, spent: cost };
+    pushLog(
+      s,
+      'program',
+      `${p.name} 서방 형식증명 심사에 착수했다 (${fmtMoney(cost)}). ${spec.quarters}분기 뒤 북미·서유럽 항공사 앞에서 낯선 제조사가 아니게 된다.`,
+    );
+    return { ok: true, cost };
+  }
+
+  /**
+   * 서방 형식증명 심사 진행. 매 분기 정산에서 부른다.
+   *
+   * 상대 당국의 지적은 분기가 아니라 **설계 수정**으로 값을 치른다 — 심사가 한 분기
+   * 늘고 비용이 조금 더 든다. 지적이 매 분기 날 수 있으면 심사가 끝나지 않으므로
+   * 한 번만 뽑는다(절반 지점). 난수는 본류라 시드 재현이 유지된다.
+   */
+  function tickForeignCert(s, rng, report) {
+    const spec = foreignCertSpec(s);
+    if (!spec) return;
+    for (const p of s.programs) {
+      const fc = p.foreignCert;
+      if (!fc || fc.done) continue;
+      // 중단·매각된 기종의 심사는 함께 죽는다 — 없는 기체에 증명이 날 수 없다.
+      if (p.phase === 'cancelled' || p.phase === 'sold') {
+        p.foreignCert = null;
+        continue;
+      }
+      if (!fc.audited && fc.left <= Math.ceil(spec.quarters / 2)) {
+        fc.audited = true;
+        if (rng && rng.chance(spec.findingChance ?? 0)) {
+          const extra = Math.round(p.devCost * spec.costRate * 0.35);
+          fc.left += 1;
+          fc.spent += extra;
+          s.cash -= extra;
+          if (report) report.rdCost += extra;
+          else s.pending.rdCost += extra;
+          p.spent += extra;
+          pushLog(
+            s,
+            'bad',
+            `${p.name} 서방 형식증명 심사에서 지적이 나왔다. 설계 수정에 ${fmtMoney(extra)}, 심사가 한 분기 늘었다.`,
+          );
+        }
+      }
+      fc.left -= 1;
+      if (fc.left <= 0) {
+        fc.done = true;
+        fc.left = 0;
+        pushLog(
+          s,
+          'good',
+          `${p.name} 서방 형식증명 취득. 북미·서유럽 항공사 수주전에서 더 이상 낯선 제조사의 감점을 받지 않는다.`,
+        );
+      }
+    }
   }
 
   /**
@@ -4176,7 +4294,9 @@
 
     // 항공사가 아닌 선단 주인들 — 원시 키('gov')가 보고서에 그대로 새면 안 된다.
     // 특수기 선단은 기관별로 쪼개지 않고 한 계정으로 묶는다(지원 수익 정산 단위).
-    const FLEET_OWNER_NAMES = { gov: '정부·군 (특수기)', lessor: '국제 리스사', leasing: '글로벌 리스' };
+    // 'state' 는 국영 항공사 발주 계정이다 — 군('gov')과 달리 **민항 선단**이라
+    // 점유율에도 애프터마켓 단골에도 정상적으로 들어간다. 여기서는 이름만 준다.
+    const FLEET_OWNER_NAMES = { gov: '정부·군 (특수기)', state: '국영 항공사', lessor: '국제 리스사', leasing: '글로벌 리스' };
     const customers = Object.entries(s.fleets || {})
       .map(([airlineId, byProgram]) => {
         const airline = AIRLINES.find((a) => a.id === airlineId);
@@ -4283,6 +4403,9 @@
     addTestAircraft,
     delayCertification,
     startEarlyEtops,
+    startForeignCert,
+    foreignCertSpec,
+    foreignCertified,
     testAircraftCost,
     certQuartersLeft,
     cancelProgram,

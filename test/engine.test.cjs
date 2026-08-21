@@ -7413,3 +7413,334 @@ test('사풍: 회사를 골라도 결정론은 그대로다 (같은 시드 → �
     assert.strictEqual(JSON.stringify(a), JSON.stringify(b), `${id}: 같은 시드는 같은 전개여야 한다`);
   }
 });
+
+// ─────────────────── UAC 심화 — 서방 형식증명 · 국가 발주 ───────────────────
+//
+// "서방의 벽"은 평판으로만 녹는 통짜 감점이었고, "국가의 주문"은 이름뿐이었다.
+// 두 축을 실제 규칙으로 만들되, 다른 회사에는 아무것도 새지 않아야 한다.
+
+test('서방 형식증명: 그 기종만 벽을 면제받는다', () => {
+  const s = E.newGame(4201, 'uac');
+  const tu = s.programs.find((p) => p.segment === 'narrow');
+  const il = s.programs.find((p) => p.segment === 'wide');
+  const wall = E.companyTrait(s).foreignBid;
+
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, tu), -wall.penalty);
+
+  s.cash += 20000;
+  const r = E.startForeignCert(s, tu.id);
+  assert.ok(r.ok, r.error);
+  assert.ok(r.cost > 0, '공짜가 아니어야 한다');
+  assert.strictEqual(E.startForeignCert(s, tu.id).ok, false, '중복 착수는 막힌다');
+
+  // 심사가 끝날 때까지는 벽이 그대로다 — 신청만으로 뚫리면 값이 아니라 버튼이다.
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, tu), -wall.penalty);
+
+  const spec = E.foreignCertSpec(s);
+  for (let i = 0; i < spec.quarters + 4 && !E.foreignCertified(tu); i++) E.endTurn(s);
+  assert.ok(E.foreignCertified(tu), '심사가 끝나면 취득해야 한다');
+
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, tu), 0, '인증 기종은 벽을 면한다');
+  assert.strictEqual(B.homeBias(s, { airlineId: 'albion' }, tu), 0, '벽이 선 지역 전부에 적용된다');
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, il), -wall.penalty, '다른 기종에는 벽이 그대로다');
+  assert.strictEqual(B.homeBias(s, { airlineId: 'kosmo' }, tu), B.HOME_BID_BONUS, '본국 가산은 그대로다');
+});
+
+test('서방 형식증명: 벽이 없는 회사에는 살 것도 없다', () => {
+  for (const id of ['deneb', 'boeing', 'airbus', 'embraer', 'bombardier']) {
+    const s = E.newGame(4202, id);
+    assert.strictEqual(E.foreignCertSpec(s), null, `${id}: 벽이 없으면 인증 항목도 없어야 한다`);
+    s.cash += 20000;
+    const r = E.startForeignCert(s, s.programs[0].id);
+    assert.strictEqual(r.ok, false, `${id}: 살 수 없는 것을 팔면 안 된다`);
+  }
+});
+
+test('서방 형식증명: 개발 중에는 신청할 수 없고, 죽은 기종의 심사는 함께 죽는다', () => {
+  const s = E.newGame(4203, 'uac');
+  s.cash += 40000;
+  const dev = s.programs.find((p) => p.phase === 'dev');
+  assert.ok(dev, 'UAC 는 서랍 속 설계안을 갖고 시작한다');
+  assert.strictEqual(E.startForeignCert(s, dev.id).ok, false, '도면 단계에는 상대 당국이 볼 것이 없다');
+
+  // 양산 기종에 착수한 뒤 그 기종을 매각하면 심사도 사라진다.
+  const prod = s.programs.find((p) => p.phase === 'production');
+  assert.ok(E.startForeignCert(s, prod.id).ok);
+  prod.phase = 'sold';
+  E.endTurn(s);
+  assert.strictEqual(prod.foreignCert, null, '없는 기체에 증명이 날 수 없다');
+});
+
+test('서방 형식증명: 비용은 R&D 로 잡히고 심사 지적은 분기와 돈을 함께 먹는다', () => {
+  const s = E.newGame(4204, 'uac');
+  s.cash += 40000;
+  const p = s.programs.find((x) => x.phase === 'production');
+  const spentBefore = p.spent;
+  const r = E.startForeignCert(s, p.id);
+  assert.ok(r.ok);
+  assert.strictEqual(p.spent - spentBefore, r.cost, '프로그램 누적 지출에 잡혀야 한다');
+  assert.strictEqual(s.pending.rdCost >= r.cost, true, 'R&D 로 분류돼야 한다 — 간접비로 새면 경력 보고서가 어긋난다');
+
+  // 지적이 나는 판을 찾아 "분기가 늘고 돈이 더 든다"를 확인한다. 지적은 심사
+  // 절반 지점에서 한 번만 뽑으므로, 안 나는 시드에서는 정확히 spec.quarters 다.
+  const spec = E.foreignCertSpec(s);
+  let sawFinding = false;
+  for (let seed = 0; seed < 40 && !sawFinding; seed++) {
+    const t = E.newGame(4300 + seed, 'uac');
+    t.cash += 40000;
+    const tp = t.programs.find((x) => x.phase === 'production');
+    const base = E.startForeignCert(t, tp.id).cost;
+    let q = 0;
+    while (!E.foreignCertified(tp) && q < spec.quarters + 6) {
+      E.endTurn(t);
+      q++;
+    }
+    if (q > spec.quarters) {
+      sawFinding = true;
+      assert.ok(tp.foreignCert.spent > base, '지적이 나면 설계 수정 비용이 더 든다');
+      assert.strictEqual(q, spec.quarters + 1, '지적은 한 번만 — 심사가 끝나지 않으면 안 된다');
+    }
+  }
+  assert.ok(sawFinding, '40시드 안에 지적이 한 번은 나야 한다 (findingChance 가 살아 있는가)');
+});
+
+test('서방 형식증명: 세이브 왕복에도 진행도와 취득이 살아 있다', () => {
+  const s = E.newGame(4205, 'uac');
+  s.cash += 40000;
+  const p = s.programs.find((x) => x.phase === 'production');
+  E.startForeignCert(s, p.id);
+  E.endTurn(s);
+  const back = E.ensureShape(JSON.parse(JSON.stringify(s)));
+  const bp = back.programs.find((x) => x.id === p.id);
+  assert.deepStrictEqual(bp.foreignCert, p.foreignCert);
+  // 취득 상태도 마찬가지 — 불러오는 순간 벽이 되살아나면 안 된다.
+  bp.foreignCert.done = true;
+  assert.strictEqual(B.homeBias(back, { airlineId: 'panamer' }, bp), 0);
+});
+
+test('국가 발주: 곳간이 마를수록 자주 오고, 다른 회사에는 오지 않는다', () => {
+  const def = Dec.get('state_order');
+  assert.ok(def, '국가 발주 사건이 있어야 한다');
+
+  const uac = (cash) => {
+    const s = E.newGame(4206, 'uac');
+    s.turn = 20;
+    s.cash = cash;
+    return s;
+  };
+  const poor = def.weight(uac(700));
+  const mid = def.weight(uac(3000));
+  const rich = def.weight(uac(9000));
+  assert.ok(poor > mid && mid > rich, `마를수록 자주 와야 한다 (${poor} > ${mid} > ${rich})`);
+  assert.ok(rich > 0, '넉넉해도 아주 안 오지는 않는다');
+
+  for (const id of ['deneb', 'boeing', 'airbus', 'embraer', 'bombardier']) {
+    const s = E.newGame(4206, id);
+    s.turn = 20;
+    s.cash = 500;
+    assert.strictEqual(def.weight(s), 0, `${id}: 국가 발주는 이 회사의 규칙이 아니다`);
+  }
+
+  // 쿨다운 — 방금 받은 회사에는 한동안 오지 않는다.
+  const s = uac(700);
+  s.lastStateOrderTurn = s.turn;
+  assert.strictEqual(def.weight(s), 0, '쿨다운 중에는 오지 않는다');
+});
+
+test('국가 발주: 전량 수락은 물량과 평판을 맞바꾼다', () => {
+  const s = E.newGame(4207, 'uac');
+  s.turn = 20;
+  s.cash = 700;
+  const rng = R.createRng(9);
+  const memo = {};
+  const h = {
+    rng,
+    remember: (k, v) => ((memo[k] = v), v),
+    recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+    reputation: (d) => (s.reputation += d),
+    order: ({ program, qty, unitPrice, airlineId }) => {
+      s.backlog.push({ id: 'o', airlineId, programId: program.id, qty, remaining: qty, unitPrice });
+    },
+  };
+  const def = Dec.get('state_order');
+  def.text(s, h);
+  const qty = memo.qty;
+  const unitPrice = memo.unitPrice;
+  const p = s.programs.find((x) => x.id === memo.program);
+  assert.ok(qty > 0 && unitPrice > 0 && p);
+  assert.ok(unitPrice < p.listPrice, '국가는 정가를 내지 않는다 — 그게 이 물량의 대가다');
+
+  const repBefore = s.reputation;
+  def.options.find((o) => o.id === 'take_all').apply(s, h);
+  const order = s.backlog.find((o) => o.airlineId === 'state');
+  assert.ok(order, '전량 수락은 잔고에 들어와야 한다');
+  assert.strictEqual(order.qty, qty);
+  assert.ok(s.reputation < repBefore, '국영 물량으로 라인을 채우면 평판이 깎여야 한다');
+  assert.strictEqual(s.lastStateOrderTurn, s.turn, '쿨다운이 걸려야 한다');
+
+  // 평판은 곧 서방의 벽이 녹는 속도다 — 그래서 이 감점이 실제로 벽을 되살린다.
+  const wall = E.companyTrait(s).foreignBid;
+  s.reputation = wall.fadeTo;
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, p), 0);
+  s.reputation = wall.fadeTo - 2;
+  assert.ok(B.homeBias(s, { airlineId: 'panamer' }, p) < 0, '평판이 깎이면 벽이 되살아난다');
+});
+
+test('국가 발주: 거절하면 다음 제안이 더 멀어진다', () => {
+  const s = E.newGame(4208, 'uac');
+  s.turn = 20;
+  s.cash = 700;
+  const def = Dec.get('state_order');
+  const memo = {};
+  const h = {
+    rng: R.createRng(3),
+    remember: (k, v) => ((memo[k] = v), v),
+    recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+    reputation: (d) => (s.reputation += d),
+    order: () => assert.fail('거절했는데 주문이 생기면 안 된다'),
+  };
+  def.text(s, h);
+  def.options.find((o) => o.id === 'refuse').apply(s, h);
+  assert.ok(s.lastStateOrderTurn > s.turn, '거절의 값은 다음이 늦어지는 것이다');
+  assert.strictEqual(def.weight(s), 0);
+});
+
+test('국가 발주: 국영 선단은 민항이다 — 점유율과 보고서에 정상 반영된다', () => {
+  const s = E.newGame(4209, 'uac');
+  s.stats.delivered = 100;
+  s.stats.rivalDelivered = 900;
+  const base = E.marketShare(s);
+
+  // 군용 특수기는 민항 점유율에서 빠지지만, 국영 항공사 인도는 여객기 판매다.
+  s.stats.delivered = 110;
+  s.fleets.state = { [s.programs[0].id]: 10 };
+  assert.ok(E.marketShare(s) > base, '국영 항공사 인도는 민항 점유율에 들어가야 한다');
+
+  const report = E.careerReport(s);
+  const acct = report.customers.find((c) => c.id === 'state');
+  assert.ok(acct, '국영 선단이 주요 고객에 잡혀야 한다');
+  assert.notStrictEqual(acct.name, 'state', '원시 키가 보고서에 노출되면 안 된다');
+});
+
+test('UAC 심화: 다른 회사의 규칙은 아무것도 바뀌지 않는다', () => {
+  for (const id of ['deneb', 'boeing', 'airbus', 'embraer', 'bombardier']) {
+    const s = E.newGame(4210, id);
+    const t = E.companyTrait(s);
+    assert.strictEqual(t.stateOrders, undefined, `${id}: 국가 발주가 새면 안 된다`);
+    assert.strictEqual(E.foreignCertSpec(s), null, `${id}: 서방 형식증명이 새면 안 된다`);
+    // 벽이 없으면 기종을 넘겨도 homeBias 는 본국 가산만 본다.
+    assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, s.programs[0]), B.homeBias(s, { airlineId: 'panamer' }));
+  }
+});
+
+test('서방 형식증명: 파생형은 따로 받되, 개정 형식증명만큼 싸다', () => {
+  // 두 성질을 함께 못박는다.
+  //  1) 파생형은 원형의 인증을 **승계하지 않는다** — ETOPS 와 같은 규칙이다.
+  //     상대 당국이 검증한 것은 그 형식이지 계보가 아니다.
+  //  2) 그런데도 값은 싸다. 비용이 `그 프로그램의 devCost × costRate` 라,
+  //     파생형 개발비가 원형의 일부인 만큼 인증비도 그만큼 내려간다 —
+  //     실제 개정 형식증명(amended type certificate)이 원형 심사보다 싼 것과 같다.
+  //     이 성질은 규칙을 따로 쓴 것이 아니라 원가 모델에서 저절로 나온다.
+  const s = E.newGame(4211, 'uac');
+  s.cash += 60000;
+  const spec = E.foreignCertSpec(s);
+  const base = s.programs.find((p) => p.segment === 'narrow');
+  const r = E.launchProgram(s, E.derivativeSpec(base, 30), 'Tu-204-300');
+  assert.ok(r.ok, r.error);
+  const deriv = r.program;
+  assert.ok(deriv.derivedFrom, '파생형으로 잡혀야 이 검사가 의미가 있다');
+
+  const baseCost = Math.round(base.devCost * spec.costRate);
+  const derivCost = Math.round(deriv.devCost * spec.costRate);
+  assert.ok(derivCost < baseCost * 0.75, `파생형 인증이 원형보다 뚜렷이 싸야 한다 (${derivCost} vs ${baseCost})`);
+
+  assert.ok(E.startForeignCert(s, base.id).ok);
+  for (let i = 0; i < spec.quarters + 4 && !E.foreignCertified(base); i++) E.endTurn(s);
+  assert.ok(E.foreignCertified(base));
+  assert.strictEqual(E.foreignCertified(deriv), false, '파생형이 원형의 인증을 공짜로 물려받으면 안 된다');
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, deriv), -E.companyTrait(s).foreignBid.penalty);
+});
+
+test('국가 발주: 국영 선단이 최다여도 런치 커스터머는 실존 항공사를 집는다', () => {
+  // 회귀 — 선단 장부에는 항공사가 아닌 계정('gov'·'state')도 있다. 그 계정이
+  // 최다가 되면 AIRLINES.find 가 빗나가 조용히 명단 첫 줄(대한항공)로 떨어져,
+  // 런치 커스터머·에어쇼가 실제 최대 고객이 아닌 엉뚱한 항공사를 집었다.
+  const s = E.newGame(4212, 'uac');
+  s.fleets = { kosmo: { 'prog-1': 30 }, state: { 'prog-1': 90 }, gov: { 'prog-1': 80 } };
+  const def = Dec.get('launch_customer');
+  assert.ok(def.weight(s) > 0, 'UAC 는 개발 중 기종을 갖고 시작한다');
+
+  const memo = {};
+  const h = {
+    rng: R.createRng(1),
+    remember: (k, v) => ((memo[k] = v), v),
+    recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+  };
+  def.text(s, h);
+  assert.strictEqual(memo.airline, 'kosmo', `실제 최대 항공사 고객을 집어야 한다 (집힌 값: ${memo.airline})`);
+
+  // 실항공사 선단이 아예 없으면 관계로 떨어지되, 그때도 항공사여야 한다.
+  const t = E.newGame(4212, 'uac');
+  t.fleets = { state: { 'prog-1': 90 } };
+  const memo2 = {};
+  const h2 = { rng: R.createRng(1), remember: (k, v) => ((memo2[k] = v), v), recall: (k, f) => (memo2[k] === undefined ? f : memo2[k]) };
+  def.text(t, h2);
+  assert.ok(
+    Data.AIRLINES.some((a) => a.id === memo2.airline),
+    '관계 경로로 떨어져도 항공사를 집어야 한다',
+  );
+});
+
+test('국가 발주: 종료 정산에서도 예산 심의의 하방이 청구된다', () => {
+  // 회귀 — 마지막 네 분기에 전량 수락하면 선수금만 챙기고 광고한 하방을 영영
+  // 피해 가는, "늦게 고를수록 이득"인 구멍이 있었다. 상방은 종료에서 값을
+  // 못 하므로(인도할 분기가 없다) 문장으로만 닫고, 하방은 그대로 청구한다.
+  const opt = Dec.optionOf('state_order', 'take_all');
+  assert.ok(opt && opt.after, '전량 수락에는 지연 결과가 있어야 한다');
+
+  let charged = 0;
+  let ordered = 0;
+  const run = (rngSeed) => {
+    const s = E.newGame(4213, 'uac');
+    const p = s.programs.find((x) => x.phase === 'production');
+    const memo = { program: p.id, qty: 10, unitPrice: 80, customer: '국영 항공사' };
+    const h = {
+      rng: R.createRng(rngSeed),
+      final: true,
+      remember: (k, v) => ((memo[k] = v), v),
+      recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+      expense: (amt) => (charged += amt),
+      order: () => (ordered += 1),
+    };
+    return opt.after.apply(s, h);
+  };
+  // 여러 시드로 양쪽 갈래를 모두 지난다.
+  for (let i = 0; i < 12; i++) run(i + 1);
+  assert.ok(charged > 0, '종료 정산에서도 예산 삭감이 청구되어야 한다');
+  assert.strictEqual(ordered, 0, '인도할 분기가 없는데 추가 발주를 넣으면 안 된다');
+});
+
+test('서방 형식증명: 평판이 높을 때 산 인증은 평판이 떨어져도 그 기종을 지킨다', () => {
+  // 벽이 0인 시점의 구매를 막지 않는 이유 — 인증은 영구적이고 평판은 내려간다
+  // (국영 발주를 받을 때마다 −2). 그래서 이건 죽은 지출이 아니라 보험이다.
+  const s = E.newGame(4214, 'uac');
+  s.cash += 60000;
+  const wall = E.companyTrait(s).foreignBid;
+  const insured = s.programs.find((p) => p.segment === 'narrow');
+  const bare = s.programs.find((p) => p.segment === 'wide');
+
+  s.reputation = wall.fadeTo + 5;
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, insured), 0, '이 시점에는 벽이 이미 0이다');
+  assert.ok(E.startForeignCert(s, insured.id).ok, '그래도 살 수 있어야 한다');
+  const spec = E.foreignCertSpec(s);
+  for (let i = 0; i < spec.quarters + 4 && !E.foreignCertified(insured); i++) {
+    s.reputation = wall.fadeTo + 5;
+    E.endTurn(s);
+  }
+  assert.ok(E.foreignCertified(insured));
+
+  // 평판이 떨어지면 벽이 되살아나지만, 인증 기종만은 면제 상태로 남는다.
+  s.reputation = 50;
+  assert.strictEqual(B.homeBias(s, { airlineId: 'panamer' }, insured), 0, '보험이 값을 해야 한다');
+  assert.ok(B.homeBias(s, { airlineId: 'panamer' }, bare) < 0, '안 산 기종에는 벽이 되살아난다');
+});
