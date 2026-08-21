@@ -1065,6 +1065,10 @@
       // 호환성 판정을 통과했을 때만 원형 연결을 남긴다. 원형에서 소재·기술·항속을
       // 갈아엎어 신규 설계 비용을 전액 낸 설계에 파생형 딱지가 붙으면 안 된다.
       derivedFrom: evalSpec.derivative ? spec.derivedFrom : null,
+      // 이 설계가 어떤 연구 위에서 그려졌는지 — 엔진을 갈아 끼울 때 이 시점을
+      // 그대로 되짚어야 연구 보정이 두 평가에서 상쇄된다(연비 상한에 닿은 설계는
+      // 안 그러면 1점이 어긋난다).
+      research: { ...((s.research && s.research.done) || {}) },
     };
     // 패밀리 계보 — 조종석·정비 공통성이 이 단위로 쌓인다. 패밀리로 착수하면
     // 자기 자신이 뿌리가 되고, 그 패밀리의 파생형은 뿌리를 물려받는다.
@@ -1114,15 +1118,21 @@
       maintainable: !!p.maintainable,
       engines: p.engines || 2,
       dualSource: !!p.dualSource,
+      // **착수 시점의** 장기 연구다. 완료된 연구는 그 뒤 설계에만 값을 하고 이미
+      // 나온 기체를 소급해 고치지 않으므로, 지금 연구 목록으로 되짚으면 기체가
+      // 갖지도 않은 보정을 얹게 된다. 옛 세이브는 이 칸이 없다 — 빈 것으로 읽는다.
+      research: p.research || {},
     };
   }
 
   /** 파생형 착수용 설계 시드 — 원형의 기술/소재를 물려받는다. */
   function derivativeSpec(base, seatDelta) {
     const seg = SEGMENTS[base.segment];
+    // 연구만은 물려받지 않는다. 파생형도 **지금 그리는 설계**라 오늘의 연구를 쓴다.
+    const { research, ...inherited } = programSpec(base);
     return {
       // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화도 함께.
-      ...programSpec(base),
+      ...inherited,
       seats: clamp(base.seats + seatDelta, seg.seats.min, seg.seats.max),
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
@@ -2277,7 +2287,7 @@
    *
    * 상태는 건드리지 않는다. 바뀔 값을 계산해서 돌려줄 뿐이다.
    */
-  function localEngineImpact(s, p, from, to, liveYear) {
+  function localEngineImpact(s, p, from, to, liveYear, engineBefore) {
     // 옛 엔진은 **설계 당시** 연도로, 새 엔진은 **바뀐 기체가 보이는** 연도로
     // 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이 얹힌다.
     const designYear = Math.max(yearOf(0), yearOf(p.launchTurn || 0));
@@ -2287,13 +2297,27 @@
     // 원형 계보를 빼먹으면 파생형이 두 평가 모두에서 신규 설계로 잡힌다. 그러면
     // 재장착 감점(연비 −3)도, 파생형이 원형에서 물려받는 이중화 여부도 어긋난다.
     //
-    // 새 평가의 계보는 **원형과 함께 옮긴다**. 국산화는 그 엔진을 단 우리 기종을
-    // 전부 갈아 끼우므로 계보 전체가 같은 분기에 같이 움직인다. 파생형에만 재장착
-    // 감점을 물리면, 나란히 국산 엔진으로 옮겨 간 원형과 파생형이 서로 다른 값을
-    // 내게 된다 — 착수 방식이 달랐다는 이유만으로.
+    // 계보의 엔진은 **스냅숏이 아니라 원형 프로그램의 지금 엔진**에서 읽는다.
+    // `derivedFrom` 은 착수 시점의 복사본이라, 국산화가 원형을 갈아 끼우는 순간부터
+    // 거짓말을 시작한다 — 원형은 PS-90A 인데 계보만 CFM56 을 가리키는 식으로.
+    // 원형과 엔진이 달랐던 파생형은 그 사이 갈아타기에서 아예 건너뛰므로 스냅숏을
+    // 고칠 기회조차 없다. 원형이 있으면 원형을 믿고, 없을 때만 스냅숏으로 물러선다.
+    //
+    // 새 평가의 계보는 **원형과 함께 옮긴다**. 국산화는 그 엔진을 단 기종을 전부
+    // 같은 분기에 갈아 끼우므로 계보 전체가 같이 움직인다. 파생형에만 재장착 감점을
+    // 물리면, 나란히 국산 엔진으로 옮겨 간 원형과 파생형이 착수 방식 때문에 갈라진다.
+    // 반대로 원형과 같은 엔진으로 되돌아오는 파생형은 그 감점이 풀려야 한다.
     const anc = p.derivedFrom;
-    const ancOld = anc ? { ...anc, dualSource: hadDual } : null;
-    const ancNew = anc ? { ...anc, dualSource: false, engine: anc.engine === from.id ? to.id : anc.engine } : null;
+    // 원형의 엔진은 **이번 갈아타기 전** 값이어야 한다. 갈아타기는 프로그램을
+    // 차례로 도는데, 원형이 먼저 처리되면 파생형 차례에는 이미 새 엔진이 박혀
+    // 있다 — 그 값을 "있던 그대로"로 읽으면 원형이 늘 재장착으로 잡힌다.
+    const parent = anc && anc.id ? s.programs.find((x) => x.id === anc.id) : null;
+    const parentEngine = parent ? (engineBefore ? engineBefore.get(parent.id) ?? parent.engine : parent.engine) : null;
+    const ancEngineOld = parent ? parentEngine : anc && anc.engine;
+    const parentMoves = !!parent && parentEngine === from.id && to.segments.includes(parent.segment);
+    const ancEngine = parentMoves ? to.id : ancEngineOld;
+    const ancOld = anc ? { ...anc, dualSource: hadDual, engine: ancEngineOld } : null;
+    const ancNew = anc ? { ...anc, dualSource: false, engine: ancEngine } : null;
     const base = {
       ...programSpec(p),
       domesticEngines: [from.id, to.id],
@@ -2315,7 +2339,7 @@
     return {
       exact,
       hadDual,
-      ancNew,
+      ancEngine,
       unitCostBase: exact
         ? Math.round(p.unitCostBase * ratio(evNew.unitCostBase, evOld.unitCostBase) * 10) / 10
         : Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10,
@@ -2377,6 +2401,8 @@
     const swapped = [];
     const dropped = [];
     const upset = new Set();
+    // 갈아타기 **전** 엔진 배치. 계보의 "있던 그대로"를 여기서 읽는다.
+    const engineBefore = new Map(s.programs.map((x) => [x.id, x.engine]));
     // 갈아탄 기체가 실제로 보이는 분기 — tickLocalEngine 은 s.turn++ **전에** 돈다.
     const liveYear = yearOf(s.turn + 1);
     for (const p of s.programs) {
@@ -2389,7 +2415,7 @@
       // 떨어지고 이름만 바뀐다.
       if (!to.segments.includes(p.segment)) continue;
 
-      const im = localEngineImpact(s, p, from, to, liveYear);
+      const im = localEngineImpact(s, p, from, to, liveYear, engineBefore);
 
       // 공급사 성능 패키지 카운터도 풀어야 새 공급사의 패키지를 받을 수 있다.
       p.enginePipGain = 0;
@@ -2414,12 +2440,9 @@
 
       p.engine = to.id;
       // 엔진에서 나온 **표시용 캐시**도 함께 간다. 안 고치면 국산화한 Tu-204 가
-      // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다. 원형 계보에 박힌
-      // 엔진도 그중 하나다 — 원형이 국산으로 옮겨 갔는데 파생형의 계보만 서방
-      // 엔진으로 남으면, 다음 세대 국산화가 이 기체를 재장착으로 잘못 읽는다.
+      // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
       p.engineName = to.name;
       p.engineMaker = to.maker;
-      if (p.derivedFrom && p.derivedFrom.engine === from.id) p.derivedFrom = im.ancNew;
 
       // 개발비·개발기간·필요인력은 **일부러 그대로 둔다.** 엔진이 그 값들에도
       // 들어가지만, 이미 착수해 진행 중인 개발의 계약을 도중에 다시 쓰는 셈이고,
@@ -2437,6 +2460,15 @@
         }
       }
       swapped.push(p.name);
+    }
+    // 계보 스냅숏의 엔진은 **원형 프로그램의 지금 엔진을 비춘다.** 갈아탄 기종만
+    // 고쳐서는 모자란다 — 원형과 엔진이 달라 이번에 건너뛴 파생형의 계보도 원형이
+    // 옮겨 간 만큼 낡는다. 한 규칙으로 전부 다시 맞춘다.
+    for (const p of s.programs) {
+      const d = p.derivedFrom;
+      if (!d || !d.id) continue;
+      const parent = s.programs.find((x) => x.id === d.id);
+      if (parent && d.engine !== parent.engine) p.derivedFrom = { ...d, engine: parent.engine };
     }
     for (const aid of upset) {
       s.relations[aid] = clamp((s.relations[aid] ?? 40) - LOCAL_ENGINE_SWAP_RELATION, 0, 100);

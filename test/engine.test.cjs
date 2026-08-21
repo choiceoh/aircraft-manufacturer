@@ -8546,9 +8546,11 @@ test('설계 스펙은 한 곳에서 읽는다 — 파생형 시드와 엔진 �
   // 파생형 시드는 이 스펙 위에 좌석만 옮기고 계보를 얹은 것이다.
   const seed = E.derivativeSpec(p, 20);
   for (const [k, v] of Object.entries(spec)) {
-    if (k === 'seats') continue;
+    // 연구만은 물려받지 않는다 — 파생형도 지금 그리는 설계라 오늘의 연구를 쓴다.
+    if (k === 'seats' || k === 'research') continue;
     assert.deepStrictEqual(seed[k], v, `파생형 시드의 ${k} 가 원형 스펙과 달라졌다`);
   }
+  assert.strictEqual(seed.research, undefined, '연구는 시드에 실리면 안 된다');
   assert.ok(seed.derivedFrom, '계보는 시드 쪽에만 붙는다');
 });
 
@@ -8681,4 +8683,71 @@ test('2세대: 1세대와 거래 방향이 정반대다 — 원가를 내주고 
   assert.ok(p.defectRisk > risk, '갓 나온 코어라 초기 신뢰성은 다시 나빠진다');
   // 3세대는 없다 — 이미 그 엔진을 달고 있으면 후보에서 빠진다.
   assert.ok(!E.localEngineTargets(s).some((x) => x.engine.id === 'pd14'));
+});
+
+test('국산화: 원형과 엔진이 달랐던 파생형도 계보가 원형을 따라간다', () => {
+  // 회귀 — 이 파생형은 원형이 갈아탈 때 **건너뛴다**(엔진이 다르므로). 그래서
+  // 계보 스냅숏을 고칠 기회가 없고, 나중에 자기가 갈아탈 때도 스냅숏이 자기 옛
+  // 엔진과 달라 손대지 못했다. 결국 원형과 같은 엔진을 달고도 재장착 감점(−3)을
+  // 계속 물었다.
+  const s = E.newGame(4373, 'uac');
+  s.cash += 900000;
+  const tu = s.programs.find((x) => x.engine === 'cfm56-5b');
+  const spec = E.derivativeSpec(tu, 25);
+  spec.engine = 'v2500';
+  const r = E.launchProgram(s, spec, 'Tu-204-200');
+  assert.ok(r.ok, r.error);
+  const d = r.program;
+  assert.strictEqual(d.derivedFrom.engine, 'cfm56-5b');
+  assert.ok(d.efficiency < tu.efficiency, '착수 시점에는 재장착 감점을 문 것이 맞다');
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  assert.strictEqual(d.engine, 'v2500', '엔진이 다르므로 이번에는 건너뛴다');
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a', '건너뛴 기종의 계보도 원형을 따라가야 한다');
+
+  runLocal(s, 'v2500', 'ps90a');
+  assert.strictEqual(d.engine, 'ps90a');
+  assert.strictEqual(d.efficiency, tu.efficiency, '같은 엔진으로 모였으면 재장착 감점이 풀린다');
+});
+
+test('국산화: 착수 시점의 연구가 두 평가에 함께 들어간다', () => {
+  // 회귀 — 연구 보정을 빼고 평가하면 두 평가가 함께 낮아져 대개 상쇄되지만,
+  // **연비 상한(99)에 닿은 설계**는 상쇄가 깨진다. 상한에서 잘린 만큼이 옛 평가
+  // 쪽에서만 사라지기 때문이다.
+  const spec = {
+    segment: 'narrow', seats: 180, range: 5200, tech: 88,
+    fuselage: 'composite', wingMat: 'composite', engine: 'cfm56-5b',
+    fuelMargin: 0.02, abreast: 6, wing: 45,
+  };
+  const s = E.newGame(4374, 'uac');
+  s.cash += 900000;
+  s.research = { done: { aero: true } };
+  const p = E.launchProgram(s, spec, 'HiEff').program;
+  assert.strictEqual(p.efficiency, 99, '상한에 닿은 설계라야 이 검사가 의미가 있다');
+  assert.deepStrictEqual(p.research, { aero: true }, '어떤 연구 위에서 그려졌는지 프로그램이 들고 있어야 한다');
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(s), year: 1998 + s.turn / 4 });
+  assert.strictEqual(p.efficiency, fresh.efficiency, '같은 연구 위의 신규 설계와 맞아야 한다');
+});
+
+test('국산화: 착수 뒤에 끝난 연구는 갈아타기에 끼어들지 않는다', () => {
+  // 연구는 그 뒤 설계에만 값을 한다 — 이미 나온 기체를 소급해 고치지 않는다.
+  // 지금 연구 목록으로 되짚으면 기체가 갖지도 않은 보정을 얹게 된다.
+  const spec = {
+    segment: 'narrow', seats: 180, range: 5200, tech: 88,
+    fuselage: 'composite', wingMat: 'composite', engine: 'cfm56-5b',
+    fuelMargin: 0.02, abreast: 6, wing: 45,
+  };
+  const s = E.newGame(4375, 'uac');
+  s.cash += 900000;
+  const p = E.launchProgram(s, spec, 'NoRes').program;
+  assert.deepStrictEqual(p.research, {});
+  const before = p.efficiency;
+
+  s.research = { done: { aero: true } };
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const engineOnly = D.evaluate({ ...spec, engine: 'ps90a', domesticEngines: ['ps90a'], year: 1998 + s.turn / 4 }).efficiency -
+    D.evaluate({ ...spec, year: 1998 }).efficiency;
+  assert.strictEqual(p.efficiency, before + engineOnly, '엔진 차이만 얹혀야 한다');
 });
