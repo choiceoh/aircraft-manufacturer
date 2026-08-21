@@ -6900,3 +6900,17 @@ test('시나리오 목표치는 데이터에 산다 — 판정이 카탈로그 �
     scen.targetDelivered = saved;
   }
 });
+
+test('광동체의 꿈: 인수 기종의 승계 인도분은 목표에 실리지 않는다', () => {
+  const s = E.newGame(973, null, 'wide_dream');
+  s.turn = 40;
+  s.cash = 30000;
+  const r = E.acquireProgram(s, 'b767-300er', 'full');
+  assert.ok(r.ok, r.error);
+  assert.ok(r.program.delivered >= 100, '전제: 성숙한 광동체라 승계분만으로 목표치를 넘는다');
+  const st = E.scenarioStatus(s);
+  assert.strictEqual(st.progress, 0, '산을 산 것이지 오른 게 아니다 — 승계분은 0에서 시작한다');
+  // 인수 이후 우리가 인도한 몫은 정상적으로 쌓인다.
+  r.program.delivered += 30;
+  assert.strictEqual(E.scenarioStatus(s).progress, 30);
+});

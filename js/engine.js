@@ -3315,6 +3315,9 @@
     };
     // 기존 운용 선단의 지원은 우리 몫이 된다 — 애프터마켓이 그만큼 는다.
     if (full) p.delivered = p.produced;
+    // 승계 인도분의 기준선 — 시나리오(광동체의 꿈)가 "우리가 인도한 몫"만 세는 근거.
+    // 성숙한 광동체를 통째 인수하는 것만으로 목표가 차면 산을 산 것이지 오른 게 아니다.
+    p.acquiredDelivered = p.delivered;
     // 남의 설계는 도면 밖의 사정을 모른다 — 결함 위험이 그 값이다. 위기 중 인수면 더 높다.
     p.defectRisk = Math.round(
       Math.min(CONFIG.defectRiskMax, ev.defectRisk * (full ? TAKEOVER.riskMult : TAKEOVER.riskMultBlueprint)) * 1000,
@@ -3675,7 +3678,10 @@
     const out = { id: scen.id, name: scen.name, goalText: scen.goalText, failed: false, finalOnly: false };
     switch (scen.id) {
       case 'wide_dream': {
-        out.progress = s.programs.filter((p) => p.segment === 'wide').reduce((a, p) => a + (p.delivered || 0), 0);
+        // 인수 기종의 승계 인도분은 전 주인의 실적이다 — 인수 이후 우리가 인도한 몫만 센다.
+        out.progress = s.programs
+          .filter((p) => p.segment === 'wide')
+          .reduce((a, p) => a + Math.max(0, (p.delivered || 0) - (p.acquiredDelivered || 0)), 0);
         // 목표치는 데이터에 산다 — 캘리브레이션이 data.js 만 만지면 되도록.
         out.target = scen.targetDelivered;
         out.unit = '기';
