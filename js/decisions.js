@@ -70,6 +70,23 @@
     return null;
   }
 
+  /**
+   * 국가 발주(trait.stateOrders)를 받을 만한 기종 — 양산 중이고, 그 국가가 사는 급.
+   * 인도 실적을 따지지 않는다: 국가는 검증이 아니라 자국 산업을 사기 때문이다.
+   * 그래서 실적이 없어 어느 시장에도 못 들어가는 신형이 여기서 첫 물량을 얻는다.
+   */
+  function stateOrderPick(s) {
+    const spec = (s.trait || {}).stateOrders;
+    if (!spec) return null;
+    const segs = spec.segments || ['regional', 'narrow', 'wide'];
+    const eligible = s.programs.filter((p) => p.phase === 'production' && segs.includes(p.segment));
+    if (!eligible.length) return null;
+    // 국가는 자국 산업의 **최신** 기체를 민다 — 낡은 기종에 물량을 얹는 것이 아니라
+    // 새 기종을 띄우는 것이 산업 정책이다. 승계기는 마지막 순위다.
+    const rank = (p) => (p.legacy ? 0 : 1e9) + (p.launchTurn || 0);
+    return eligible.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+  }
+
   function inDevelopment(s) {
     return s.programs.filter((p) => p.phase === 'dev');
   }
@@ -1187,6 +1204,117 @@
           detail: '남의 위기에 손대지 않는다. 프로그램은 다른 곳으로 넘어가거나 사라진다',
           fallback: true,
           apply: () => '매물을 넘겼다. 그 프로그램의 운명은 남의 이야기로 남는다.',
+        },
+      ],
+    },
+
+    // ── 본국 정부 ──
+    {
+      id: 'state_order',
+      name: '국영 항공사 발주',
+      /**
+       * 국가가 자국 제조사의 라인을 채워 준다. 수출이 막혀도 곳간의 바닥은 받쳐 주되,
+       * 단가가 짜서 여기에 기대면 살아는 남고 크지는 못한다.
+       *
+       * 곳간이 마를수록 자주 온다 — 실제로도 국가 발주는 산업이 흔들릴 때 나온다.
+       * 그게 이 사건을 "가끔 오는 보너스"가 아니라 **구제금융의 얼굴**로 만든다.
+       */
+      weight: (s) => {
+        const spec = (s.trait || {}).stateOrders;
+        if (!spec || !stateOrderPick(s)) return 0;
+        if (s.turn - (s.lastStateOrderTurn ?? -99) < (spec.cooldown || 11)) return 0;
+        // 현금이 넉넉하면 굳이 오지 않는다. 마를수록 문을 두드린다.
+        //
+        // 가중치가 큰 이유: 결정 순환은 사건 20종이 나눠 갖는 자리라, 이 사건이
+        // 실제로 몇 번 오는지는 가중치가 아니라 **쿨다운**(11분기)이 정한다.
+        // 처음 잡았던 9/6/3 은 80분기를 완주해도 평균 1.8회에 그쳐, 사건 설명
+        // ("곳간이 마를수록 자주 온다")과 실제가 어긋났다. 지금 값은 완주 판에서
+        // 3~4회 — 5년에 한 번쯤 오는 국가 조달 주기다.
+        //
+        // 이 값이 다른 회사의 순환을 밀어낼 걱정은 없다: stateOrders 를 가진 회사가
+        // UAC 하나뿐이라 사정거리가 정확히 한 회사다.
+        return s.cash < 1500 ? 26 : s.cash < 4000 ? 17 : 8;
+      },
+      text: (s, h) => {
+        const spec = s.trait.stateOrders;
+        const p = stateOrderPick(s);
+        const qty = h.rng.int(spec.qty[0], spec.qty[1]);
+        const unitPrice = Math.round(p.listPrice * spec.priceMult);
+        h.remember('program', p.id);
+        h.remember('qty', qty);
+        h.remember('unitPrice', unitPrice);
+        h.remember('customer', spec.customer);
+        return (
+          `산업부가 ${spec.customer}를 통해 <b>${p.name}</b> ${qty}기를 입찰 없이 사겠다고 한다. ` +
+          `대당 ${money(unitPrice)} — 정가의 ${Math.round(spec.priceMult * 100)}%다. ` +
+          `"자국 라인을 놀릴 수는 없지 않느냐"는 것이 명분이고, 실제로 라인은 놀고 있다.`
+        );
+      },
+      options: [
+        {
+          id: 'take_all',
+          label: '전량 받는다',
+          detail: '라인이 채워지고 선수금이 들어온다. 대신 국영 물량으로 사는 회사로 읽힌다',
+          apply: (s, h) => {
+            s.lastStateOrderTurn = s.turn;
+            const p = s.programs.find((x) => x.id === h.recall('program'));
+            if (!p || p.phase !== 'production') return '그 사이 기체가 양산에서 빠지면서 발주가 무산됐다.';
+            const qty = h.recall('qty', 8);
+            const unitPrice = h.recall('unitPrice', Math.round(p.listPrice * 0.78));
+            // gov 표식 — 항공사발 취소 충격(9·11·연쇄 파산)이 비켜 간다. 산업 정책으로
+            // 넣은 발주는 불황이라고 거둬들이지 않는다(그러라고 넣는 물량이다). 다만
+            // 선단은 's.fleets.state' 로 쌓여 **민항 점유율에도 애프터마켓에도 정상 반영**된다 —
+            // 군용 특수기('gov' 선단)와 달리 이건 여객기를 여객 노선에 파는 일이다.
+            h.order({ airlineId: 'state', airlineName: h.recall('customer', '국영 항공사'), program: p, qty, unitPrice, gov: true });
+            // 국영 물량으로 라인을 채우는 회사는 서방 항공사의 심사 목록에서 뒤로 밀린다.
+            // 평판은 곧 서방의 벽이 녹는 속도라, 이 감점이 "지금 살고 나중에 못 나간다"가 된다.
+            h.reputation(-2);
+            return `${h.recall('customer', '국영 항공사')}와 ${qty}기 계약 (대당 ${money(unitPrice)}). 라인은 채웠다 — 다만 업계지는 "국영 발주로 연명"이라고 썼다.`;
+          },
+          after: {
+            quarters: 4,
+            apply: (s, h) => {
+              // 다음 해 예산 심의. 국가 발주의 진짜 성질은 물량이 아니라 **예산의 변덕**이다.
+              if (h.final) return '예산 심의 전에 경영이 끝났다.';
+              const p = s.programs.find((x) => x.id === h.recall('program'));
+              if (h.rng.chance(0.55) && p && p.phase === 'production') {
+                const extra = Math.max(2, Math.round(h.recall('qty', 8) * 0.4));
+                const unitPrice = h.recall('unitPrice', Math.round(p.listPrice * 0.78));
+                h.order({ airlineId: 'state', airlineName: h.recall('customer', '국영 항공사'), program: p, qty: extra, unitPrice, gov: true });
+                return `다음 해 예산이 통과되면서 ${p.name} ${extra}기가 추가 발주됐다.`;
+              }
+              const cut = Math.round(h.recall('qty', 8) * h.recall('unitPrice', 40) * 0.08);
+              h.expense(cut);
+              return `예산 심의에서 항공 예산이 깎였다. 이미 시작한 물량의 대금 일부(${money(cut)})가 우리 부담으로 넘어왔다.`;
+            },
+          },
+        },
+        {
+          id: 'take_half',
+          label: '절반만 받는다',
+          detail: '라인의 절반은 수출용으로 비워 둔다 — 물량은 적지만 평판은 지킨다',
+          fallback: true,
+          apply: (s, h) => {
+            s.lastStateOrderTurn = s.turn;
+            const p = s.programs.find((x) => x.id === h.recall('program'));
+            if (!p || p.phase !== 'production') return '그 사이 기체가 양산에서 빠지면서 발주가 무산됐다.';
+            const qty = Math.max(1, Math.floor(h.recall('qty', 8) / 2));
+            const unitPrice = h.recall('unitPrice', Math.round(p.listPrice * 0.78));
+            h.order({ airlineId: 'state', airlineName: h.recall('customer', '국영 항공사'), program: p, qty, unitPrice, gov: true });
+            return `${h.recall('customer', '국영 항공사')}와 ${qty}기만 계약했다. 나머지 슬롯은 수출 상담용으로 비워 뒀다.`;
+          },
+        },
+        {
+          id: 'refuse',
+          label: '전량 거절한다',
+          detail: '수출에만 집중한다. 산업부가 서운해하고, 다음 발주는 한참 뒤다',
+          apply: (s, h) => {
+            const spec = s.trait.stateOrders || {};
+            // 거절의 값은 "다음이 늦어진다"다. 쿨다운의 기준점을 미래로 밀어 둔다.
+            s.lastStateOrderTurn = s.turn + Math.round((spec.cooldown || 11) * 0.8);
+            h.reputation(1);
+            return '산업부의 제안을 사양했다. 라인은 비었지만 우리 이름은 국영 발주 명단에 없다 — 다음 제안은 한참 뒤에나 올 것이다.';
+          },
         },
       ],
     },

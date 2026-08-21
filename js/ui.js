@@ -219,6 +219,12 @@
         break;
       }
 
+      case 'foreign-cert': {
+        const r = E.startForeignCert(s, btn.dataset.id);
+        if (act(r)) toast(`서방 형식증명 심사에 착수했다. 비용 ${P.money(r.cost)}.`, 'good');
+        break;
+      }
+
       case 'design-seg':
         ui.spec = D.defaultSpec(btn.dataset.seg, E.yearOf(s.turn));
         render();

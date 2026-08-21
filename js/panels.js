@@ -140,6 +140,28 @@
         label: `${(t.foreignBid.regions || []).join('·')} 항공사`,
         text: `수주전 −${t.foreignBid.penalty}점에서 시작해 평판 ${t.foreignBid.fadeTo}에서 사라진다 — 지금 −${now}점`,
       });
+      const cert = t.foreignBid.certification;
+      if (cert) {
+        // 평판을 기다리는 길 옆의 지름길. 몇 기종이 이미 뚫었는지 함께 보여 준다 —
+        // "살 수 있다"보다 "이만큼 샀다"가 판단에 필요한 정보다.
+        const done = s.programs.filter((p) => p.foreignCert && p.foreignCert.done).length;
+        const busy = s.programs.filter((p) => p.foreignCert && !p.foreignCert.done).length;
+        items.push({
+          good: true,
+          label: '서방 형식증명',
+          text:
+            `기종당 개발비의 ${Math.round(cert.costRate * 100)}% · ${cert.quarters}분기를 내면 그 기종만 벽을 면제받는다` +
+            (done || busy ? ` — 취득 ${done}종${busy ? ` · 심사 중 ${busy}종` : ''}` : ''),
+        });
+      }
+    }
+    if (t.stateOrders) {
+      const so = t.stateOrders;
+      items.push({
+        good: true,
+        label: `${so.customer} 발주`,
+        text: `입찰 없이 ${so.qty[0]}~${so.qty[1]}기 · 정가의 ${Math.round(so.priceMult * 100)}% — 곳간이 마를수록 자주 온다`,
+      });
     }
     const aid = t.aid || {};
     if (aid.rateMult !== undefined && aid.rateMult !== 1) {
@@ -171,6 +193,38 @@
         <p class="muted">${esc(t.note || '')}</p>
         ${list}
       </section>`;
+  }
+
+  /**
+   * 서방 형식증명 버튼 — 벽이 선 회사에만 나온다.
+   *
+   * 인증 심사 단계와 양산 단계 모두에서 신청할 수 있다: 상대 당국이 보는 것은
+   * 시험 결과이지 취항 여부가 아니고, 실제로 SSJ-100 도 취항 뒤에 EASA 를 받았다.
+   */
+  function foreignCertControl(s, p) {
+    const spec = E.foreignCertSpec(s);
+    if (!spec) return '';
+    const fc = p.foreignCert;
+    const cost = money(p.devCost * spec.costRate);
+    if (fc && fc.done) {
+      return '<button disabled>서방 형식증명 ✓</button>';
+    }
+    if (fc) {
+      return `<button disabled>서방 형식증명 심사 중 · ${fc.left}분기</button>`;
+    }
+    return `<button data-action="foreign-cert" data-id="${p.id}">서방 형식증명 · ${cost} · ${spec.quarters}분기</button>`;
+  }
+
+  /** 벽이 선 회사에서만 뜨는 안내 — 이 기종이 낯선 시장에서 어떤 처지인가. */
+  function foreignCertHint(s, p) {
+    const spec = E.foreignCertSpec(s);
+    if (!spec) return '';
+    const wall = (s.trait || {}).foreignBid || {};
+    const regions = (wall.regions || []).join('·');
+    if (p.foreignCert && p.foreignCert.done) {
+      return `<p class="hint good">${esc(regions)} 항공사 앞에서 이 기종은 더 이상 낯선 제조사가 아니다 — 벽 감점이 면제된다.</p>`;
+    }
+    return `<p class="hint">${esc(regions)} 항공사는 우리 인증을 믿지 않는다. 평판 ${wall.fadeTo}까지 올려 회사 전체의 벽을 녹이거나, <b>이 기종 하나만</b> 상대 당국의 형식증명을 사서 지금 뚫어라.</p>`;
   }
 
   function renderOverview(s) {
@@ -661,7 +715,7 @@
         rows.push(
           `<tr><th>인증 / 계보</th><td>${
             p.engines === 4 ? '4발 ✓' : p.etops ? 'ETOPS ✓' : '<span class="muted">ETOPS 없음</span>'
-          }${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${p.altEngine ? ' · 이중화' : ''}${
+          }${p.foreignCert && p.foreignCert.done ? ' · 서방 형식증명 ✓' : ''}${p.growth ? ' · 성장 여유' : ''}${p.maintainable ? ' · 정비성' : ''}${p.altEngine ? ' · 이중화' : ''}${
             p.familyId ? ' · 패밀리' : ''
           }${p.derivative ? ' · 파생형' : ''}${p.govMission ? ' · 특수기 파생' : ''}${p.acquired ? ' · 인수 프로그램' : ''}</td></tr>`,
         );
@@ -734,6 +788,7 @@
                     </button>`
                   : ''
               }
+              ${foreignCertControl(s, p)}
               <button class="danger" data-action="cancel-prog" data-id="${p.id}">개발 중단</button>
             </div>
             ${
@@ -741,14 +796,17 @@
                 ? '<p class="hint">ETOPS 는 취항만으로 나오지 않는다 — <b>운항 실적 4분기</b>를 채우거나, 지금 조기 취득을 사서 취항과 동시에 대양 노선에 들어가라.</p>'
                 : ''
             }
+            ${foreignCertHint(s, p)}
             <p class="hint">시험기를 늘리면 취항이 빨라진다. 대신 개발 막바지 — 현금이 가장 마른 시점 — 에 돈이 먼저 나간다. 인증 후에는 개수해 제작비의 40%를 회수한다.</p>
           </div>`;
         } else if (p.phase === 'production') {
           const ordered = orderedBy(s, p.id);
           const lines = s.lines.filter((l) => l.programId === p.id).length;
+          const certBtn = foreignCertControl(s, p);
           control = `<div class="devctl">
             <p>수주 잔고 <b>${ordered}기</b> · 전용 라인 <b>${lines}개</b></p>
             ${ordered > 0 && lines === 0 ? '<p class="warn-box">라인이 없어 인도할 수 없다. 생산 탭에서 라인을 세워라.</p>' : ''}
+            ${certBtn ? `<div class="row">${certBtn}</div>${foreignCertHint(s, p)}` : ''}
           </div>`;
         }
 
