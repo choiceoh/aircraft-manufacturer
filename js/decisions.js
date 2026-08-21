@@ -18,7 +18,7 @@
 (function (root) {
   'use strict';
 
-  const { AIRLINES, CONFIG, SEGMENTS, FIELD_REQUIREMENT, ETOPS_RANGE_KM } = root.AirlinerData;
+  const { AIRLINES, CONFIG, SEGMENTS, FIELD_REQUIREMENT, ETOPS_RANGE_KM, GOV_MISSIONS, GOV_BID_MODES, GOV_PROPOSAL_COST } = root.AirlinerData;
   const Fleet = root.AirlinerFleet;
   const Engines = root.AirlinerEngines;
 
@@ -131,6 +131,127 @@
           ((s.engineRelations || {})[e.maker] || 0) >= 20,
       ).sort((a, b) => a.eis - b.eis || b.eff - a.eff)[0] || null
     );
+  }
+
+  /** 받침 유무로 조사를 고른다 — 발주처가 공군(이/과)일 수도 정부(가/와)일 수도 있다. */
+  function batchim(word) {
+    const c = word.charCodeAt(word.length - 1);
+    return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 !== 0;
+  }
+  const iGa = (w) => w + (batchim(w) ? '이' : '가');
+  const gwaWa = (w) => w + (batchim(w) ? '과' : '와');
+
+  /**
+   * 정부 특수기 사업 — 이 임무에 응모할 수 있는 우리 기종.
+   * "검증된 기체"가 자격이다: 세그먼트·항속에 더해 인도 실적 문턱이 있다.
+   * 같은 기종은 평생 한 사업만 한다(개조 라인이 그 임무에 묶인다).
+   */
+  function govFit(s, m) {
+    if ((m.minReputation || 0) > (s.reputation || 0)) return null;
+    const eligible = s.programs.filter(
+      (p) =>
+        p.phase === 'production' &&
+        !p.govMission &&
+        m.segments.includes(p.segment) &&
+        p.range >= m.minRange &&
+        (p.delivered || 0) >= m.minDelivered,
+    );
+    if (!eligible.length) return null;
+    // 실적이 가장 두터운 기종이 유력 후보다 — 정부는 검증을 산다.
+    return eligible.reduce((a, b) => ((b.delivered || 0) > (a.delivered || 0) ? b : a));
+  }
+
+  /**
+   * 이번에 공고될 임무. 늘 같은 임무만 오면 단조로우니 분기에 따라 순서를 돌린다 —
+   * 가중치 계산과 문구 생성이 같은 것을 가리키도록 결정적이어야 한다.
+   */
+  function govMissionPick(s) {
+    const n = GOV_MISSIONS.length;
+    const start = Math.floor(s.turn / 7) % n;
+    for (let i = 0; i < n; i++) {
+      const m = GOV_MISSIONS[(start + i) % n];
+      const p = govFit(s, m);
+      if (p) return { mission: m, program: p };
+    }
+    return null;
+  }
+
+  /** 낙찰 확률 — 입찰 방식이 기본값을, 평판이 보정을 정한다. */
+  function govWinChance(s, mode) {
+    const base = (GOV_BID_MODES[mode] || GOV_BID_MODES.fixed).winBase;
+    // 평판 0은 유효한 값(최악)이다 — ||는 0을 50으로 되살려 바닥 평판이 보정을 피해 간다.
+    return Math.max(0.15, Math.min(0.85, base + ((s.reputation ?? 50) - 50) * 0.005));
+  }
+
+  /**
+   * 입찰 제출 — 두 방식이 공유한다. 제안 비용을 내고 심사를 기다린다.
+   * 낙찰 발표(2분기 뒤)와 개조 완료는 아래 govAward 가 단계를 나눠 정산한다.
+   */
+  function govApply(mode) {
+    return (s, h) => {
+      const m = GOV_MISSIONS.find((x) => x.id === h.recall('mission'));
+      const p = s.programs.find((x) => x.id === h.recall('program'));
+      if (!m || !p) return '공고는 흐지부지됐다.';
+      h.expense(GOV_PROPOSAL_COST);
+      h.remember('mode', mode);
+      const label = GOV_BID_MODES[mode].name;
+      return `${m.name} 사업에 ${label} 조건으로 제안서를 냈다 (제안 비용 ${money(GOV_PROPOSAL_COST)}). 발표는 2분기 뒤다.`;
+    };
+  }
+
+  /**
+   * 낙찰 발표 → 개조 개발 → 수주·인도 개시의 다단계 정산.
+   * 같은 after 가 retryIn 으로 두 번 불리므로 memo.stage 로 단계를 가른다.
+   */
+  function govAward(s, h) {
+    const m = GOV_MISSIONS.find((x) => x.id === h.recall('mission'));
+    const p = s.programs.find((x) => x.id === h.recall('program'));
+    const mode = h.recall('mode', 'fixed');
+    if (!m) return '';
+    const stage = h.recall('stage', 'award');
+
+    // 그 사이 기종이 죽었으면 사업도 죽는다 — 정부는 도면이 아니라 기체를 산다.
+    if (!p || p.phase !== 'production') {
+      if (stage === 'convert') h.reputation(-4);
+      return `${p ? p.name : '후보 기체'}가 시장에서 사라지면서 ${m.name} 사업도 무산됐다.`;
+    }
+
+    if (stage === 'award') {
+      // 종료 정산이면 발표 자체가 없다 — 여기서 낙찰시키면 개조비만 물고 끝난다.
+      if (h.final) return `${m.name} 사업 발표가 나기 전에 경영이 끝났다.`;
+      if (!h.rng.chance(govWinChance(s, mode))) {
+        h.reputation(-1);
+        const rival = h.recall('rival', '경쟁사');
+        return `${m.name} 사업에서 떨어졌다. ${rival} 기체가 선정됐다 — 제안 비용만 남았다.`;
+      }
+      const convCost = Math.round(p.devCost * m.convRate);
+      // 개조 "개발비"는 R&D 다 — expense 로 내면 분기 보고서·경력 총계의 R&D 줄이 샌다.
+      h.rdExpense(convCost);
+      h.reputation(3);
+      h.remember('stage', 'convert');
+      return {
+        text: `${m.name} 사업 낙찰! ${p.name} 개조 개발에 ${money(convCost)}을 투입한다 — 완료까지 ${m.convQuarters}분기.`,
+        retryIn: m.convQuarters,
+      };
+    }
+
+    // stage === 'convert' — 개조 완료. 고정가라면 여기서 청구서가 날아올 수 있다.
+    if (h.final) return `${p.name} ${m.name} 개조가 끝나기 전에 경영이 끝났다. 개발비는 매몰됐다.`;
+    const qty = h.recall('qty', m.qty[0]);
+    let unitPrice = h.recall('unitPrice', Math.round(p.listPrice * m.priceMult));
+    if (GOV_BID_MODES[mode].priceMult) unitPrice = Math.round(unitPrice * GOV_BID_MODES[mode].priceMult);
+    let overrunText = '';
+    if (mode === 'fixed' && h.rng.chance(m.overrunChance)) {
+      const convCost = Math.round(p.devCost * m.convRate);
+      const overrun = Math.round(convCost * h.rng.range(m.overrunRange[0], m.overrunRange[1]));
+      h.rdExpense(overrun);
+      h.reputation(-2);
+      overrunText = ` 군용 개조는 만만치 않았다 — 고정가 계약이라 초과 비용 ${money(overrun)}은 전부 우리 몫이다.`;
+    }
+    p.govMission = m.id;
+    h.order({ airlineId: 'gov', airlineName: m.customer, program: p, qty, unitPrice, gov: true });
+    h.reputation(2);
+    return `${p.name} ${m.name} 개조 완료. ${gwaWa(m.customer)} ${qty}기 계약 (대당 ${money(unitPrice)}) — 인도된 기체는 퇴역까지 분기마다 지원 수익을 낸다.${overrunText}`;
   }
 
   const DECISIONS = [
@@ -921,6 +1042,67 @@
           detail: '정식 취항 후에 성숙한 엔진을 쓴다',
           fallback: true,
           apply: () => '남들이 초기 트러블을 겪어 주기를 기다리기로 했다.',
+        },
+      ],
+    },
+
+    // ── 정부 특수기 사업 ──
+    {
+      id: 'gov_special',
+      name: '정부 특수기 사업 공고',
+      // 검증된 양산 기종이 있어야 공고가 온다. 상시 후보면 결정 순환에서 더 매서운
+      // 사건을 밀어내므로(수의계약에서 배운 것) 긴 쿨다운을 둔다 — 국방 사업은
+      // 원래 몇 년에 한 번 오는 것이기도 하다.
+      weight: (s) => {
+        // 게임 막판에는 안 온다 — 발표·개조·인도가 들어갈 시간이 없는 공고는 함정이다.
+        if (s.turn < 12 || s.turn > CONFIG.totalTurns - 12) return 0;
+        if (s.turn - (s.lastGovBidTurn ?? -99) < 14) return 0;
+        return govMissionPick(s) ? 5 : 0;
+      },
+      text: (s, h) => {
+        const pick = govMissionPick(s);
+        s.lastGovBidTurn = s.turn;
+        const { mission: m, program: p } = pick;
+        const qty = h.rng.int(m.qty[0], m.qty[1]);
+        const unitPrice = Math.round(p.listPrice * m.priceMult);
+        const convCost = Math.round(p.devCost * m.convRate);
+        // 경쟁 상대 — 그 세그먼트에서 실제로 팔고 있는 제조사가 맞불을 놓는다.
+        const year = CONFIG.startYear + Math.floor(s.turn / 4);
+        const rivals = Fleet.availableTypes(p.segment, year).filter((t) => !(s.playerMakers || []).includes(t.maker));
+        const rivalType = rivals.length ? rivals.reduce((a, b) => (b.power > a.power ? b : a)) : null;
+        const rivalMaker = rivalType && Fleet.MAKER_BY_ID[rivalType.maker];
+        h.remember('mission', m.id);
+        h.remember('program', p.id);
+        h.remember('qty', qty);
+        h.remember('unitPrice', unitPrice);
+        h.remember('rival', rivalMaker ? `${rivalMaker.name} ${rivalType.name} 개조안` : '경쟁사 개조안');
+        return (
+          `${iGa(m.customer)} <b>${m.name}</b> ${qty}기 도입 사업을 공고했다. 실적이 두터운 우리 <b>${p.name}</b>이 유력 후보다 — ` +
+          `낙찰되면 대당 ${money(unitPrice)}(정가의 ${Math.round(m.priceMult * 100)}%)에 개조 개발비 ${money(convCost)}이 든다.` +
+          (rivalMaker ? ` ${rivalMaker.name}도 ${rivalType.name} 개조안으로 뛰어들었다.` : '')
+        );
+      },
+      options: [
+        {
+          id: 'fixed',
+          label: '고정가로 입찰한다',
+          detail: '이길 확률이 높다. 개조가 꼬이면 초과 비용은 전부 우리 몫이다',
+          apply: govApply('fixed'),
+          after: { quarters: 2, apply: govAward },
+        },
+        {
+          id: 'costplus',
+          label: '원가보전으로 입찰한다',
+          detail: '초과 비용은 정부가 진다. 대신 심의에서 밀리기 쉽고 단가도 10% 짜다',
+          apply: govApply('costplus'),
+          after: { quarters: 2, apply: govAward },
+        },
+        {
+          id: 'pass',
+          label: '응모하지 않는다',
+          detail: '여객 사업에 집중한다. 공고는 몇 년 뒤에나 다시 온다',
+          fallback: true,
+          apply: () => '특수기 사업을 넘겼다. 개조 라인을 세울 여력은 여객기에 쓴다.',
         },
       ],
     },

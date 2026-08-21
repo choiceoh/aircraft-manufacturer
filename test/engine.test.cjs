@@ -6262,3 +6262,275 @@ test('회사 환산 배수는 최종 점수에 실제로 반영된다', () => {
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
+// ─────────────────────────────── 정부 특수기 사업 ───────────────────────────────
+
+/** 결정 apply/after 를 직접 몰 때 쓰는 헬퍼 — 실제 상태를 바꾸되 난수는 통제한다. */
+function govStub(s, memo, rngOverrides) {
+  const stub = {
+    rng: { int: (a) => a, range: (a) => a, pick: (arr) => arr[0], next: () => 0, chance: () => true, ...rngOverrides },
+    fmt: String,
+    final: false,
+    calls: { expense: [], rd: [] },
+    remember: (k, v) => ((memo[k] = v), v),
+    recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+    reputation: (d) => { s.reputation += d; },
+    relation: () => {},
+    income: (amt) => { s.cash += amt; },
+    expense: (amt) => { s.cash -= amt; stub.calls.expense.push(amt); },
+    rdExpense: (amt) => { s.cash -= amt; stub.calls.rd.push(amt); },
+    order: ({ airlineId, airlineName, program, qty, unitPrice, gov }) => {
+      s.backlog.push({ id: 'ord-t' + s.nextId++, airlineId, airlineName, programId: program.id, programName: program.name, qty, remaining: qty, unitPrice, wonTurn: s.turn, gov: !!gov });
+    },
+  };
+  return stub;
+}
+
+test('정부 특수기: 공고 자격 — 실적 문턱·쿨다운·막판 차단', () => {
+  const s = E.newGame(901);
+  const def = Dec.get('gov_special');
+  const p = s.programs[0]; // DN-150: narrow · 4800km · 인도 186기 → 초계기 후보
+
+  assert.strictEqual(def.weight(s), 0, '12분기 전에는 공고가 오면 안 된다');
+  s.turn = 20;
+  assert.ok(def.weight(s) > 0, '검증된 양산 기종이 있으면 공고가 와야 한다');
+  s.lastGovBidTurn = s.turn - 5;
+  assert.strictEqual(def.weight(s), 0, '국방 사업이 분기마다 오면 결정 순환을 밀어낸다');
+  s.lastGovBidTurn = s.turn - 20;
+  assert.ok(def.weight(s) > 0, '몇 년이 지나면 다시 올 수 있다');
+  s.turn = Data.CONFIG.totalTurns - 5;
+  assert.strictEqual(def.weight(s), 0, '발표·개조·인도가 안 들어가는 막판 공고는 함정이다');
+  s.turn = 20;
+  const before = p.delivered;
+  p.delivered = 3;
+  assert.strictEqual(def.weight(s), 0, '인도 실적이 없는 기종에는 공고가 안 온다');
+  p.delivered = before;
+  p.govMission = 'patrol';
+  assert.strictEqual(def.weight(s), 0, '이미 특수기 사업을 하는 기종은 후보가 아니다');
+});
+
+test('정부 특수기: 고정가 낙찰 → 개조비 → 완료 시 초과 비용과 프리미엄 수주', () => {
+  const s = E.newGame(903);
+  s.turn = 20;
+  const def = Dec.get('gov_special');
+  const p = s.programs[0];
+  const memo = {};
+  def.text(s, govStub(s, memo)); // 임무·기종·물량·단가를 memo 에 심는다
+  assert.strictEqual(memo.mission, 'patrol', 'DN-150 은 초계기 후보여야 한다');
+  assert.strictEqual(s.lastGovBidTurn, s.turn, '공고 자체가 쿨다운을 건다');
+
+  const opt = def.options.find((o) => o.id === 'fixed');
+  let cash = s.cash;
+  opt.apply(s, govStub(s, memo));
+  assert.strictEqual(cash - s.cash, Data.GOV_PROPOSAL_COST, '제안 비용이 나가야 한다');
+
+  // 1단계 — 낙찰 (chance=true 로 강제). 개조비가 지금 나가고, 완료가 예약된다.
+  const m = Data.GOV_MISSIONS.find((x) => x.id === 'patrol');
+  const convCost = Math.round(p.devCost * m.convRate);
+  cash = s.cash;
+  const award = opt.after.apply(s, govStub(s, memo));
+  assert.strictEqual(cash - s.cash, convCost, '낙찰 즉시 개조 개발비가 나가야 한다');
+  assert.strictEqual(award.retryIn, m.convQuarters, '개조 기간만큼 뒤로 예약돼야 한다');
+  assert.strictEqual(memo.stage, 'convert');
+
+  // 2단계 — 완료. 고정가 + chance=true → 초과 비용(range 하한 = 0.25×개조비)도 물어야 한다.
+  cash = s.cash;
+  const backlogBefore = s.backlog.length;
+  const done = opt.after.apply(s, govStub(s, memo));
+  const overrun = Math.round(convCost * m.overrunRange[0]);
+  assert.strictEqual(cash - s.cash, overrun, '고정가 개조 난항의 청구서는 우리 몫이다');
+  assert.match(done, /초과 비용/);
+  assert.strictEqual(p.govMission, 'patrol', '완료된 기종에 임무 표식이 남아야 한다');
+  assert.strictEqual(s.backlog.length, backlogBefore + 1, '군 발주가 잔고에 들어와야 한다');
+  const ord = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(ord.airlineId, 'gov');
+  assert.strictEqual(ord.unitPrice, Math.round(p.listPrice * m.priceMult), '낙찰 단가는 정가 프리미엄이어야 한다');
+  assert.strictEqual(ord.qty, m.qty[0], '공고 때 뽑은 물량 그대로 계약돼야 한다');
+});
+
+test('정부 특수기: 원가보전은 초과 비용이 없고 단가가 짜다 · 낙선은 제안 비용만 남는다', () => {
+  const s = E.newGame(905);
+  s.turn = 20;
+  const def = Dec.get('gov_special');
+  const p = s.programs[0];
+  const m = Data.GOV_MISSIONS.find((x) => x.id === 'patrol');
+
+  // 원가보전 — chance=true(초과 비용이 날 조건)여도 청구서가 없어야 한다.
+  const memo = {};
+  def.text(s, govStub(s, memo));
+  const cp = def.options.find((o) => o.id === 'costplus');
+  cp.apply(s, govStub(s, memo));
+  const convCost = Math.round(p.devCost * m.convRate);
+  let cash = s.cash;
+  cp.after.apply(s, govStub(s, memo)); // 낙찰
+  assert.strictEqual(cash - s.cash, convCost);
+  cash = s.cash;
+  cp.after.apply(s, govStub(s, memo)); // 완료
+  assert.strictEqual(cash, s.cash, '원가보전이면 초과 비용은 정부 몫이다');
+  const ord = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(
+    ord.unitPrice,
+    Math.round(Math.round(p.listPrice * m.priceMult) * Data.GOV_BID_MODES.costplus.priceMult),
+    '원가보전 단가는 10% 짜야 한다',
+  );
+
+  // 낙선 — chance=false. 개조비도 수주도 없이 평판만 살짝 상한다.
+  const s2 = E.newGame(905);
+  s2.turn = 20;
+  const memo2 = {};
+  def.text(s2, govStub(s2, memo2));
+  const fx = def.options.find((o) => o.id === 'fixed');
+  fx.apply(s2, govStub(s2, memo2));
+  cash = s2.cash;
+  const backlog2 = s2.backlog.length;
+  const lost = fx.after.apply(s2, govStub(s2, memo2, { chance: () => false }));
+  assert.strictEqual(cash, s2.cash, '낙선이면 개조비가 나가면 안 된다');
+  assert.strictEqual(s2.backlog.length, backlog2, '낙선이면 수주도 없다');
+  assert.match(lost, /떨어졌다/);
+  assert.ok(!s2.programs[0].govMission, '낙선한 기종에 임무 표식이 남으면 안 된다');
+});
+
+test('정부 특수기: 기종이 죽으면 사업도 죽는다 · 종료 정산은 발표 없이 닫힌다', () => {
+  const s = E.newGame(907);
+  s.turn = 20;
+  const def = Dec.get('gov_special');
+  const memo = {};
+  def.text(s, govStub(s, memo));
+  const opt = def.options.find((o) => o.id === 'fixed');
+  opt.apply(s, govStub(s, memo));
+
+  // 발표 전에 기종 매각 — 개조비 없이 무산.
+  const twin = JSON.parse(JSON.stringify(memo));
+  s.programs[0].phase = 'sold';
+  let cash = s.cash;
+  const gone = opt.after.apply(s, govStub(s, memo));
+  assert.match(gone, /무산/);
+  assert.strictEqual(cash, s.cash, '무산에 돈이 오가면 안 된다');
+
+  // 종료 정산(final) — 낙찰을 굴리면 개조비만 물리고 끝난다. 발표 자체가 없어야 한다.
+  s.programs[0].phase = 'production';
+  cash = s.cash;
+  const h = govStub(s, twin);
+  h.final = true;
+  const closed = opt.after.apply(s, h);
+  assert.strictEqual(cash, s.cash, '종료 정산에서 낙찰·개조비가 오가면 안 된다');
+  assert.match(closed, /경영이 끝났다/);
+});
+
+test('정부 특수기: 인도된 군용기는 분기마다 지원 수익을 낸다', () => {
+  const s = E.newGame(909);
+  const p = s.programs[0];
+  const m = Data.GOV_MISSIONS.find((x) => x.id === 'patrol');
+  assert.strictEqual(E.serviceIncome(s).gov, 0, '임무 없는 선단에 지원 수익이 있으면 안 된다');
+  p.govMission = 'patrol';
+  s.fleets.gov = { [p.id]: 10 }; // 10 × 단가가 정수라야 반올림에 흔들리지 않는다
+  const inc = E.serviceIncome(s);
+  assert.ok(Math.abs(inc.gov - 10 * m.sustainPerUnit) < 1e-9, '지원 수익 = 인도 대수 × 임무 단가');
+  assert.ok(Math.abs(inc.total - (inc.aftermarket + inc.freight + inc.gov)) < 1e-9, '지원 수익이 합계에 실려야 한다');
+
+  // 정산에도 실린다 — 같은 상태의 쌍둥이에서 지원 수익만큼 현금이 더 늘어야 한다.
+  const a = JSON.parse(JSON.stringify(s));
+  const b = JSON.parse(JSON.stringify(s));
+  delete b.programs[0].govMission;
+  E.ensureShape(a); E.ensureShape(b);
+  const expected = Math.round(E.serviceIncome(a).total) - Math.round(E.serviceIncome(b).total);
+  assert.ok(Number.isInteger(10 * m.sustainPerUnit), '전제: 지원 수익이 정수라야 반올림과 무관하다');
+  assert.ok(expected >= 2, '전제: 지원 수익이 정산 반올림에 실릴 만큼은 커야 한다');
+  E.endTurn(a); E.endTurn(b);
+  assert.strictEqual(Math.round(a.cash - b.cash), expected, '지원 수익이 분기 정산에 들어가야 한다');
+});
+
+test('정부 특수기: 평판 0은 유효한 최악이다 — 낙찰 확률이 기본값 아래로 내려간다', () => {
+  const s = E.newGame(911);
+  s.turn = 20;
+  const def = Dec.get('gov_special');
+  const memo = {};
+  def.text(s, govStub(s, memo));
+  const opt = def.options.find((o) => o.id === 'fixed');
+  opt.apply(s, govStub(s, memo));
+  s.reputation = 0; // ||였다면 50으로 되살아나 보정이 사라진다
+  let seen = null;
+  opt.after.apply(s, govStub(s, memo, { chance: (p) => ((seen = p), false) }));
+  const base = Data.GOV_BID_MODES.fixed.winBase;
+  assert.ok(Math.abs(seen - (base - 0.25)) < 1e-9, `바닥 평판이면 기본값보다 낮아야 한다 (${seen})`);
+});
+
+test('정부 특수기: 개조 개발비·초과 비용은 R&D 줄에 실린다', () => {
+  const s = E.newGame(913);
+  s.turn = 20;
+  const def = Dec.get('gov_special');
+  const memo = {};
+  def.text(s, govStub(s, memo));
+  const opt = def.options.find((o) => o.id === 'fixed');
+  opt.apply(s, govStub(s, memo));
+  const m = Data.GOV_MISSIONS.find((x) => x.id === memo.mission);
+  const p = s.programs.find((x) => x.id === memo.program);
+  const convCost = Math.round(p.devCost * m.convRate);
+  const h1 = govStub(s, memo);
+  opt.after.apply(s, h1); // 낙찰
+  assert.deepStrictEqual(h1.calls.rd, [convCost], '개조 개발비는 간접비가 아니라 R&D 다');
+  assert.deepStrictEqual(h1.calls.expense, [], '낙찰 단계에 다른 지출이 섞이면 안 된다');
+  const h2 = govStub(s, memo);
+  opt.after.apply(s, h2); // 완료 — 고정가 초과 비용도 개발 지출이다
+  assert.strictEqual(h2.calls.rd.length, 1, '초과 비용도 R&D 줄이어야 한다');
+  assert.deepStrictEqual(h2.calls.expense, []);
+  // 실제 엔진 헬퍼 경로 — rdExpense 가 분기 보고서의 R&D 로 흘러가는지.
+  const s2 = E.newGame(913);
+  s2.pending.rdCost = 0;
+  s2.decision = { id: def.id, name: def.name, text: 'x', memo: {}, turn: s2.turn, options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })) };
+  // 결정 헬퍼의 rdExpense 는 pending.rdCost 에 쌓여야 한다 — decide 로 게이트를 지나
+  // pendingOutcomes 에 award 가 예약되고, 이후 정산은 위 단위 검증이 커버한다.
+  E.decide(s2, 'pass');
+  assert.strictEqual(s2.pending.rdCost, 0, '불참은 아무것도 안 쓴다');
+});
+
+test('정부 특수기: 군 발주는 항공사발 취소 충격을 비켜 간다', () => {
+  const s = E.newGame(915);
+  const p = s.programs[0];
+  // 백로그를 군 발주 하나만 남긴다.
+  s.backlog = [{ id: 'ord-g1', airlineId: 'gov', airlineName: '해군', programId: p.id, programName: p.name, qty: 8, remaining: 8, unitPrice: 160, wonTurn: 0, gov: true }];
+  const cancel = Data.EVENTS.find((e) => e.id === 'order_cancel');
+  assert.strictEqual(cancel.condition(s), false, '군 발주만 있으면 발주 취소 사건이 성립하지 않아야 한다');
+
+  // 9·11 — 민항 발주는 잘리고 군 발주는 남는다.
+  s.backlog.push({ id: 'ord-c1', airlineId: 'hanul', airlineName: '대한항공', programId: p.id, programName: p.name, qty: 20, remaining: 20, unitPrice: 90, wonTurn: 0 });
+  const nine11 = Data.HISTORICAL.find((x) => x.name === '9·11 테러');
+  const stub = { rng: { range: (a, b) => b, int: (a) => a, chance: () => true, pick: (arr) => arr[0], next: () => 0 }, fmt: String };
+  nine11.apply(s, stub);
+  assert.strictEqual(s.backlog[0].remaining, 8, '9·11 이 공군·해군 계약을 자르면 안 된다');
+  assert.ok(s.backlog[1].remaining < 20, '민항 발주는 실제로 잘려야 한다 (검증의 전제)');
+
+  // 연쇄 파산도 마찬가지.
+  const mega = Data.FICTIONAL_SHOCKS.find((x) => x.id === 'mega_bankruptcy');
+  const before = s.backlog[0].remaining;
+  mega.apply(s, { ...stub, rng: { ...stub.rng, chance: () => true, range: (a, b) => b } });
+  assert.strictEqual(s.backlog[0].remaining, before, '항공사 연쇄 파산이 정부 계약을 자르면 안 된다');
+});
+
+test('정부 특수기: 군용 인도는 민항 점유율에 실리지 않는다', () => {
+  const s = E.newGame(917);
+  s.stats.delivered = 100;
+  s.stats.rivalDelivered = 900;
+  const base = E.marketShare(s);
+  assert.ok(Math.abs(base - 0.1) < 1e-9);
+  // 군용 10기를 인도해도 민항 점유율은 그대로다 — 경쟁사 물량은 민항 카탈로그뿐이다.
+  s.stats.delivered = 110;
+  s.fleets.gov = { [s.programs[0].id]: 10 };
+  assert.ok(Math.abs(E.marketShare(s) - base) < 1e-9, '군 계약이 민항 점유율을 부풀리면 안 된다');
+});
+
+test('정부 특수기: 순위표·경력 보고서도 민항 경계를 지킨다', () => {
+  const s = E.newGame(919);
+  const p = s.programs[0];
+  s.stats.delivered = 120;
+  s.fleets.gov = { [p.id]: 10 };
+  // 순위표의 우리 줄 — 점유율 카드와 같은 차감이 없으면 두 화면이 어긋난다.
+  const us = E.makerStandings(s).find((r) => r.us);
+  assert.strictEqual(us.delivered, 110, '순위표의 우리 인도량에서 군용분이 빠져야 한다');
+  // 경력 보고서 주요 고객 — 내부 키 'gov' 가 그대로 새면 안 된다.
+  const report = E.careerReport(s);
+  const gov = report.customers.find((c) => c.id === 'gov');
+  assert.ok(gov, '군 선단이 주요 고객에 잡혀야 한다');
+  assert.notStrictEqual(gov.name, 'gov', '원시 키가 보고서에 노출되면 안 된다');
+  assert.match(gov.name, /정부|군/, '정부·군 계정으로 읽혀야 한다');
+});

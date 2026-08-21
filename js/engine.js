@@ -28,6 +28,7 @@
     AFTERMARKET_PER_UNIT_BY_SEG,
     AFTERMARKET_TIERS,
     FREIGHTER,
+    GOV_MISSIONS,
     RIVAL_DRIFT_LIMIT,
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
@@ -2528,7 +2529,9 @@
     // 차이를 '기타'로 남겨 순위표 합계가 점유율 계산과 어긋나지 않게 한다.
     const allocated = rows.reduce((a, r) => a + r.delivered, 0);
     const unattributed = Math.max(0, s.stats.rivalDelivered - allocated);
-    rows.push({ id: 'us', name: s.company, delivered: s.stats.delivered, us: true });
+    // 군용 인도는 민항 순위 밖이다 — 점유율 계산(marketShare)과 같은 차감을
+    // 여기도 해야 순위표의 점유율이 점유율 카드와 어긋나지 않는다.
+    rows.push({ id: 'us', name: s.company, delivered: Math.max(0, s.stats.delivered - govDelivered(s)), us: true });
     if (unattributed > 0) rows.push({ id: 'other', name: '집계 이전 인도분', delivered: unattributed, us: false });
 
     const total = rows.reduce((a, r) => a + r.delivered, 0) || 1;
@@ -2851,12 +2854,27 @@
     // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
 
-    const total = Math.round(after + freight);
+    const total = Math.round(after + freight + govSustainment(s));
     if (total <= 0) return;
     s.cash += total;
     s.stats.revenue += total;
     report.revenue += total;
     report.services = total;
+  }
+
+  /**
+   * 정부 특수기 지원 수익 — 인도된 군용기는 퇴역까지 정비·훈련·부품을 우리가 댄다.
+   * 군용기 사업의 진짜 이문이 여기다: 판매는 한 번이지만 지원은 20년이다.
+   */
+  function govSustainment(s) {
+    const gov = (s.fleets || {}).gov || {};
+    let sum = 0;
+    for (const p of s.programs) {
+      if (!p.govMission) continue;
+      const m = GOV_MISSIONS.find((x) => x.id === p.govMission);
+      if (m) sum += (gov[p.id] || 0) * m.sustainPerUnit;
+    }
+    return sum;
   }
 
   /** 급별 단가로 계산한 선단의 분기 기본 서비스 수익 (투자 배수 적용 전). */
@@ -2903,7 +2921,8 @@
     const after = aftermarketBase(s) * tier.mult;
     let freight = s.programs.filter((p) => p.freighter).reduce((a, p) => a + (p.delivered || 0) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
-    return { fleet, aftermarket: after, freight, total: after + freight, tier };
+    const gov = govSustainment(s);
+    return { fleet, aftermarket: after, freight, gov, total: after + freight + gov, tier };
   }
 
   // ─────────────────────────────── 이사회 목표 ───────────────────────────────
@@ -3171,6 +3190,14 @@
         s.pending.overhead += amt;
       },
       /**
+       * 개발 성격의 지출 — 분기 보고서의 R&D 줄에 실린다. 특수기 개조 개발처럼
+       * "개발비"라고 말하는 돈을 간접비로 분류하면 경력 보고서의 R&D 총액이 샌다.
+       */
+      rdExpense: (amt) => {
+        s.cash -= amt;
+        s.pending.rdCost += amt;
+      },
+      /**
        * 특별 근무 같은 긴급 생산. 재고만 얹으면 학습곡선도 원가도 건너뛴 공짜 기체가
        * 되어 곧바로 팔 수 있다 — 생산 경제 전체가 무너진다. 정규 생산과 같은 방식으로
        * 번호를 매기고 원가를 문다(급하게 뽑는 만큼 할증까지).
@@ -3202,7 +3229,7 @@
         s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, dur);
       },
       /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
-      order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops }) => {
+      order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops, gov }) => {
         const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
         s.cash += deposit;
         s.pending.revenue += deposit;
@@ -3220,6 +3247,8 @@
           wonTurn: s.turn,
           // 대양 노선 계약이면 인도 게이트가 지켜야 한다 — 입찰 주문과 같은 표식.
           reqEtops: !!reqEtops,
+          // 정부 계약 표식 — 항공사발 취소 충격(발주 취소·9·11·연쇄 파산)이 비켜 간다.
+          gov: !!gov,
         });
       },
     };
@@ -3450,9 +3479,17 @@
     );
   }
 
+  /** 인도된 군용 특수기 대수 — 민항 시장 통계에서 빼야 하는 몫. */
+  function govDelivered(s) {
+    return Object.values((s.fleets || {}).gov || {}).reduce((a, b) => a + b, 0);
+  }
+
   function marketShare(s) {
-    const total = s.stats.delivered + s.stats.rivalDelivered;
-    return total > 0 ? s.stats.delivered / total : 0;
+    // 군용 인도는 민항 시장 밖이다 — 경쟁사 물량이 민항 카탈로그에서만 나오므로,
+    // 특수기까지 세면 점유율·순위·이사회 목표가 군 계약만으로 공짜로 오른다.
+    const mine = Math.max(0, s.stats.delivered - govDelivered(s));
+    const total = mine + s.stats.rivalDelivered;
+    return total > 0 ? mine / total : 0;
   }
 
   /**
@@ -3667,12 +3704,15 @@
       }))
       .sort((a, b) => b.delivered - a.delivered || a.launchTurn - b.launchTurn);
 
+    // 항공사가 아닌 선단 주인들 — 원시 키('gov')가 보고서에 그대로 새면 안 된다.
+    // 특수기 선단은 기관별로 쪼개지 않고 한 계정으로 묶는다(지원 수익 정산 단위).
+    const FLEET_OWNER_NAMES = { gov: '정부·군 (특수기)', lessor: '국제 리스사', leasing: '글로벌 리스' };
     const customers = Object.entries(s.fleets || {})
       .map(([airlineId, byProgram]) => {
         const airline = AIRLINES.find((a) => a.id === airlineId);
         return {
           id: airlineId,
-          name: airline ? airline.name : airlineId,
+          name: airline ? airline.name : FLEET_OWNER_NAMES[airlineId] || airlineId,
           units: Object.values(byProgram).reduce((a, n) => a + n, 0),
           relation: Math.round(s.relations[airlineId] ?? 0),
         };

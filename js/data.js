@@ -342,6 +342,69 @@
   };
 
   /**
+   * 정부 특수기 사업 — 노후 여객기의 제2의 인생.
+   *
+   * 여객 시장에서 밀리기 시작한 기종도 검증된 기체라는 사실 자체가 자산이다.
+   * 실제로 767은 급유기(KC-46)로, 737은 초계기(P-8)로, A330은 MRTT로 살아남았다.
+   * 게임에서는 "양산 실적이 쌓인 기종"에게만 공고가 오고, 입찰 방식이 곧 도박이다:
+   *
+   *   고정가   — 정부가 좋아해 이길 확률이 높다. 개조가 꼬이면 초과 비용은 전부
+   *              우리 몫이다 (보잉이 KC-46 에서 실제로 수십억 달러를 물었다).
+   *   원가보전 — 초과 비용을 정부가 진다. 대신 예산 심의에서 밀리기 쉽고 단가도 짜다.
+   *
+   * 낙찰 물량은 정가보다 훨씬 비싸게 팔리고, 인도된 기체는 퇴역할 때까지 분기마다
+   * 지원(정비·훈련·부품) 수익을 낸다 — 군용기 사업의 진짜 이문은 지원 계약이다.
+   */
+  const GOV_MISSIONS = [
+    // 수지 봉투 — 낙찰 물량 매출만으로는 개조비가 겨우 돌아오고, 진짜 이문은
+    // 지원 수익의 긴 꼬리에서 나오도록 잡았다. 처음 잡았던 값(개조비 15~18%)은
+    // DN-150 초계기 기준 최대 물량으로도 개조비를 못 갚는 함정 공고였다:
+    // 8기 × $148M = $1,184M < 개조비 $1,187M + 생산비 ~$270M (측정).
+    {
+      id: 'tanker', name: '공중급유기', customer: '공군',
+      /** 응모 자격 — 세그먼트 · 최소 항속 · 최소 인도 실적(검증된 기체) */
+      segments: ['narrow', 'wide'], minRange: 5200, minDelivered: 20, minReputation: 0,
+      qty: [7, 11],
+      /** 낙찰 단가 = 정가 × priceMult (군용 개조·지원 장비 포함가) */
+      priceMult: 1.85,
+      /** 개조 개발비 = 원 기종 개발비 × convRate, 개발 기간 convQuarters 분기 */
+      convRate: 0.1, convQuarters: 5,
+      /** 인도 1기당 분기 지원 수익 (M$) — 군용기 사업의 이익 중심 */
+      sustainPerUnit: 0.9,
+      /** 고정가 낙찰 시 개조 난항 확률과 초과 비용 (개조 개발비 대비) */
+      overrunChance: 0.55, overrunRange: [0.3, 0.8],
+    },
+    {
+      id: 'patrol', name: '해상초계기', customer: '해군',
+      segments: ['regional', 'narrow'], minRange: 3600, minDelivered: 12, minReputation: 0,
+      qty: [5, 8],
+      priceMult: 1.9,
+      convRate: 0.1, convQuarters: 4,
+      sustainPerUnit: 0.6,
+      overrunChance: 0.5, overrunRange: [0.25, 0.7],
+    },
+    {
+      id: 'vip', name: '정부 전용기', customer: '정부',
+      /** 국가 원수가 탈 기체 — 실적보다 평판이 자격이다. */
+      segments: ['narrow', 'wide'], minRange: 4000, minDelivered: 8, minReputation: 55,
+      qty: [2, 3],
+      priceMult: 2.8,
+      convRate: 0.06, convQuarters: 2,
+      sustainPerUnit: 0.4,
+      overrunChance: 0.35, overrunRange: [0.2, 0.5],
+    },
+  ];
+
+  /** 입찰 방식별 낙찰 기본 확률 — 평판 보정(±)은 결정 쪽에서 얹는다. */
+  const GOV_BID_MODES = {
+    fixed: { id: 'fixed', name: '고정가', winBase: 0.58 },
+    costplus: { id: 'costplus', name: '원가보전', winBase: 0.34, priceMult: 0.9 },
+  };
+
+  /** 제안서·시제 검토 비용 — 입찰 자체의 값. 떨어져도 돌아오지 않는다. */
+  const GOV_PROPOSAL_COST = 45;
+
+  /**
    * 입찰 조건 — 할인율 말고 무엇을 걸 수 있나.
    *
    * 할인 슬라이더 하나뿐일 때는 응찰만 하면 88% 이겼다(측정치). 결정이 하나면
@@ -500,9 +563,11 @@
       id: 'order_cancel',
       name: '발주 취소',
       weight: 7,
-      condition: (s) => s.backlog.some((o) => o.remaining > 0),
+      // 정부 계약(gov)은 항공사 사정과 무관하다 — 공군 발주가 경기 때문에 날아가면
+      // 개조비를 이미 낸 플레이어가 이유 없이 당한다.
+      condition: (s) => s.backlog.some((o) => o.remaining > 0 && !o.gov),
       apply: (s, h) => {
-        const live = s.backlog.filter((o) => o.remaining > 0);
+        const live = s.backlog.filter((o) => o.remaining > 0 && !o.gov);
         const order = h.rng.pick(live);
         const cut = Math.max(1, Math.round(order.remaining * h.rng.range(0.2, 0.5)));
         order.remaining -= cut;
@@ -771,9 +836,9 @@
       apply: (s, h) => {
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.66);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 7);
-        // 발주 취소가 실제로 쏟아졌다.
+        // 발주 취소가 실제로 쏟아졌다. 정부 계약은 예외 — 국방 예산은 여객 수요를 안 탄다.
         let cancelled = 0;
-        for (const o of s.backlog.filter((x) => x.remaining > 0)) {
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
           const cut = Math.round(o.remaining * h.rng.range(0.15, 0.4));
           if (cut > 0) {
             o.remaining -= cut;
@@ -849,7 +914,8 @@
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.72);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 5);
         let lost = 0;
-        for (const o of s.backlog.filter((x) => x.remaining > 0)) {
+        // 항공사 파산의 충격이다 — 정부 계약은 비켜 간다.
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
           if (!h.rng.chance(0.45)) continue;
           const cut = Math.round(o.remaining * h.rng.range(0.2, 0.5));
           if (cut > 0) {
@@ -986,6 +1052,9 @@
     AFTERMARKET_TIERS,
     AFTERMARKET_ORDER,
     FREIGHTER,
+    GOV_MISSIONS,
+    GOV_BID_MODES,
+    GOV_PROPOSAL_COST,
     BID_PLEDGES,
     BID_FINANCING,
     RIVAL_STRENGTH_CAP,
