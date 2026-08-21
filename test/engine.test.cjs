@@ -6846,3 +6846,14 @@ test('시나리오 상태는 세이브 왕복을 견딘다', () => {
   const b = E.scenarioStatus(round);
   assert.deepStrictEqual(b, a, '세이브를 오간 시나리오 판정이 달라지면 안 된다');
 });
+
+test('시나리오 시작 조건은 파생값보다 먼저 적용된다 — 금리·개장 로그가 잿더미 기준', () => {
+  const ashes = E.newGame(965, null, 'phoenix');
+  const healthy = E.newGame(965, 'deneb');
+  assert.ok(ashes.rateForQuarter > healthy.rateForQuarter, '잿더미 회사가 첫 분기에 건강한 금리를 쓰면 안 된다');
+  const intro = ashes.log.find((l) => l.text.includes('경영을 인계받았다'));
+  assert.match(intro.text, /2\.60B/, '개장 로그가 덮어쓴 재무를 말해야 한다');
+  assert.match(intro.text, /4\.00B/, '개장 로그의 부채도 잿더미 기준이어야 한다');
+  // 난수를 쓰지 않는 덮어쓰기 — 같은 시드의 충격·드라마 전개는 자유 경영과 같다.
+  assert.deepStrictEqual(ashes.shocks, healthy.shocks, '시나리오가 시드 전개를 바꾸면 안 된다');
+});

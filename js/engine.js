@@ -274,6 +274,16 @@
     // (데네브 186기·43.7%, 보잉 730기, 복병은 140~170기).
     s.stats.peakShare = marketShare(s);
 
+    // 시나리오 시작 조건은 **파생값보다 먼저** 덮어쓴다. 뒤에 하면 첫 분기 금리
+    // 캐시·이사회 목표·개장 로그가 전부 건강한 재무 기준으로 굳는다 — 잿더미
+    // 회사가 첫 분기에 BBB 금리를 쓰고, 로그는 $4.2B 자본금을 자랑하게 된다.
+    // 난수를 쓰지 않으므로 시드 전개(충격·드라마·수주)는 그대로다.
+    if (scenario && scenario.tweaks) {
+      if (typeof scenario.tweaks.cash === 'number') s.cash = scenario.tweaks.cash;
+      if (typeof scenario.tweaks.debt === 'number') s.debt = scenario.tweaks.debt;
+      s.stats.peakDebt = Math.max(s.stats.peakDebt || 0, s.debt);
+    }
+
     const rng = rngFor(s);
     s.shocks = buildShockSchedule(s, rng);
     // 드라마는 **별도 난수열**로 뽑는다. 본류(rng)에 끼우면 드라마 규칙을 손볼 때마다
@@ -290,15 +300,9 @@
     pushLog(s, 'info', `${s.company} 경영을 인계받았다. 자본금 ${fmtMoney(s.cash)}, 차입금 ${fmtMoney(s.debt)}. ${preset.intro}`);
     pushLog(s, 'info', `20년 안에 후속기를 띄워 시장을 잡아라. ${s.programs[0] ? s.programs[0].name : '주력기'}의 수명은 길지 않다.`);
 
-    // 시나리오 — 시작 조건을 덮어쓰고 산 하나를 세운다. 로그·수주·드라마 시드가
-    // 모두 잡힌 뒤에 적용해, 같은 시드의 자유 경영과 전개가 일치한다(현금·부채만 다르다).
+    // 시나리오 표식과 소개 — 시작 조건 자체는 위(파생값 이전)에서 이미 덮어썼다.
     if (scenario) {
       s.scenario = scenario.id;
-      if (scenario.tweaks) {
-        if (typeof scenario.tweaks.cash === 'number') s.cash = scenario.tweaks.cash;
-        if (typeof scenario.tweaks.debt === 'number') s.debt = scenario.tweaks.debt;
-        s.stats.peakDebt = Math.max(s.stats.peakDebt || 0, s.debt);
-      }
       pushLog(s, 'event', `[시나리오 · ${scenario.name}] ${scenario.desc}`);
       pushLog(s, 'event', `목표: ${scenario.goalText}. 파산하면 어떤 목표든 실패다.`);
     }
