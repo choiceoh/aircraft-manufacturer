@@ -356,6 +356,10 @@
    * 지원(정비·훈련·부품) 수익을 낸다 — 군용기 사업의 진짜 이문은 지원 계약이다.
    */
   const GOV_MISSIONS = [
+    // 수지 봉투 — 낙찰 물량 매출만으로는 개조비가 겨우 돌아오고, 진짜 이문은
+    // 지원 수익의 긴 꼬리에서 나오도록 잡았다. 처음 잡았던 값(개조비 15~18%)은
+    // DN-150 초계기 기준 최대 물량으로도 개조비를 못 갚는 함정 공고였다:
+    // 8기 × $148M = $1,184M < 개조비 $1,187M + 생산비 ~$270M (측정).
     {
       id: 'tanker', name: '공중급유기', customer: '공군',
       /** 응모 자격 — 세그먼트 · 최소 항속 · 최소 인도 실적(검증된 기체) */
@@ -364,9 +368,9 @@
       /** 낙찰 단가 = 정가 × priceMult (군용 개조·지원 장비 포함가) */
       priceMult: 1.85,
       /** 개조 개발비 = 원 기종 개발비 × convRate, 개발 기간 convQuarters 분기 */
-      convRate: 0.15, convQuarters: 5,
-      /** 인도 1기당 분기 지원 수익 (M$) */
-      sustainPerUnit: 0.5,
+      convRate: 0.1, convQuarters: 5,
+      /** 인도 1기당 분기 지원 수익 (M$) — 군용기 사업의 이익 중심 */
+      sustainPerUnit: 0.9,
       /** 고정가 낙찰 시 개조 난항 확률과 초과 비용 (개조 개발비 대비) */
       overrunChance: 0.55, overrunRange: [0.3, 0.8],
     },
@@ -374,9 +378,9 @@
       id: 'patrol', name: '해상초계기', customer: '해군',
       segments: ['regional', 'narrow'], minRange: 3600, minDelivered: 12, minReputation: 0,
       qty: [5, 8],
-      priceMult: 1.75,
-      convRate: 0.18, convQuarters: 4,
-      sustainPerUnit: 0.35,
+      priceMult: 1.9,
+      convRate: 0.1, convQuarters: 4,
+      sustainPerUnit: 0.6,
       overrunChance: 0.5, overrunRange: [0.25, 0.7],
     },
     {
@@ -384,9 +388,9 @@
       /** 국가 원수가 탈 기체 — 실적보다 평판이 자격이다. */
       segments: ['narrow', 'wide'], minRange: 4000, minDelivered: 8, minReputation: 55,
       qty: [2, 3],
-      priceMult: 2.4,
+      priceMult: 2.8,
       convRate: 0.06, convQuarters: 2,
-      sustainPerUnit: 0.25,
+      sustainPerUnit: 0.4,
       overrunChance: 0.35, overrunRange: [0.2, 0.5],
     },
   ];
@@ -559,9 +563,11 @@
       id: 'order_cancel',
       name: '발주 취소',
       weight: 7,
-      condition: (s) => s.backlog.some((o) => o.remaining > 0),
+      // 정부 계약(gov)은 항공사 사정과 무관하다 — 공군 발주가 경기 때문에 날아가면
+      // 개조비를 이미 낸 플레이어가 이유 없이 당한다.
+      condition: (s) => s.backlog.some((o) => o.remaining > 0 && !o.gov),
       apply: (s, h) => {
-        const live = s.backlog.filter((o) => o.remaining > 0);
+        const live = s.backlog.filter((o) => o.remaining > 0 && !o.gov);
         const order = h.rng.pick(live);
         const cut = Math.max(1, Math.round(order.remaining * h.rng.range(0.2, 0.5)));
         order.remaining -= cut;
@@ -830,9 +836,9 @@
       apply: (s, h) => {
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.66);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 7);
-        // 발주 취소가 실제로 쏟아졌다.
+        // 발주 취소가 실제로 쏟아졌다. 정부 계약은 예외 — 국방 예산은 여객 수요를 안 탄다.
         let cancelled = 0;
-        for (const o of s.backlog.filter((x) => x.remaining > 0)) {
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
           const cut = Math.round(o.remaining * h.rng.range(0.15, 0.4));
           if (cut > 0) {
             o.remaining -= cut;
@@ -908,7 +914,8 @@
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.72);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 5);
         let lost = 0;
-        for (const o of s.backlog.filter((x) => x.remaining > 0)) {
+        // 항공사 파산의 충격이다 — 정부 계약은 비켜 간다.
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
           if (!h.rng.chance(0.45)) continue;
           const cut = Math.round(o.remaining * h.rng.range(0.2, 0.5));
           if (cut > 0) {

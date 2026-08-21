@@ -225,7 +225,8 @@
         return `${m.name} 사업에서 떨어졌다. ${rival} 기체가 선정됐다 — 제안 비용만 남았다.`;
       }
       const convCost = Math.round(p.devCost * m.convRate);
-      h.expense(convCost);
+      // 개조 "개발비"는 R&D 다 — expense 로 내면 분기 보고서·경력 총계의 R&D 줄이 샌다.
+      h.rdExpense(convCost);
       h.reputation(3);
       h.remember('stage', 'convert');
       return {
@@ -243,12 +244,12 @@
     if (mode === 'fixed' && h.rng.chance(m.overrunChance)) {
       const convCost = Math.round(p.devCost * m.convRate);
       const overrun = Math.round(convCost * h.rng.range(m.overrunRange[0], m.overrunRange[1]));
-      h.expense(overrun);
+      h.rdExpense(overrun);
       h.reputation(-2);
       overrunText = ` 군용 개조는 만만치 않았다 — 고정가 계약이라 초과 비용 ${money(overrun)}은 전부 우리 몫이다.`;
     }
     p.govMission = m.id;
-    h.order({ airlineId: 'gov', airlineName: m.customer, program: p, qty, unitPrice });
+    h.order({ airlineId: 'gov', airlineName: m.customer, program: p, qty, unitPrice, gov: true });
     h.reputation(2);
     return `${p.name} ${m.name} 개조 완료. ${gwaWa(m.customer)} ${qty}기 계약 (대당 ${money(unitPrice)}) — 인도된 기체는 퇴역까지 분기마다 지원 수익을 낸다.${overrunText}`;
   }

@@ -3188,6 +3188,14 @@
         s.pending.overhead += amt;
       },
       /**
+       * 개발 성격의 지출 — 분기 보고서의 R&D 줄에 실린다. 특수기 개조 개발처럼
+       * "개발비"라고 말하는 돈을 간접비로 분류하면 경력 보고서의 R&D 총액이 샌다.
+       */
+      rdExpense: (amt) => {
+        s.cash -= amt;
+        s.pending.rdCost += amt;
+      },
+      /**
        * 특별 근무 같은 긴급 생산. 재고만 얹으면 학습곡선도 원가도 건너뛴 공짜 기체가
        * 되어 곧바로 팔 수 있다 — 생산 경제 전체가 무너진다. 정규 생산과 같은 방식으로
        * 번호를 매기고 원가를 문다(급하게 뽑는 만큼 할증까지).
@@ -3219,7 +3227,7 @@
         s.effects.grounded[programId] = Math.max(s.effects.grounded[programId] || 0, dur);
       },
       /** 결정으로 성사된 수주. 입찰을 거치지 않으므로 착수금도 여기서 받는다. */
-      order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops }) => {
+      order: ({ airlineId, airlineName, program, qty, unitPrice, reqEtops, gov }) => {
         const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
         s.cash += deposit;
         s.pending.revenue += deposit;
@@ -3237,6 +3245,8 @@
           wonTurn: s.turn,
           // 대양 노선 계약이면 인도 게이트가 지켜야 한다 — 입찰 주문과 같은 표식.
           reqEtops: !!reqEtops,
+          // 정부 계약 표식 — 항공사발 취소 충격(발주 취소·9·11·연쇄 파산)이 비켜 간다.
+          gov: !!gov,
         });
       },
     };
@@ -3467,9 +3477,17 @@
     );
   }
 
+  /** 인도된 군용 특수기 대수 — 민항 시장 통계에서 빼야 하는 몫. */
+  function govDelivered(s) {
+    return Object.values((s.fleets || {}).gov || {}).reduce((a, b) => a + b, 0);
+  }
+
   function marketShare(s) {
-    const total = s.stats.delivered + s.stats.rivalDelivered;
-    return total > 0 ? s.stats.delivered / total : 0;
+    // 군용 인도는 민항 시장 밖이다 — 경쟁사 물량이 민항 카탈로그에서만 나오므로,
+    // 특수기까지 세면 점유율·순위·이사회 목표가 군 계약만으로 공짜로 오른다.
+    const mine = Math.max(0, s.stats.delivered - govDelivered(s));
+    const total = mine + s.stats.rivalDelivered;
+    return total > 0 ? mine / total : 0;
   }
 
   /**
