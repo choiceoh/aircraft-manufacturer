@@ -6435,3 +6435,18 @@ test('정부 특수기: 인도된 군용기는 분기마다 지원 수익을 낸
   E.endTurn(a); E.endTurn(b);
   assert.strictEqual(Math.round(a.cash - b.cash), expected, '지원 수익이 분기 정산에 들어가야 한다');
 });
+
+test('정부 특수기: 평판 0은 유효한 최악이다 — 낙찰 확률이 기본값 아래로 내려간다', () => {
+  const s = E.newGame(911);
+  s.turn = 20;
+  const def = Dec.get('gov_special');
+  const memo = {};
+  def.text(s, govStub(s, memo));
+  const opt = def.options.find((o) => o.id === 'fixed');
+  opt.apply(s, govStub(s, memo));
+  s.reputation = 0; // ||였다면 50으로 되살아나 보정이 사라진다
+  let seen = null;
+  opt.after.apply(s, govStub(s, memo, { chance: (p) => ((seen = p), false) }));
+  const base = Data.GOV_BID_MODES.fixed.winBase;
+  assert.ok(Math.abs(seen - (base - 0.25)) < 1e-9, `바닥 평판이면 기본값보다 낮아야 한다 (${seen})`);
+});

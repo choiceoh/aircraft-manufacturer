@@ -179,7 +179,8 @@
   /** 낙찰 확률 — 입찰 방식이 기본값을, 평판이 보정을 정한다. */
   function govWinChance(s, mode) {
     const base = (GOV_BID_MODES[mode] || GOV_BID_MODES.fixed).winBase;
-    return Math.max(0.15, Math.min(0.85, base + ((s.reputation || 50) - 50) * 0.005));
+    // 평판 0은 유효한 값(최악)이다 — ||는 0을 50으로 되살려 바닥 평판이 보정을 피해 간다.
+    return Math.max(0.15, Math.min(0.85, base + ((s.reputation ?? 50) - 50) * 0.005));
   }
 
   /**
