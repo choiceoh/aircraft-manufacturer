@@ -766,23 +766,35 @@
       if (p.etopsCertified === undefined) p.etopsCertified = !!p.etops && p.phase === 'production';
     }
 
-    // 착수 시점의 연구 기록이 없던 세이브. 통째로 비워 두면 연구 뒤에 그린 기체가
-    // 자기 보정을 잃은 채로 평가돼, 엔진을 갈아 끼울 때 값이 어긋난다(연비 상한에
-    // 닿은 설계에서 1점).
+    // 연구 완료 분기를 남기기 전 세이브. 완료 목록은 있는데 **언제** 끝났는지가
+    // 없다. 두 단계로 되찾는다:
     //
-    // 완료 시점을 적어 둔 적이 없어 정확한 복원은 안 된다. 대신 **확실히 없었던
-    // 것만 걷어 낸다**: 연구는 프로젝트마다 정해진 분기를 채워야 끝나므로, 착수
-    // 분기가 그 길이보다 이르면 그 연구는 그때 존재할 수 없었다. 승계 기종
-    // (launchTurn 이 음수)이 복합재 연구를 달고 있는 것 같은 일은 이걸로 막힌다.
-    // 남는 것은 추정이지만, 지금까지처럼 통째로 비우는 쪽보다 낫다.
+    //   1. 로그에 완료 기록이 남아 있으면 그 분기가 정답이다(250줄 안에 있으면).
+    //   2. 없으면 **가장 이른 가능 시점**으로 둔다 — 연구는 정해진 분기를 채워야
+    //      끝나므로 그보다 이를 수는 없다. 실제로는 더 늦게 끝났을 수 있다.
+    if (s.research && s.research.done) {
+      if (!s.research.doneTurn || typeof s.research.doneTurn !== 'object') s.research.doneTurn = {};
+      for (const [id, doneFlag] of Object.entries(s.research.done)) {
+        if (!doneFlag || typeof s.research.doneTurn[id] === 'number') continue;
+        const proj = RESEARCH_PROJECTS.find((x) => x.id === id);
+        if (!proj) continue;
+        const entry = (s.log || []).find((l) => typeof l.text === 'string' && l.text.startsWith(`${proj.name} 연구 완료`));
+        s.research.doneTurn[id] = entry && typeof entry.turn === 'number' ? entry.turn : proj.quarters;
+      }
+    }
+
+    // 착수 시점의 연구 기록이 없던 세이브의 프로그램. 통째로 비워 두면 연구 뒤에
+    // 그린 기체가 자기 보정을 잃은 채로 평가돼, 엔진을 갈아 끼울 때 값이 어긋난다
+    // (연비 상한에 닿은 설계에서 1점). 위에서 되찾은 완료 분기로 가른다 —
+    // 승계 기종(launchTurn 이 음수)이 복합재 연구를 달고 있는 일은 이걸로 막힌다.
     for (const p of s.programs) {
       if (p.research && typeof p.research === 'object') continue;
       const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
       const filled = {};
       for (const [id, doneFlag] of Object.entries((s.research && s.research.done) || {})) {
         if (!doneFlag) continue;
-        const proj = RESEARCH_PROJECTS.find((x) => x.id === id);
-        if (proj && born < proj.quarters) continue;
+        const at = (s.research.doneTurn || {})[id];
+        if (typeof at === 'number' && born < at) continue;
         filled[id] = true;
       }
       p.research = filled;
@@ -2139,14 +2151,18 @@
   }
 
   /**
-   * 2세대를 착수할 수 있는 가장 이른 연도 — **취항에서 개발 기간만큼 거슬러** 잡는다.
+   * 2세대를 착수할 수 있는 가장 이른 **분기** — 취항에서 개발 기간만큼 거슬러 잡는다.
    *
    * 따로 적어 둔 숫자가 아니라 유도한 값인 이유는, 그래야 완성이 그 엔진의 취항보다
    * 앞설 수 없기 때문이다. 앞서면 갈아타는 시점에 그 엔진을 아직 못 사는 상태가 되고,
    * 쌍 평가가 통째로 폴백으로 떨어진다(비율이 전부 1 — 국산화가 아무 값도 안 바꾼다).
+   *
+   * 연도가 아니라 분기로 세는 이유 — 14분기는 3.5년이라 열리는 시점이 연중이다.
+   * 소수 연도로 들고 다니면 화면이 그걸 연도로 잘라 "2008년부터"라고 적는데,
+   * 실제로는 2008년 3분기다. 버튼은 잠겨 있는데 화면은 열렸다고 말하게 된다.
    */
   function localEngineOpensAt(to, quarters) {
-    return to.eis - quarters / 4;
+    return (to.eis - CONFIG.startYear) * 4 - quarters;
   }
 
   /**
@@ -2164,7 +2180,6 @@
   function localEngineTargets(s) {
     const spec = localEngineSpec(s);
     if (!spec) return [];
-    const year = yearOf(s.turn);
     const seen = new Map();
     for (const p of s.programs) {
       if (p.phase === 'cancelled' || p.phase === 'sold') continue;
@@ -2185,7 +2200,7 @@
         // 엔진은 있고, 그 기체에 다는 인증만 하면 된다. 싸고 짧다.
         const refit = (s.localEngines || []).includes(replacement);
         const quarters = refitQuarters(rates.minQuarters, refit);
-        const opensAt = gen === 2 ? localEngineOpensAt(to, quarters) : null;
+        const opensTurn = gen === 2 ? localEngineOpensAt(to, quarters) : null;
         seen.set(key, {
           engine: eng,
           replacement,
@@ -2193,8 +2208,10 @@
           refit,
           costRate: rates.costRate,
           minQuarters: rates.minQuarters,
-          opensAt,
-          locked: opensAt !== null && year < opensAt,
+          opensTurn,
+          opensAt: opensTurn === null ? null : yearOf(opensTurn),
+          opensLabel: opensTurn === null ? null : turnLabel(opensTurn),
+          locked: opensTurn !== null && s.turn < opensTurn,
           programs: [],
         });
       }
@@ -2245,7 +2262,7 @@
     const target = matched[0];
     if (target.locked) {
       const to = root.AirlinerEngines.get(target.replacement);
-      return { ok: false, error: `${to ? to.name : target.replacement} 는 ${Math.floor(target.opensAt)}년부터 착수할 수 있습니다.` };
+      return { ok: false, error: `${to ? to.name : target.replacement} 는 ${target.opensLabel}부터 착수할 수 있습니다.` };
     }
     const minQuarters = localEngineQuarters(s, target);
     s.localEngineProject = {
@@ -3830,6 +3847,10 @@
     r.progress[proj.id] = (r.progress[proj.id] || 0) + 1;
     if (r.progress[proj.id] >= proj.quarters) {
       r.done[proj.id] = true;
+      // **언제** 끝났는지도 남긴다. 착수 시점의 연구를 프로그램이 들고 다니게 된
+      // 뒤로는 이 값이 곧 "그 기체가 이 연구를 받았는가"의 기준이 된다.
+      r.doneTurn = r.doneTurn || {};
+      r.doneTurn[proj.id] = s.turn;
       r.active = null;
       pushLog(s, 'good', `${proj.name} 연구 완료 — ${proj.effect}. 이제부터의 설계·생산에 적용된다.`);
     }
@@ -4936,6 +4957,7 @@
     localEngineTargets,
     localEngineCost,
     localEngineQuarters,
+    turnLabel,
     localEngineImpact,
     localEnginePreview,
     hasDomesticEngine,

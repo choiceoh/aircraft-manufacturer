@@ -894,8 +894,13 @@
           const got = x.enginePipGain || 0;
           const g = Math.min(gain, 2 - got);
           if (g <= 0) continue;
-          x.efficiency = Math.min(99, x.efficiency + g);
-          x.enginePipGain = got + g;
+          // **실제로 오른 만큼만** 적는다. 연비 상한(99)에 걸린 기종은 값이 안
+          // 움직이는데 카운터만 오르면, 나중에 엔진을 갈아 끼울 때 받은 적 없는
+          // 점수를 도로 빼앗긴다(국산화가 이 카운터만큼을 되돌린다).
+          const applied = Math.min(99, x.efficiency + g) - x.efficiency;
+          if (applied <= 0) continue;
+          x.efficiency += applied;
+          x.enginePipGain = got + applied;
           touched++;
         }
         if (!touched) return `${maker}가 성능 패키지를 내놨지만, 우리 기체는 이미 최신 사양이라 적용분이 없었다.`;

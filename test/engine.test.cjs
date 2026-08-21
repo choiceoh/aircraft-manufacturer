@@ -8593,12 +8593,20 @@ test('2세대: 착수 가능 연도는 취항에서 개발 기간만큼 거슬�
   runLocal(s, 'cfm56-5b', 'ps90a');
   const t = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
   const pd14 = Eng.get('pd14');
-  assert.strictEqual(t.opensAt, pd14.eis - E.localEngineQuarters(s, t) / 4, '완성이 취항보다 앞설 수 없어야 한다');
+  const quarters = E.localEngineQuarters(s, t);
+  // 분기로 센다. 14분기는 3.5년이라 열리는 시점이 연중이고, 연도로 자르면
+  // 화면이 "2008년부터"라고 적는데 실제로는 2008년 3분기다.
+  assert.strictEqual(t.opensTurn + quarters, (pd14.eis - 1998) * 4, '완성이 취항보다 앞설 수 없어야 한다');
+  assert.strictEqual(t.opensLabel, E.turnLabel(t.opensTurn), '화면에 적을 시점은 분기까지다');
   assert.ok(t.locked, '2004년에는 아직 이르다');
 
   const early = E.startLocalEngine(s, 'ps90a', 'pd14');
   assert.strictEqual(early.ok, false);
-  assert.match(early.error, new RegExp(String(Math.floor(t.opensAt))), '언제부터인지 알려 줘야 한다');
+  assert.ok(early.error.includes(t.opensLabel), `언제부터인지 분기까지 알려 줘야 한다 (${early.error})`);
+
+  // 한 분기 전에는 여전히 잠겨 있고, 그 분기가 되면 열린다.
+  const held = { ...s, turn: t.opensTurn - 1 };
+  assert.strictEqual(E.startLocalEngine(held, 'ps90a', 'pd14').ok, false, '한 분기 전에는 안 된다');
 
   // 열리는 해까지 보낸다.
   for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
@@ -8853,4 +8861,75 @@ test('마이그레이션: 옛 세이브의 착수 시점 연구를 되짚는다'
   }
   const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(old), year: 1998 + old.turn / 4 });
   assert.strictEqual(back2.efficiency, fresh.efficiency, '되짚은 연구 위의 신규 설계와 맞아야 한다');
+});
+
+test('마이그레이션: 연구 완료 분기를 로그에서 되찾는다', () => {
+  // 회귀 — 프로젝트 길이만으로 가르면 "연구가 0분기에 시작해 쉬지 않고 돌았다"는
+  // 가정이 된다. 실제로는 아무 때나 시작하고 멈출 수 있어서, 늦게 끝난 연구를
+  // 그 전에 착수한 기체에 얹게 된다.
+  const aero = Data.RESEARCH_PROJECTS.find((x) => x.id === 'aero');
+  const build = () => {
+    const s = E.newGame(4401, 'uac');
+    s.cash += 900000;
+    const p = E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5000, tech: 70, material: 'aluminum', engine: 'cfm56-5b' }, 'Mid').program;
+    p.launchTurn = aero.quarters * 4; // 연구가 끝날 수 있는 가장 이른 시점보다 한참 뒤
+    s.research = { active: null, progress: {}, done: { aero: true } };
+    for (const q of s.programs) delete q.research;
+    return s;
+  };
+
+  // 1) 로그에 완료 기록이 남아 있으면 그 분기가 정답이다.
+  const withLog = build();
+  const late = withLog.programs.find((x) => x.name === 'Mid').launchTurn + 20;
+  withLog.log.unshift({ turn: late, label: E.turnLabel(late), kind: 'good', text: `${aero.name} 연구 완료 — ${aero.effect}.` });
+  const a = JSON.parse(JSON.stringify(withLog));
+  E.ensureShape(a);
+  assert.strictEqual(a.research.doneTurn.aero, late, '로그의 분기를 그대로 읽어야 한다');
+  assert.deepStrictEqual(a.programs.find((x) => x.name === 'Mid').research, {}, '연구보다 먼저 나온 기체다');
+
+  // 2) 로그가 밀려 사라졌으면 가장 이른 가능 시점으로 물러선다.
+  const noLog = build();
+  noLog.log = [];
+  const b = JSON.parse(JSON.stringify(noLog));
+  E.ensureShape(b);
+  assert.strictEqual(b.research.doneTurn.aero, aero.quarters, '그보다 이를 수는 없다');
+  assert.deepStrictEqual(b.programs.find((x) => x.name === 'Mid').research, { aero: true });
+
+  // 3) 앞으로는 추정할 일이 없다 — 완료 분기를 그때 적는다.
+  const live = E.newGame(4403, 'uac');
+  live.cash += 900000;
+  assert.ok(E.startResearch(live, 'aero').ok);
+  for (let i = 0; i < aero.quarters + 2 && !live.research.done.aero; i++) {
+    live.cash += 6000;
+    E.endTurn(live);
+  }
+  assert.ok(live.research.done.aero, '연구가 끝나야 한다');
+  assert.strictEqual(typeof live.research.doneTurn.aero, 'number', '완료 분기를 남겨야 한다');
+});
+
+test('성능 패키지: 연비 상한에 걸린 기종은 카운터도 오르지 않는다', () => {
+  // 회귀 — 상한에서 값은 안 움직이는데 enginePipGain 만 올랐다. 국산화는 그
+  // 카운터만큼을 되돌리므로, 받은 적 없는 점수를 갈아탈 때 빼앗겼다.
+  const pip = Data.EVENTS.find((x) => x.id === 'engine_pip');
+  const s = E.newGame(4404, 'uac');
+  s.cash += 900000;
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b' && x.phase === 'production');
+  s.engineRelations = { [Eng.get('cfm56-5b').maker]: 200 };
+  p.efficiency = 99;
+  pip.apply(s, { rng: R.createRng(3) });
+  assert.strictEqual(p.efficiency, 99);
+  assert.ok(!p.enginePipGain, `못 받은 개선분을 적으면 안 된다 (${p.enginePipGain})`);
+
+  // 그래서 갈아탈 때도 엔진 차이만 빠진다.
+  const before = p.efficiency;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const drop = before - p.efficiency;
+  p.efficiency = before;
+  p.engine = 'cfm56-5b';
+  const s2 = E.newGame(4404, 'uac');
+  const q = s2.programs.find((x) => x.engine === 'cfm56-5b' && x.phase === 'production');
+  q.efficiency = 99;
+  s2.cash += 900000;
+  runLocal(s2, 'cfm56-5b', 'ps90a');
+  assert.strictEqual(drop, 99 - q.efficiency, '패키지를 못 받은 기종과 같은 폭이어야 한다');
 });

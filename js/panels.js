@@ -1144,7 +1144,7 @@
       // 이 줄의 값이다 — 감춰 두면 플레이어는 그런 사업이 있는 줄도 모른다.
       if (t.locked) {
         return `<button class="mat" disabled>${head}
-           <span>${Math.floor(t.opensAt)}년부터 착수할 수 있다 — 아직 코어가 없다.</span>
+           <span>${esc(t.opensLabel)}부터 착수할 수 있다 — 아직 코어가 없다.</span>
            ${nums}</button>`;
       }
       // 착수 자체는 돈이 안 든다 — 자금은 뒤에서 채워 넣는다. 임의의 현금
