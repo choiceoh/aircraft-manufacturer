@@ -6569,3 +6569,171 @@ test('종말 분기 행도 R&D 를 적는다 — 개조비가 회사를 무너�
   assert.strictEqual(row.rd, 512, '총비용에는 넣으면서 rd 를 안 적으면 경력 보고서 R&D 총계가 샌다');
   assert.strictEqual(row.cost, 612);
 });
+
+// ─────────────────────────────── 장기 기술 연구 ───────────────────────────────
+
+test('연구 효과: 완료된 연구가 신규 설계에만 붙는다', () => {
+  const base = { segment: 'narrow', seats: 180, range: 5500, tech: 55, fuselage: 'composite', wingMat: 'composite', year: 2005 };
+  const plain = D.evaluate(base);
+  const aero = D.evaluate({ ...base, research: { aero: true } });
+  assert.strictEqual(aero.efficiency, plain.efficiency + 3, '공력 연구는 연비 +3');
+  const fbw = D.evaluate({ ...base, research: { fbw: true } });
+  assert.strictEqual(fbw.comfort, plain.comfort + 3, 'FBW 는 쾌적성 +3');
+  assert.ok(fbw.devQuarters < plain.devQuarters, 'FBW 는 개발 기간을 줄인다');
+  const comp = D.evaluate({ ...base, research: { composite: true } });
+  assert.ok(comp.defectRisk < plain.defectRisk, '복합재 연구는 소재 위험을 깎는다');
+  // 소재 위험만 깎는다 — 알루미늄 설계에는 아무 효과가 없어야 한다.
+  const alu = { ...base, fuselage: 'aluminum', wingMat: 'aluminum' };
+  assert.strictEqual(D.evaluate({ ...alu, research: { composite: true } }).defectRisk, D.evaluate(alu).defectRisk, '알루미늄 설계가 복합재 연구 덕을 보면 안 된다');
+});
+
+test('연구 진행: 분기 비용은 R&D 로 나가고, 다 차면 영구히 켜진다', () => {
+  const s = E.newGame(931);
+  const proj = Data.RESEARCH_PROJECTS.find((x) => x.id === 'lean');
+  assert.ok(E.startResearch(s, 'lean').ok);
+  // 갈아타기는 된다 — 연구소는 하나지만 서랍은 여럿이다. 기존 진행은 남는다.
+  assert.ok(E.startResearch(s, 'aero').ok);
+  assert.strictEqual(s.research.active, 'aero');
+  assert.ok(E.startResearch(s, 'lean').ok);
+  assert.strictEqual(s.research.active, 'lean', '갈아탄 뒤 되돌아올 수 있어야 한다');
+
+  // 쌍둥이 대조 — 연구 중인 판이 분기마다 정확히 연구비만큼 더 쓴다.
+  const idle = JSON.parse(JSON.stringify(s));
+  idle.research.active = null;
+  E.ensureShape(idle);
+  E.endTurn(s); E.endTurn(idle);
+  assert.strictEqual(Math.round(idle.cash - s.cash), proj.costPerQuarter, '연구비가 분기마다 나가야 한다');
+  assert.strictEqual(s.history[s.history.length - 1].rd - idle.history[idle.history.length - 1].rd, proj.costPerQuarter, '연구비는 보고서의 R&D 줄이다');
+  assert.strictEqual(s.research.progress.lean, 1);
+
+  // 중단하면 진행이 남고, 재개하면 이어서 간다.
+  assert.ok(E.stopResearch(s).ok);
+  assert.strictEqual(s.research.progress.lean, 1, '중단해도 진행분은 남아야 한다');
+  assert.ok(E.startResearch(s, 'lean').ok);
+  for (let i = 1; i < proj.quarters && !s.gameOver; i++) {
+    s.cash = Math.max(s.cash, 9000);
+    E.endTurn(s);
+  }
+  assert.ok(s.research.done.lean, `${proj.quarters}분기면 완료돼야 한다 (진행 ${s.research.progress.lean})`);
+  assert.strictEqual(s.research.active, null);
+  assert.ok(!E.startResearch(s, 'lean').ok, '완료한 연구를 다시 시작할 수 없다');
+});
+
+test('린 생산: 완료 후 초도기 원가와 램프업이 좋아진다', () => {
+  const s = E.newGame(933);
+  const p = s.programs[0];
+  p.produced = 0;
+  const before = E.currentUnitCost(s, p);
+  s.research.done.lean = true;
+  const after = E.currentUnitCost(s, p);
+  assert.ok(Math.abs(after / before - 1.72 / Data.CONFIG.firstUnitPremium) < 1e-9, '초도기 할증 1.9→1.72 가 원가에 실려야 한다');
+});
+
+test('연구는 착수 시점의 설계에 굳는다 — launchProgram 이 연구 문맥을 태운다', () => {
+  const a = E.newGame(935);
+  const b = E.newGame(935);
+  a.research.done.aero = true;
+  a.cash = b.cash = 30000;
+  const spec = { segment: 'narrow', seats: 185, range: 5600, tech: 55, fuselage: 'aluminum', wingMat: 'composite', abreast: 6, wing: 45 };
+  const ra = E.launchProgram(a, spec, 'X');
+  const rb = E.launchProgram(b, spec, 'X');
+  assert.ok(ra.ok && rb.ok);
+  assert.strictEqual(ra.program.efficiency, rb.program.efficiency + 3, '완료된 공력 연구가 착수 설계에 붙어야 한다');
+});
+
+// ─────────────────────────────── 경쟁사 프로그램 인수 ───────────────────────────────
+
+test('프로그램 인수(통째): 헐값 + 라인·승계 계약·높은 결함 위험이 함께 온다', () => {
+  const s = E.newGame(941);
+  s.turn = 30;
+  s.cash = 20000;
+  s.rivalCrises = { e190: { left: 4, amount: 7 } };
+  const seg = Data.SEGMENTS.regional;
+  const price = Math.round(seg.devBase * Data.TAKEOVER.fullRate);
+  const cash = s.cash;
+  const rdBefore = s.pending.rdCost;
+  const r = E.acquireProgram(s, 'e190', 'full', { backlogQty: 12 });
+  assert.ok(r.ok, r.error);
+  const p = r.program;
+  assert.strictEqual(cash - s.cash, price, '인수 대금이 나가야 한다');
+  assert.strictEqual(s.pending.rdCost - rdBefore, price, '도면·인증 취득은 R&D 다');
+  assert.strictEqual(p.phase, 'production');
+  assert.strictEqual(p.name, 'E190');
+  assert.ok(p.acquired && p.certTurn === s.turn, '형식증명이 이관돼야 한다');
+  assert.ok(p.produced > 0, '통째 인수는 기존 생산분의 학습곡선이 넘어온다');
+  // 남의 설계 — 같은 제원의 자체 설계보다 결함 위험이 높아야 한다.
+  const twin = D.evaluate({ segment: p.segment, seats: p.seats, range: p.range, tech: p.tech, material: 'aluminum', year: E.yearOf(s.turn) });
+  assert.ok(Math.abs(p.defectRisk - Math.round(Math.min(Data.CONFIG.defectRiskMax, twin.defectRisk * Data.TAKEOVER.riskMult) * 1000) / 1000) < 1e-9);
+  const line = s.lines.find((l) => l.programId === p.id);
+  assert.ok(line, '라인이 딸려와야 한다');
+  assert.ok(Math.abs(line.capMult - Data.TAKEOVER.lineCapRate) < 1e-9, '저율 생산 핸디캡이 설비에 남아야 한다');
+  const ord = s.backlog.find((o) => o.programId === p.id);
+  assert.ok(ord && ord.qty === 12, '승계 계약이 잔고에 들어와야 한다');
+  assert.strictEqual(ord.unitPrice, Math.round(p.unitCostBase * Data.TAKEOVER.backlogPriceRate), '승계 계약은 원가 언저리 — 이문이 없다');
+  assert.strictEqual(s.effects.grounded[p.id], Data.TAKEOVER.integrationQuarters, '감항 이관 동안 인도가 멈춰야 한다');
+  assert.ok(s.acquiredTypes.e190, '인수 기종 표식이 남아야 한다');
+  assert.ok(!s.rivalCrises.e190, '그 기종의 위기는 이제 우리 문제다 — 경쟁 장부에서 지운다');
+  assert.ok(!E.acquireProgram(s, 'e190', 'full').ok, '같은 기종을 두 번 살 수 없다');
+});
+
+test('프로그램 인수(도면만): 비싸지만 깨끗하다', () => {
+  const s = E.newGame(943);
+  s.cash = 20000;
+  const seg = Data.SEGMENTS.regional;
+  const cash = s.cash;
+  const r = E.acquireProgram(s, 'e175', 'blueprint');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(cash - s.cash, Math.round(seg.devBase * Data.TAKEOVER.blueprintRate), '도면값은 통째 인수보다 몇 배 비싸다');
+  assert.strictEqual(r.program.produced, 0, '치구 없이 도면부터다');
+  assert.ok(!s.lines.some((l) => l.programId === r.program.id), '라인은 없다');
+  assert.ok(!s.backlog.some((o) => o.programId === r.program.id), '승계 계약도 없다');
+  assert.ok(!(s.effects.grounded[r.program.id] > 0), '통합 정지도 없다');
+  // 인수한 프로그램은 조직 경험이 아니다 — 형식증명을 샀다고 배우진 않는다.
+  const xpBefore = E.companyExperience(s);
+  assert.strictEqual(xpBefore, E.companyExperience(s));
+  const twin = E.newGame(943);
+  assert.strictEqual(E.companyExperience(s), E.companyExperience(twin), '인수가 경험 사다리를 공짜로 올리면 안 된다');
+});
+
+test('인수한 기종은 경쟁 무대에서 내려온다 — 입찰·이벤트·드라마', () => {
+  const s = E.newGame(945);
+  s.cash = 30000;
+  const year = E.yearOf(s.turn);
+  // e170 이 팔리는 시점으로 이동 (eis 2004.25)
+  s.turn = 30;
+  const seg = 'regional';
+  const before = B.bestOffering(s, seg, 90, 3500);
+  assert.strictEqual(before.type.id, 'e175', '전제: 이 시점 이 요구사양의 문턱은 E175 다');
+  const r = E.acquireProgram(s, 'e175', 'blueprint');
+  assert.ok(r.ok, r.error);
+  // 경쟁 입찰 풀에서 빠진다 — 최강이던 기종을 샀으니 다른 기종이 문턱이 된다.
+  const after = B.bestOffering(s, seg, 90, 3500);
+  assert.ok(!after || after.type.id !== 'e175', '인수한 기종이 경쟁 입찰에 남으면 안 된다');
+  // 드라마 일정표에 남은 그 기종의 위기가 무대에 오르면 안 된다.
+  s.rivalDrama = [{ turn: s.turn, kind: 'crisis', typeId: 'e175', quarters: 4, amount: 7 }];
+  E.rollMarketNews(s);
+  assert.ok(!(s.rivalCrises || {}).e175, '인수한 기종의 드라마가 위기를 만들면 안 된다');
+  // rivalTargets(이벤트 표적)에서도 빠진다.
+  const ev = Data.EVENTS.find((x) => x.id === 'rival_launch');
+  const stub = { rng: { pick: (arr) => arr[0], range: (a) => a, int: (a) => a, next: () => 0, chance: () => true }, fmt: String, reputation() {}, income() {}, expense() {}, pickWeighted: (arr) => arr[0] };
+  const text = ev.apply(s, stub);
+  assert.ok(!text.includes('E175'), `인수한 기종이 경쟁사 개량 이벤트에 나오면 안 된다 (${text})`);
+});
+
+test('인수 제안 결정: 위기 중에만, 긴 쿨다운으로 온다', () => {
+  const s = E.newGame(947);
+  const def = Dec.get('rival_takeover');
+  s.cash = 9000;
+  assert.strictEqual(def.weight(s), 0, '위기가 없으면 매물도 없다');
+  s.rivalCrises = { crj900: { left: 4, amount: 6 } };
+  assert.ok(def.weight(s) > 0, '결함 파동 중인 기종은 매물로 나온다');
+  s.lastTakeoverOfferTurn = s.turn - 5;
+  assert.strictEqual(def.weight(s), 0, '몇 년에 한 번 오는 기회여야 한다');
+  s.lastTakeoverOfferTurn = s.turn - Data.TAKEOVER.cooldown;
+  assert.ok(def.weight(s) > 0);
+  s.rivalCrises = { crj900: { left: 4, amount: -5 } };
+  assert.strictEqual(def.weight(s), 0, '호평(음수 위기)은 매물이 아니다');
+  s.rivalCrises = { crj900: { left: 4, amount: 6 } };
+  s.acquiredTypes = { crj900: true };
+  assert.strictEqual(def.weight(s), 0, '이미 인수한 기종은 다시 매물로 안 나온다');
+});
