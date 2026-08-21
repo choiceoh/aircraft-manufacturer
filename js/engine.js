@@ -2529,7 +2529,9 @@
     // 차이를 '기타'로 남겨 순위표 합계가 점유율 계산과 어긋나지 않게 한다.
     const allocated = rows.reduce((a, r) => a + r.delivered, 0);
     const unattributed = Math.max(0, s.stats.rivalDelivered - allocated);
-    rows.push({ id: 'us', name: s.company, delivered: s.stats.delivered, us: true });
+    // 군용 인도는 민항 순위 밖이다 — 점유율 계산(marketShare)과 같은 차감을
+    // 여기도 해야 순위표의 점유율이 점유율 카드와 어긋나지 않는다.
+    rows.push({ id: 'us', name: s.company, delivered: Math.max(0, s.stats.delivered - govDelivered(s)), us: true });
     if (unattributed > 0) rows.push({ id: 'other', name: '집계 이전 인도분', delivered: unattributed, us: false });
 
     const total = rows.reduce((a, r) => a + r.delivered, 0) || 1;
@@ -3702,12 +3704,15 @@
       }))
       .sort((a, b) => b.delivered - a.delivered || a.launchTurn - b.launchTurn);
 
+    // 항공사가 아닌 선단 주인들 — 원시 키('gov')가 보고서에 그대로 새면 안 된다.
+    // 특수기 선단은 기관별로 쪼개지 않고 한 계정으로 묶는다(지원 수익 정산 단위).
+    const FLEET_OWNER_NAMES = { gov: '정부·군 (특수기)', lessor: '국제 리스사', leasing: '글로벌 리스' };
     const customers = Object.entries(s.fleets || {})
       .map(([airlineId, byProgram]) => {
         const airline = AIRLINES.find((a) => a.id === airlineId);
         return {
           id: airlineId,
-          name: airline ? airline.name : airlineId,
+          name: airline ? airline.name : FLEET_OWNER_NAMES[airlineId] || airlineId,
           units: Object.values(byProgram).reduce((a, n) => a + n, 0),
           relation: Math.round(s.relations[airlineId] ?? 0),
         };

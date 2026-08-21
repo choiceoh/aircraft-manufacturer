@@ -6518,3 +6518,19 @@ test('정부 특수기: 군용 인도는 민항 점유율에 실리지 않는다
   s.fleets.gov = { [s.programs[0].id]: 10 };
   assert.ok(Math.abs(E.marketShare(s) - base) < 1e-9, '군 계약이 민항 점유율을 부풀리면 안 된다');
 });
+
+test('정부 특수기: 순위표·경력 보고서도 민항 경계를 지킨다', () => {
+  const s = E.newGame(919);
+  const p = s.programs[0];
+  s.stats.delivered = 120;
+  s.fleets.gov = { [p.id]: 10 };
+  // 순위표의 우리 줄 — 점유율 카드와 같은 차감이 없으면 두 화면이 어긋난다.
+  const us = E.makerStandings(s).find((r) => r.us);
+  assert.strictEqual(us.delivered, 110, '순위표의 우리 인도량에서 군용분이 빠져야 한다');
+  // 경력 보고서 주요 고객 — 내부 키 'gov' 가 그대로 새면 안 된다.
+  const report = E.careerReport(s);
+  const gov = report.customers.find((c) => c.id === 'gov');
+  assert.ok(gov, '군 선단이 주요 고객에 잡혀야 한다');
+  assert.notStrictEqual(gov.name, 'gov', '원시 키가 보고서에 노출되면 안 된다');
+  assert.match(gov.name, /정부|군/, '정부·군 계정으로 읽혀야 한다');
+});
