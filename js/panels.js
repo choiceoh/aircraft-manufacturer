@@ -88,13 +88,20 @@
     const st = E.scenarioStatus(s);
     if (!st) return '';
     const pct = Math.max(0, Math.min(100, Math.round((st.progress / st.target) * 100)));
-    const state = st.failed
-      ? '<span class="tag" style="color:var(--bad)">실패 확정</span>'
-      : s.scenarioAchievedTurn
-        ? '<span class="tag good">목표 달성 — 파산만 피하면 된다</span>'
-        : st.finalOnly
-          ? '<span class="muted">판정은 종료 시점에</span>'
-          : '';
+    // 종료된 판은 확정된 판정을 보여준다 — 목표를 채운 분기에 파산했다면
+    // 진행 중 표식(달성)과 최종 판정(실패)이 어긋날 수 있다. 확정이 이긴다.
+    const finalVerdict = s.gameOver && s.gameOver.scenario;
+    const state = finalVerdict
+      ? finalVerdict.achieved
+        ? '<span class="tag good">🏆 목표 달성</span>'
+        : '<span class="tag" style="color:var(--bad)">목표 실패</span>'
+      : st.failed
+        ? '<span class="tag" style="color:var(--bad)">실패 확정</span>'
+        : s.scenarioAchievedTurn !== undefined
+          ? '<span class="tag good">목표 달성 — 파산만 피하면 된다</span>'
+          : st.finalOnly
+            ? '<span class="muted">판정은 종료 시점에</span>'
+            : '';
     return `
       <section class="card">
         <h3>시나리오 — ${esc(st.name)}</h3>

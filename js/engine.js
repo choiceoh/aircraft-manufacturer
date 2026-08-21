@@ -1064,6 +1064,8 @@
     p.phase = 'cancelled';
     adjustReputation(s, -4);
     pushLog(s, 'bad', `${p.name} 개발 중단. 매몰비용 ${fmtMoney(p.spent)}, 업계 신뢰가 흔들린다.`);
+    // 시나리오의 기둥(붉은 별의 SSJ)을 접었다면 그 자리에서 알린다 — 분기 정산까지 미루지 않는다.
+    tickScenario(s);
     voidOrdersFor(s, p, '개발 중단');
     return { ok: true };
   }
@@ -1572,6 +1574,9 @@
     // 정산에서 같은 입찰이 한 번 더 판정된다.
     const doomedByOutcomes = isInsolvent(s);
     s.events = doomedByOutcomes ? [] : rollEvents(s, rng);
+    // 이벤트(중대 결함 등)가 시나리오를 무너뜨렸다면 다음 분기 정산까지 기다리지
+    // 않고 그 자리에서 알린다 — 정산 초의 판정은 이 분기 이벤트를 아직 못 봤다.
+    tickScenario(s);
     s.decision = doomedByOutcomes ? null : rollDecision(s, rng);
     s.rfps = generateRfps(s, rng);
     s.bids = {};
@@ -3260,6 +3265,8 @@
     const buyerName = buyer ? (MANUFACTURERS.find((m) => m.id === buyer.id) || {}).name || buyer.id : '경쟁사';
 
     pushLog(s, 'bad', `${p.name} 프로그램을 ${fmtMoney(value)}에 매각했다. 도면은 ${buyerName}로 넘어갔다.`);
+    // 시나리오의 기둥을 팔았다면 그 자리에서 알린다.
+    tickScenario(s);
     return { ok: true, value, buyer: buyerName };
   }
 
@@ -3669,7 +3676,8 @@
     switch (scen.id) {
       case 'wide_dream': {
         out.progress = s.programs.filter((p) => p.segment === 'wide').reduce((a, p) => a + (p.delivered || 0), 0);
-        out.target = 100;
+        // 목표치는 데이터에 산다 — 캘리브레이션이 data.js 만 만지면 되도록.
+        out.target = scen.targetDelivered;
         out.unit = '기';
         break;
       }
@@ -3687,7 +3695,9 @@
         out.target = scen.targetDelivered;
         out.unit = '기';
         // 목표 전에 팔거나 접었으면 끝이다 — 도면이 없는 꿈은 이룰 수 없다.
-        // (150기를 채운 **뒤의** 매각은 이미 세운 기록을 무르지 않는다.)
+        // 목표를 채운 뒤에는 무엇이 일어나든 기록을 무르지 않는다. (양산 기종은
+        // 현재 규칙상 매각할 수 없어 사실상 도달하지 않는 경로지만, 판정은 상태
+        // 어디서 와도 옳아야 한다 — 세이브 수술이나 미래 기능이 이 가드를 믿는다.)
         out.failed = (!ssj || ssj.phase === 'sold' || ssj.phase === 'cancelled') && out.progress < out.target;
         break;
       }
@@ -3724,12 +3734,13 @@
   function tickScenario(s) {
     const st = scenarioStatus(s);
     if (!st) return;
-    if (st.failed && !s.scenarioFailedTurn) {
+    // 표식은 분기 번호라 0 도 유효하다 — truthiness 로 보면 턴 0 의 판정이 매 분기 다시 남는다.
+    if (st.failed && s.scenarioFailedTurn === undefined) {
       s.scenarioFailedTurn = s.turn;
       pushLog(s, 'bad', `[시나리오 · ${st.name}] 목표가 무너졌다 — ${st.goalText}은(는) 더 이상 이룰 수 없다.`);
       return;
     }
-    if (!st.finalOnly && st.achieved && !s.scenarioAchievedTurn) {
+    if (!st.finalOnly && st.achieved && s.scenarioAchievedTurn === undefined) {
       s.scenarioAchievedTurn = s.turn;
       pushLog(s, 'good', `[시나리오 · ${st.name}] 목표 달성! ${st.goalText} — 이제 이 판은 기록으로 남는다. 종료까지 파산만 피하면 된다.`);
     }

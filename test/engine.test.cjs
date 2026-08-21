@@ -6857,3 +6857,46 @@ test('시나리오 시작 조건은 파생값보다 먼저 적용된다 — 금�
   // 난수를 쓰지 않는 덮어쓰기 — 같은 시드의 충격·드라마 전개는 자유 경영과 같다.
   assert.deepStrictEqual(ashes.shocks, healthy.shocks, '시나리오가 시드 전개를 바꾸면 안 된다');
 });
+
+test('시나리오 알림의 즉시성: 턴 0 표식·매각 즉시 판정·이벤트 후 재판정', () => {
+  // 턴 0 실패 표식(0은 falsy) — truthiness 로 보면 매 분기 실패 로그가 다시 남는다.
+  const s = E.newGame(967, null, 'red_star');
+  const ssj = s.programs.find((p) => p.name === 'SSJ-100');
+  const r = E.sellProgram(s, ssj.id);
+  assert.ok(r.ok, '전제: 개발 단계의 SSJ 는 팔 수 있다');
+  assert.strictEqual(s.scenarioFailedTurn, 0, '매각 즉시(분기 정산 전에) 실패가 기록돼야 한다');
+  const failLogs = () => s.log.filter((l) => l.text.includes('목표가 무너졌다')).length;
+  assert.strictEqual(failLogs(), 1);
+  s.cash = 30000;
+  E.endTurn(s);
+  E.endTurn(s);
+  assert.strictEqual(failLogs(), 1, '턴 0 표식이 falsy 라고 실패 로그가 매 분기 다시 남으면 안 된다');
+});
+
+test('시나리오 카드: 종료 후에는 확정 판정이 진행 중 표식을 이긴다', () => {
+  // 목표를 채운 분기에 파산 — 진행 표식은 "달성", 확정 판정은 "실패".
+  const s = E.newGame(969, null, 'wide_dream');
+  s.programs.push({ id: 'w1', name: 'W', segment: 'wide', phase: 'production', delivered: 120, defectRisk: 0.05, unitCostBase: 100, stock: 0, produced: 120, listPrice: 200, spent: 0, share: 0 });
+  s.cash = -99999;
+  s.debt = Data.CONFIG.maxDebt;
+  E.endTurn(s);
+  assert.ok(s.gameOver && s.gameOver.reason === 'bankrupt');
+  assert.strictEqual(s.scenarioAchievedTurn, 0, '전제: 같은 분기에 달성 표식이 섰다');
+  assert.strictEqual(s.gameOver.scenario.achieved, false, '확정 판정은 실패다');
+  const html = P.renderOverview(s);
+  // 로그 발췌에는 달성 순간의 기념이 그대로 남는다(역사다) — 카드 문구만 본다.
+  assert.ok(!html.includes('목표 달성 — 파산만 피하면 된다'), '종료된 판의 카드가 진행 중 문구를 보여주면 안 된다');
+  assert.ok(html.includes('목표 실패'), '카드는 확정 판정을 보여줘야 한다');
+});
+
+test('시나리오 목표치는 데이터에 산다 — 판정이 카탈로그 값을 따라간다', () => {
+  const scen = Data.SCENARIOS.find((x) => x.id === 'wide_dream');
+  const saved = scen.targetDelivered;
+  try {
+    scen.targetDelivered = 123; // 캘리브레이션이 data.js 만 만졌다고 가정한다
+    const s = E.newGame(971, null, 'wide_dream');
+    assert.strictEqual(E.scenarioStatus(s).target, 123, '엔진에 목표치가 하드코딩되면 카탈로그 조정이 판정과 분리된다');
+  } finally {
+    scen.targetDelivered = saved;
+  }
+});

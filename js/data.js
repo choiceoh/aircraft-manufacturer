@@ -356,6 +356,7 @@
       id: 'wide_dream', name: '광동체의 꿈', company: 'deneb',
       goalText: '20년 안에 광동체 100기 인도',
       desc: '중견사가 장거리 간판까지 오른다. 협동체로 경험을 쌓고, 회사를 걸고 광동체를 띄워라 — 사다리를 오르는 정석 그 자체다.',
+      targetDelivered: 100,
     },
     {
       id: 'phoenix', name: '불사조', company: 'deneb',
