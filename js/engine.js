@@ -760,11 +760,21 @@
     // 영업의 결과이지, 출발선이 아니다).
     if (!s.trait || typeof s.trait !== 'object') {
       const makers = s.playerMakers || [];
-      const preset =
-        PLAYABLE_COMPANIES.find(
-          (c) => c.makers.length === makers.length && c.makers.every((m) => makers.includes(m)),
-        ) || companyPreset('deneb');
-      s.trait = preset.trait || {};
+      const exact = PLAYABLE_COMPANIES.find(
+        (c) => c.makers.length === makers.length && c.makers.every((m) => makers.includes(m)),
+      );
+      // 흡수된 회사도 자기 사풍을 찾아야 한다. 투폴레프로 시작한 세이브는
+      // playerMakers 가 ['tupolev'] 인데, 지금 그 자리를 잇는 프리셋은
+      // UAC(['tupolev', 'sukhoi'])라 개수가 안 맞는다. 정확히 일치하는 프리셋이
+      // 없으면 **그 제조사를 품은** 프리셋으로 넓힌다 — 안 그러면 그 판이
+      // 조용히 기준선(무보정)으로 저장돼 영영 러시아 회사의 규칙을 못 받는다.
+      // 빈 배열(가상 회사)은 모든 프리셋에 트리비얼하게 포함되므로 제외한다.
+      const absorbed =
+        exact ||
+        (makers.length
+          ? PLAYABLE_COMPANIES.find((c) => c.makers.length && makers.every((m) => c.makers.includes(m)))
+          : null);
+      s.trait = (absorbed || companyPreset('deneb')).trait || {};
     }
     if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;

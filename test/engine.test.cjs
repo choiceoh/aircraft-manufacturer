@@ -6972,6 +6972,40 @@ test('사풍: 옛 세이브는 고른 제조사에서 사풍을 되찾는다', (
   assert.ok(!d.trait.focus && !d.trait.home, '기준 회사는 보정 없는 사풍이어야 한다');
 });
 
+test('사풍: 흡수된 회사로 시작한 옛 세이브도 사풍을 찾는다 (투폴레프 → UAC)', () => {
+  // 회귀 — 투폴레프는 한때 단독 플레이어블이었고, 그 세이브의 playerMakers 는
+  // ['tupolev'] 다. 지금 그 자리를 잇는 프리셋은 UAC(['tupolev','sukhoi'])라
+  // 개수가 안 맞아, 정확 일치만 보면 기준선(무보정)으로 조용히 굳어 버린다.
+  const uacTrait = E.newGame(4114, 'uac').trait;
+  const s = E.newGame(4114, 'uac');
+  delete s.trait;
+  s.playerMakers = ['tupolev'];
+  E.ensureShape(s);
+  assert.strictEqual(s.trait.name, uacTrait.name, '투폴레프 세이브는 UAC 사풍을 받아야 한다');
+  assert.ok(s.trait.foreignBid, '서방의 벽까지 그대로 살아야 한다');
+
+  // 단수 필드(playerMaker)만 있던 더 옛 세이브도 같은 경로를 지난다.
+  const older = E.newGame(4114, 'uac');
+  delete older.trait;
+  delete older.playerMakers;
+  older.playerMaker = 'tupolev';
+  E.ensureShape(older);
+  assert.strictEqual(older.trait.name, uacTrait.name);
+  assert.deepStrictEqual(older.playerMakers, ['tupolev']);
+
+  // 넓힌 검색이 엉뚱한 회사를 집어오면 안 된다: 제조사가 없는 판은 기준선이다.
+  const fictional = E.newGame(4114);
+  delete fictional.trait;
+  fictional.playerMakers = [];
+  E.ensureShape(fictional);
+  assert.ok(!fictional.trait.foreignBid && !fictional.trait.focus, '가상 회사는 기준선으로 남아야 한다');
+  // 그리고 정확 일치가 있으면 그쪽이 이긴다.
+  const boe = E.newGame(4114, 'boeing');
+  delete boe.trait;
+  E.ensureShape(boe);
+  assert.strictEqual(boe.trait.name, E.newGame(4114, 'boeing').trait.name);
+});
+
 test('사풍: 세이브 왕복에도 규칙이 그대로 살아 있다', () => {
   const s = E.newGame(4112, 'uac');
   const back = E.ensureShape(JSON.parse(JSON.stringify(s)));
