@@ -8551,3 +8551,134 @@ test('설계 스펙은 한 곳에서 읽는다 — 파생형 시드와 엔진 �
   }
   assert.ok(seed.derivedFrom, '계보는 시드 쪽에만 붙는다');
 });
+
+// ─────────────────── UEC 2세대 (PD 계열) ───────────────────
+//
+// 1세대가 원가를 사고 수주 경쟁력을 판 거래였다면, 2세대는 그것을 되사 온다.
+// 훨씬 비싸고 길며, 1세대를 지나온 회사에만 열린다.
+
+/** 국산화 사업 하나를 끝까지 돌린다. */
+function runLocal(s, from, to) {
+  const r = E.startLocalEngine(s, from, to);
+  assert.ok(r.ok, r.error);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 60 && s.localEngineProject; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(s.localEngineProject, null, `${from} → ${to} 가 끝나야 한다`);
+}
+
+test('2세대: 1세대를 지나야 열린다', () => {
+  const s = E.newGame(4360, 'uac');
+  s.cash += 400000;
+  assert.ok(
+    !E.localEngineTargets(s).some((t) => t.gen === 2),
+    '서방 엔진만 달고 있는 동안에는 2세대가 아예 없다',
+  );
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const t = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
+  assert.ok(t, '국산 엔진을 달고 나면 그 자리가 2세대 후보가 된다');
+  assert.strictEqual(t.gen, 2);
+  assert.strictEqual(t.engine.id, 'ps90a');
+});
+
+test('2세대: 착수 가능 연도는 취항에서 개발 기간만큼 거슬러 잡는다', () => {
+  const s = E.newGame(4361, 'uac');
+  s.cash += 400000;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const t = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
+  const pd14 = Eng.get('pd14');
+  assert.strictEqual(t.opensAt, pd14.eis - E.localEngineQuarters(s, t) / 4, '완성이 취항보다 앞설 수 없어야 한다');
+  assert.ok(t.locked, '2004년에는 아직 이르다');
+
+  const early = E.startLocalEngine(s, 'ps90a', 'pd14');
+  assert.strictEqual(early.ok, false);
+  assert.match(early.error, new RegExp(String(Math.floor(t.opensAt))), '언제부터인지 알려 줘야 한다');
+
+  // 열리는 해까지 보낸다.
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const openYear = 1998 + s.turn / 4;
+  assert.ok(openYear >= t.opensAt, `${openYear} 에는 열려 있어야 한다`);
+
+  const p = s.programs.find((x) => x.engine === 'ps90a' && x.segment === 'narrow');
+  runLocal(s, 'ps90a', 'pd14');
+  assert.strictEqual(p.engine, 'pd14');
+  // 취항 전에 갈아타면 평가가 그 엔진을 거부해 값이 폴백으로 떨어진다.
+  assert.ok(1998 + s.turn / 4 >= pd14.eis, '완성 시점이 취항보다 앞설 수 없다');
+});
+
+test('2세대: 그 엔진이 들어가는 급만 갈아탄다', () => {
+  // 회귀 — 1세대는 PS-90A 가 협동체·광동체를 모두 돌려 이 경계가 안 드러났다.
+  // 엔진만 보고 갈아 끼우면 PD-14(협동체 전용) 사업이 광동체까지 끌고 간다.
+  const s = E.newGame(4362, 'uac');
+  s.cash += 900000;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  runLocal(s, 'pw4000', 'ps90a');
+  const narrow = s.programs.find((x) => x.engine === 'ps90a' && x.segment === 'narrow');
+  const wide = s.programs.find((x) => x.engine === 'ps90a' && x.segment === 'wide');
+  assert.ok(narrow && wide, '협동체·광동체가 같은 국산 엔진을 단다');
+
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  runLocal(s, 'ps90a', 'pd14');
+  assert.strictEqual(narrow.engine, 'pd14');
+  assert.strictEqual(wide.engine, 'ps90a', '광동체는 협동체용 코어를 달 수 없다');
+  assert.ok(Eng.get('pd14').segments.includes('narrow') && !Eng.get('pd14').segments.includes('wide'));
+});
+
+test('2세대: 엔진 하나에 갈아탈 곳이 둘이면 어느 쪽인지 정해야 한다', () => {
+  const s = E.newGame(4363, 'uac');
+  s.cash += 900000;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  runLocal(s, 'pw4000', 'ps90a');
+  for (let i = 0; i < 80 && E.localEngineTargets(s).some((x) => x.gen === 2 && x.locked); i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const both = E.localEngineTargets(s).filter((x) => x.engine.id === 'ps90a');
+  assert.strictEqual(both.length, 2, 'PS-90A 자리에 PD-14 와 PD-35 가 각각 붙는다');
+
+  const vague = E.startLocalEngine(s, 'ps90a');
+  assert.strictEqual(vague.ok, false, '엔진만으로는 정해지지 않는다');
+  assert.match(vague.error, /PD-14/);
+  assert.match(vague.error, /PD-35/);
+  assert.strictEqual(s.localEngineProject, null, '실패했으면 사업이 시작되면 안 된다');
+  assert.ok(E.startLocalEngine(s, 'ps90a', 'pd35').ok, '명시하면 된다');
+});
+
+test('2세대: 1세대와 거래 방향이 정반대다 — 원가를 내주고 연비를 산다', () => {
+  const s = E.newGame(4364, 'uac');
+  s.cash += 900000;
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+
+  const t1 = E.localEngineTargets(s).find((x) => x.engine.id === 'cfm56-5b');
+  const pre1 = E.localEnginePreview(s, t1).find((x) => x.program.id === p.id);
+  assert.ok(pre1.cost < 0 && pre1.efficiency < 0, `1세대는 원가를 사고 연비를 판다 (${pre1.cost} / ${pre1.efficiency})`);
+  runLocal(s, 'cfm56-5b', 'ps90a');
+
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const t2 = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
+  const pre2 = E.localEnginePreview(s, t2).find((x) => x.program.id === p.id);
+  assert.ok(pre2.cost > 0 && pre2.efficiency > 0, `2세대는 그 반대다 (${pre2.cost} / ${pre2.efficiency})`);
+
+  // 2세대는 새 코어라 훨씬 비싸고 길다 — 공짜로 되사 올 수는 없다.
+  assert.ok(E.localEngineCost(s, t2) > E.localEngineCost(s, t1), '개발비가 더 커야 한다');
+  assert.ok(E.localEngineQuarters(s, t2) > E.localEngineQuarters(s, t1), '기간도 더 길어야 한다');
+
+  const risk = p.defectRisk;
+  runLocal(s, 'ps90a', 'pd14');
+  assert.strictEqual(p.engine, 'pd14');
+  assert.ok(p.defectRisk > risk, '갓 나온 코어라 초기 신뢰성은 다시 나빠진다');
+  // 3세대는 없다 — 이미 그 엔진을 달고 있으면 후보에서 빠진다.
+  assert.ok(!E.localEngineTargets(s).some((x) => x.engine.id === 'pd14'));
+});

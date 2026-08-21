@@ -200,6 +200,14 @@
           minQuarters: 10,
           /** 국산 엔진을 단 기종에 붙는 국가 발주 단가 우대 (정가 대비 가산) */
           stateBonus: 0.08,
+          // 2세대(PD) — 1세대를 지나온 회사만 연다. 1세대가 원가를 사고 수주
+          // 경쟁력을 판 거래였다면, 이쪽은 그것을 **되사 오는** 사업이다. 새 코어라
+          // 훨씬 비싸고 길고, 원가 우위를 상당 부분 반납한다.
+          gen2: {
+            map: { regional: 'pd8', narrow: 'pd14', wide: 'pd35' },
+            costRate: 0.45,
+            minQuarters: 14,
+          },
         },
         // 국가 발주 — 수출이 막혀도 곳간이 완전히 마르지는 않는다. 대신 단가가 짜서
         // 여기에 기대면 살아는 남고 크지는 못한다.
@@ -2089,25 +2097,72 @@
     return !!(p && (root.AirlinerEngines.get(p.engine) || {}).domestic);
   }
 
-  /** 지금 국산화를 걸 수 있는 서방 엔진들 — 우리가 실제로 쓰고 있는 것만. */
+  /** 그 세대의 값 — 2세대는 새 코어라 훨씬 비싸고 길다. */
+  function localEngineGen(spec, gen) {
+    return gen === 2 ? spec.gen2 || null : spec;
+  }
+
+  /**
+   * 2세대를 착수할 수 있는 가장 이른 연도 — **취항에서 개발 기간만큼 거슬러** 잡는다.
+   *
+   * 따로 적어 둔 숫자가 아니라 유도한 값인 이유는, 그래야 완성이 그 엔진의 취항보다
+   * 앞설 수 없기 때문이다. 앞서면 갈아타는 시점에 그 엔진을 아직 못 사는 상태가 되고,
+   * 쌍 평가가 통째로 폴백으로 떨어진다(비율이 전부 1 — 국산화가 아무 값도 안 바꾼다).
+   */
+  function localEngineOpensAt(to, quarters) {
+    return to.eis - quarters / 4;
+  }
+
+  /**
+   * 지금 국산화를 걸 수 있는 자리들.
+   *
+   * - **1세대** — 우리가 쓰고 있는 서방 엔진을 국산으로. 원가를 사고 수주 경쟁력을 판다.
+   * - **2세대** — 그 국산 엔진을 PD 계열로. 판 것을 되사 오는 사업이라 1세대를
+   *   지나온 회사에만 열린다. 아직 이른 후보도 **감춰 두지 않고** 열리는 해와 함께
+   *   내보낸다(`locked`) — 20년짜리 판에서 다음 목표가 보이는 것이 화면의 값이다.
+   *
+   * 열쇠가 `엔진 → 대체` 쌍인 것에 이유가 있다. PS-90A 는 협동체와 광동체를 모두
+   * 돌리는데 2세대는 급마다 갈린다(PD-14 · PD-35). 엔진 하나로 묶으면 둘 중 하나가
+   * 조용히 사라진다.
+   */
   function localEngineTargets(s) {
     const spec = localEngineSpec(s);
     if (!spec) return [];
+    const year = yearOf(s.turn);
     const seen = new Map();
     for (const p of s.programs) {
       if (p.phase === 'cancelled' || p.phase === 'sold') continue;
       const eng = root.AirlinerEngines.get(p.engine);
-      // 이미 국산이면 갈아 끼울 것이 없고, 그 세그먼트에 국산 대안이 없어도 안 된다.
-      if (!eng || eng.domestic) continue;
-      const replacement = spec.map[p.segment];
-      if (!replacement) continue;
-      if (!seen.has(eng.id)) {
+      if (!eng) continue;
+      // 서방 엔진이면 1세대, 이미 국산이면 2세대다.
+      const gen = eng.domestic ? 2 : 1;
+      const rates = localEngineGen(spec, gen);
+      if (!rates || !rates.map) continue;
+      const replacement = rates.map[p.segment];
+      // 그 급에 대안이 없거나, 이미 그 엔진을 달고 있으면 갈아 끼울 것이 없다.
+      if (!replacement || replacement === eng.id) continue;
+      const to = root.AirlinerEngines.get(replacement);
+      if (!to) continue;
+      const key = `${eng.id}→${replacement}`;
+      if (!seen.has(key)) {
         // 그 국산 엔진을 이미 만들어 뒀다면 이건 **개발이 아니라 재장착**이다:
         // 엔진은 있고, 그 기체에 다는 인증만 하면 된다. 싸고 짧다.
         const refit = (s.localEngines || []).includes(replacement);
-        seen.set(eng.id, { engine: eng, replacement, refit, programs: [] });
+        const quarters = refitQuarters(rates.minQuarters, refit);
+        const opensAt = gen === 2 ? localEngineOpensAt(to, quarters) : null;
+        seen.set(key, {
+          engine: eng,
+          replacement,
+          gen,
+          refit,
+          costRate: rates.costRate,
+          minQuarters: rates.minQuarters,
+          opensAt,
+          locked: opensAt !== null && year < opensAt,
+          programs: [],
+        });
       }
-      seen.get(eng.id).programs.push(p);
+      seen.get(key).programs.push(p);
     }
     return [...seen.values()];
   }
@@ -2121,23 +2176,41 @@
     // 여러 급이 걸린 엔진이면 가장 큰 급 기준이다 — 광동체용 코어를 만드는 값이
     // 협동체용보다 싸질 수는 없다.
     const base = Math.max(...segs.map((seg) => SEGMENTS[seg].devBase));
-    return Math.round(base * spec.costRate * (target.refit ? LOCAL_ENGINE_REFIT_RATE : 1));
+    // 옛 세이브·옛 호출부는 후보에 세대 값이 없다 — 그때는 1세대 요율로 읽는다.
+    const rate = target.costRate ?? spec.costRate;
+    return Math.round(base * rate * (target.refit ? LOCAL_ENGINE_REFIT_RATE : 1));
   }
 
-  /** 그 사업에 필요한 최소 분기 — 재장착은 절반이면 된다. */
+  /** 재장착은 절반이면 된다 — 엔진은 이미 있고 그 기체에 다는 인증만 남았다. */
+  function refitQuarters(minQuarters, refit) {
+    return refit ? Math.max(2, Math.round(minQuarters * 0.5)) : minQuarters;
+  }
+
+  /** 그 사업에 필요한 최소 분기. */
   function localEngineQuarters(s, target) {
     const spec = localEngineSpec(s);
-    return target && target.refit ? Math.max(2, Math.round(spec.minQuarters * 0.5)) : spec.minQuarters;
+    return refitQuarters((target && target.minQuarters) ?? spec.minQuarters, !!(target && target.refit));
   }
 
-  function startLocalEngine(s, targetEngineId) {
+  function startLocalEngine(s, targetEngineId, replacementId) {
     if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
     ensureShape(s);
     const spec = localEngineSpec(s);
     if (!spec) return { ok: false, error: '이 회사에는 국산화할 엔진 자회사가 없습니다.' };
     if (s.localEngineProject) return { ok: false, error: '이미 국산화 사업을 하나 진행 중입니다.' };
-    const target = localEngineTargets(s).find((t) => t.engine.id === targetEngineId);
-    if (!target) return { ok: false, error: '지금 우리가 쓰고 있는 서방 엔진만 국산화할 수 있습니다.' };
+    const all = localEngineTargets(s).filter((t) => t.engine.id === targetEngineId);
+    // 대체 엔진까지 받는 이유 — PS-90A 는 협동체·광동체를 모두 돌리는데 2세대는
+    // 급마다 갈린다(PD-14 · PD-35). 엔진만으로는 어느 쪽인지 정해지지 않는다.
+    const matched = replacementId ? all.filter((t) => t.replacement === replacementId) : all;
+    if (!matched.length) return { ok: false, error: '지금 우리 기종이 달고 있는 엔진만 국산화할 수 있습니다.' };
+    if (matched.length > 1) {
+      return { ok: false, error: `이 엔진에는 갈아탈 곳이 둘입니다 — 어느 쪽인지 정하세요 (${matched.map((t) => (root.AirlinerEngines.get(t.replacement) || {}).name || t.replacement).join(' · ')}).` };
+    }
+    const target = matched[0];
+    if (target.locked) {
+      const to = root.AirlinerEngines.get(target.replacement);
+      return { ok: false, error: `${to ? to.name : target.replacement} 는 ${Math.floor(target.opensAt)}년부터 착수할 수 있습니다.` };
+    }
     const minQuarters = localEngineQuarters(s, target);
     s.localEngineProject = {
       target: target.engine.id,
@@ -2145,6 +2218,7 @@
       cost: localEngineCost(s, target),
       minQuarters,
       refit: !!target.refit,
+      gen: target.gen || 1,
       funded: 0,
       quarters: 0,
     };
@@ -2155,7 +2229,9 @@
       'program',
       target.refit
         ? `${spec.maker}에 ${target.engine.name} 자리에 ${repName} 를 다는 재장착 인증을 맡겼다. 엔진은 이미 우리 것이라 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기면 된다.`
-        : `${spec.maker}에 ${target.engine.name} 대체 엔진(${repName}) 개발을 맡겼다. 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기 — 자금과 기간을 **둘 다** 채워야 나온다.`,
+        : target.gen === 2
+          ? `${spec.maker}에 ${target.engine.name} 를 대신할 **차세대 코어**(${repName}) 개발을 맡겼다. 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기 — 1세대를 만들어 본 팀이 하는 일이지만 코어부터 새로 그린다.`
+          : `${spec.maker}에 ${target.engine.name} 대체 엔진(${repName}) 개발을 맡겼다. 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기 — 자금과 기간을 **둘 다** 채워야 나온다.`,
     );
     return { ok: true, project: s.localEngineProject };
   }
@@ -2306,6 +2382,12 @@
     for (const p of s.programs) {
       if (p.phase === 'cancelled' || p.phase === 'sold') continue;
       if (p.engine !== from.id) continue;
+      // **그 엔진이 들어가는 급만** 갈아탄다. 1세대는 PS-90A 가 협동체·광동체를
+      // 모두 돌려서 이 경계가 드러나지 않았지만, 2세대는 급마다 갈린다(PD-14 ·
+      // PD-35). 엔진만 보고 갈아 끼우면 PD-14 사업이 광동체까지 끌고 가, 협동체용
+      // 엔진을 단 광동체가 된다 — 평가는 그 엔진을 거부하므로 값은 폴백으로
+      // 떨어지고 이름만 바뀐다.
+      if (!to.segments.includes(p.segment)) continue;
 
       const im = localEngineImpact(s, p, from, to, liveYear);
 
@@ -2359,6 +2441,9 @@
     for (const aid of upset) {
       s.relations[aid] = clamp((s.relations[aid] ?? 40) - LOCAL_ENGINE_SWAP_RELATION, 0, 100);
     }
+    // 옛 세이브의 진행 중 사업에는 세대 표시가 없다 — 대체 대상이 이미 국산이면
+    // 그것이 곧 2세대다.
+    const gen2 = (proj.gen || (from.domestic ? 2 : 1)) === 2;
     // engineRelations(공급사별 인도 실적)는 손대지 않는다. 이미 인도한 기체는
     // 실제로 그 공급사 엔진을 달고 나갔고, 그 이력까지 지우면 장부가 거짓이 된다.
     // 앞으로의 인도분이 UEC 쪽에 쌓이면서 자연히 무게중심이 옮겨 간다.
@@ -2366,7 +2451,9 @@
       s,
       'good',
       swapped.length
-        ? `${to.name} 국산화 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — 생산원가가 내려가고 공급이 우리 손에 들어왔다.${
+        ? `${to.name} ${gen2 ? '개발' : '국산화'} 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — ${
+            gen2 ? '연비가 서방과 겨룰 자리로 올라왔다. 대신 대당 원가는 1세대만큼 싸지 않다' : '생산원가가 내려가고 공급이 우리 손에 들어왔다'
+          }.${
             dropped.length ? ` ${dropped.join(' · ')}의 서방 대안 엔진 인증은 함께 접었다.` : ''
           }${
             upset.size ? ` 다만 ${from.name}으로 계약한 잔고가 남아 있어 ${upset.size}개 항공사의 관계가 깎였다.` : ''

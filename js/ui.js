@@ -362,7 +362,9 @@
       }
 
       case 'start-local-engine': {
-        const r = E.startLocalEngine(s, btn.dataset.engine);
+        // 대체 엔진까지 넘긴다 — PS-90A 는 협동체·광동체를 모두 돌리는데 2세대는
+        // 급마다 갈린다(PD-14 · PD-35). 엔진만으로는 어느 쪽인지 정해지지 않는다.
+        const r = E.startLocalEngine(s, btn.dataset.engine, btn.dataset.to);
         if (act(r)) toast('국산 엔진 개발에 착수했다. 자금과 기간을 채워야 나온다.', 'good');
         break;
       }

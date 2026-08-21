@@ -66,6 +66,26 @@
     // 국내선에서 버티고 수출에서는 밀렸다.
     { id: 'ps90a', maker: 'UEC', name: 'PS-90A', segments: ['narrow', 'wide'], eis: 1992, end: null, eff: -2, costMult: 0.84, riskMult: 1.12, devMult: 0.98, timeMult: 1.0, comfort: -1, domestic: 'uec' },
     { id: 'd436', maker: 'UEC', name: 'D-436', segments: ['regional'], eis: 1999, end: null, eff: -1, costMult: 0.86, riskMult: 1.1, devMult: 0.98, timeMult: 1.0, comfort: -1, domestic: 'uec' },
+
+    // ── 국산 2세대 (PD) ──
+    //
+    // 1세대가 "싼 대신 처지는" 거울상이라면, 2세대는 그 거래를 **되사 오는** 쪽이다.
+    // 연비가 서방 동시대와 겨룰 수준으로 올라오고, 대신 1세대의 깊은 원가 우위를
+    // 거의 다 반납한다(0.84 → 0.96). 새 코어라 초기 신뢰성도 다시 나빠진다.
+    //
+    // 원가를 서방 가까이 올려 둔 것은 밸런스이기도 하다. 싸면서 연비까지 좋으면
+    // 해금한 회사에게 **다른 선택지가 없어진다**(CFM56-7B 는 1.01 에 연비 3이다).
+    // 지금은 조금 싸고 조금 낫되 초기 신뢰성이 나쁘고 선호 공급사 감점을 상시로
+    // 문다 — 여전히 양방향이다.
+    //
+    // **연대는 역사가 아니다.** 실제 PD-14 는 2024년 취항이고 PD-35 는 아직도
+    // 개발 중이다. 게임 창(1998~2017) 안에서 닿을 수 있는 목표로 만들려고 앞당겼다 —
+    // 러시아 엔진 개발이 10여 년 빨랐다면 어땠을까 하는 대체 역사다. 그 대신
+    // **1세대를 지나온 회사만** 이 사업을 열 수 있고, 착수 가능 시점도 취항에서
+    // 개발 기간만큼 거슬러 올라간 해로 막아 둔다.
+    { id: 'pd14', maker: 'UEC', name: 'PD-14', segments: ['narrow'], eis: 2012, end: null, eff: 4, costMult: 0.96, riskMult: 1.18, devMult: 1.06, timeMult: 1.03, comfort: 1, domestic: 'uec' },
+    { id: 'pd8', maker: 'UEC', name: 'PD-8', segments: ['regional'], eis: 2013, end: null, eff: 4, costMult: 0.95, riskMult: 1.16, devMult: 1.04, timeMult: 1.02, comfort: 1, domestic: 'uec' },
+    { id: 'pd35', maker: 'UEC', name: 'PD-35', segments: ['wide'], eis: 2014, end: null, eff: 5, costMult: 0.98, riskMult: 1.2, devMult: 1.08, timeMult: 1.05, comfort: 1, domestic: 'uec' },
   ];
 
   const BY_ID = Object.fromEntries(ENGINES.map((e) => [e.id, e]));
