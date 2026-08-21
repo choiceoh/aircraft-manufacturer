@@ -1106,9 +1106,9 @@
       ? `<p class="muted">우리가 쓰고 있는 서방 엔진을 자회사 ${esc(spec.maker)} 것으로 갈아 끼운다.
            완성되면 <b>그 엔진을 달고 있던 우리 기종 전부</b>가 자동으로 바뀐다 —
            생산원가가 내려가고 공급 차질을 비켜 가며, 국가 발주 단가도 ${Math.round((spec.stateBonus || 0) * 100)}%p 더 받는다.
-           대신 <b>연비가 처지고 초기 결함 위험이 오른다</b>: 수주전에서 1~2점을 상시로 잃는다
-           (서방의 벽이 −3점인 것의 절반쯤). <b>원가를 사고 수주 경쟁력을 파는 거래</b>다 —
-           곳간이 급한 회사의 수다.</p>
+           대신 <b>초기 결함 위험이 오르고, 대개 연비가 처진다</b> — 그만큼 수주전에서 점수를 상시로 잃는다.
+           <b>원가를 사고 수주 경쟁력을 파는 거래</b>다 — 곳간이 급한 회사의 수다.
+           각 후보의 실제 증감은 아래에 숫자로 적혀 있다(낡은 서방 엔진을 쓰고 있었다면 연비가 오히려 오르기도 한다).</p>
          ${targets
            .map((t) => {
              const to = Engines.get(t.replacement);
@@ -1123,7 +1123,9 @@
                  <b>${esc(t.engine.name)} → ${esc(to.name)}</b>
                  <span>${money(cost)} · 최소 ${q}분기${t.refit ? ' <b>(재장착 — 엔진은 이미 우리 것)</b>' : ''}</span>
                  <span class="muted">대상: ${esc(t.programs.map((x) => x.name).join(' · '))}</span>
-                 <span><span class="good">생산원가 ${dCost}%</span> · <span class="bad">연비 ${dEff > 0 ? '+' : ''}${dEff}</span></span>
+                 <span><span class="${dCost < 0 ? 'good' : 'bad'}">생산원가 ${dCost > 0 ? '+' : ''}${dCost}%</span> · <span class="${
+                   dEff > 0 ? 'good' : dEff < 0 ? 'bad' : 'muted'
+                 }">연비 ${dEff > 0 ? '+' : ''}${dEff}</span></span>
                </button>`;
            })
            .join('')}`

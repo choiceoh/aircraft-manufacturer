@@ -117,7 +117,15 @@
     // 구조(파일런·나셀 두 벌)라 파생형은 원형을 따른다. 대안 공급사는 그 시점
     // 카탈로그에서 결정적으로 고른다: 성숙한 것 우선, 그중 연비 최고.
     const dualWanted = derivative ? !!(spec.derivedFrom && spec.derivedFrom.dualSource) : !!spec.dualSource;
-    const altEng = dualWanted && eng ? bestAltEngine(seg.id, eng, spec.year, spec.earlyEngines, spec.domesticEngines) : null;
+    // 국산 엔진을 주엔진으로 고르면 이중화는 성립하지 않는다. 붙여 두면 국산
+    // 원가·국가 발주 우대·공급 차질 면역(셋 다 주엔진만 본다)을 받으면서 서방
+    // 대안의 선호 가산(+2)까지 챙기는, 양쪽을 다 갖는 설계가 된다 — 국산화가
+    // 파는 것이 정확히 그 수주 경쟁력이다. 완성된 국산화가 대안 인증을 접는
+    // 것과 같은 규칙을 설계 단계에도 건다.
+    const altEng =
+      dualWanted && eng && !eng.domestic
+        ? bestAltEngine(seg.id, eng, spec.year, spec.earlyEngines, spec.domesticEngines)
+        : null;
     const dual = !!altEng;
     // 독점 공급 계약 중에 다른 공급사 엔진으로 설계하면 통합 지원이 빠져 개발이
     // 비싸다. 이중화는 정의상 다른 공급사가 끼므로 주엔진이 계약사여도 할증이다.

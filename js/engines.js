@@ -133,7 +133,12 @@
   /** 설계안이 실제로 쓸 엔진을 정한다. 지정이 없거나 그 시점에 못 사면 기본값으로. */
   function resolve(segment, engineId, year, earlyIds, domesticIds) {
     const e = get(engineId);
-    if (e && e.segments.includes(segment) && (!year || inService(e, year, earlyIds, domesticIds))) return e;
+    // 해금 검사는 **날짜와 별개**다. `!year` 로 날짜를 건너뛰는 경로(연도 없이 부르는
+    // 순수 평가)가 해금까지 함께 건너뛰면, 아무나 evaluate({engine:'ps90a'}) 로
+    // 국산 엔진을 달 수 있게 된다.
+    if (e && e.segments.includes(segment) && unlocked(e, domesticIds) && (!year || inService(e, year, earlyIds, domesticIds))) {
+      return e;
+    }
     return defaultFor(segment, year);
   }
 

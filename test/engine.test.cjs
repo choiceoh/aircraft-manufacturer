@@ -8059,3 +8059,55 @@ test('국산화: 이중화 기체는 서방 대안 인증을 함께 접는다', 
   }
   if (rfp) assert.ok(B.scoreBid(s, rfp, tu, 0).enginePref <= 0, '국산 단일 공급이면 선호 가산이 없다');
 });
+
+test('국산 엔진: 해금 검사는 날짜 검사와 별개다', () => {
+  // 회귀 — resolve 의 `!year` 분기가 날짜를 건너뛰면서 해금까지 함께 건너뛰어,
+  // 연도 없이 부르는 순수 평가에서는 아무나 국산 엔진을 달 수 있었다.
+  assert.notStrictEqual(Eng.resolve('narrow', 'ps90a').id, 'ps90a', '연도가 없어도 해금은 봐야 한다');
+  assert.strictEqual(Eng.resolve('narrow', 'ps90a', undefined, [], ['ps90a']).id, 'ps90a', '해금하면 연도 없이도 된다');
+
+  const spec = { segment: 'narrow', seats: 180, range: 5000, tech: 50, material: 'aluminum', engine: 'ps90a' };
+  assert.notStrictEqual(D.evaluate(spec).engine, 'ps90a', '해금 없는 평가가 국산 엔진을 달면 안 된다');
+  assert.strictEqual(D.evaluate({ ...spec, domesticEngines: ['ps90a'] }).engine, 'ps90a');
+});
+
+test('국산 엔진: 국산을 주엔진으로 고르면 이중화가 붙지 않는다', () => {
+  // 회귀 — 완성된 국산화는 대안 인증을 접는데, **새로 설계하는** 길에서 같은
+  // 조합이 되살아났다: 국산 원가·국가 발주 우대·공급 차질 면역(셋 다 주엔진만
+  // 본다)을 받으면서 서방 대안의 선호 가산(+2)까지 챙기는 설계.
+  const base = { segment: 'narrow', seats: 180, range: 5000, tech: 50, material: 'aluminum', year: 2010, dualSource: true };
+  const west = D.evaluate({ ...base, engine: 'cfm56-5b' });
+  assert.ok(west.altEngine, '서방 주엔진에는 이중화가 붙는다');
+
+  const dom = D.evaluate({ ...base, engine: 'ps90a', domesticEngines: ['ps90a'] });
+  assert.strictEqual(dom.engine, 'ps90a');
+  assert.ok(!dom.altEngine, '국산 주엔진에는 대안이 붙으면 안 된다');
+  // 붙지 않으므로 이중화 할증도 물지 않는다 — 아무것도 안 사는 돈이면 안 된다.
+  const plain = D.evaluate({ ...base, engine: 'ps90a', dualSource: false, domesticEngines: ['ps90a'] });
+  assert.strictEqual(dom.devCost, plain.devCost, '못 붙이는 이중화에 개발비를 물리면 안 된다');
+  assert.strictEqual(dom.unitCostBase, plain.unitCostBase);
+});
+
+test('국산화: 갓 나온 엔진으로 갈아타면 초기 위험을 새로 떠안는다', () => {
+  // 회귀 — 갈아타기가 riskMult 비율만 적용해, 같은 시점에 그 엔진으로 **새로
+  // 설계한** 기체보다 갈아탄 기체가 오히려 안전했다(광고와 반대).
+  const s = E.newGame(4315, 'uac');
+  s.cash += 60000;
+  const ssj = s.programs.find((p) => p.engine === 'cf34-3');
+  const before = ssj.defectRisk;
+
+  E.startLocalEngine(s, 'cf34-3');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(ssj.engine, 'd436');
+
+  const to = Eng.get('d436');
+  const from = Eng.get('cf34-3');
+  const maturity = Eng.maturityRisk(to, E.yearOf(s.turn));
+  assert.ok(maturity > 1, 'D-436 이 아직 성숙 구간이어야 이 검사가 의미가 있다');
+  // 성숙도를 뺀 계산보다 확실히 높아야 한다.
+  assert.ok(
+    ssj.defectRisk > (before * to.riskMult) / from.riskMult,
+    `초기 위험이 얹혀야 한다 (${ssj.defectRisk} vs ${(before * to.riskMult) / from.riskMult})`,
+  );
+});

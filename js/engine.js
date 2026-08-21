@@ -2209,7 +2209,14 @@
       p.unitCostBase = Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10;
       p.efficiency = clamp(Math.round(p.efficiency + (to.eff - from.eff)), 1, 99);
       p.comfort = clamp(Math.round(p.comfort + (to.comfort - from.comfort)), 1, 99);
-      p.defectRisk = Math.round(clamp((p.defectRisk * to.riskMult) / from.riskMult, 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
+      // 성숙도까지 얹는다. 갓 나온 엔진으로 갈아타면 그 초기 트러블을 온전히
+      // 새로 떠안는 것이 맞다 — 안 그러면 같은 시점에 그 엔진으로 **새로 설계한**
+      // 기체보다 갈아탄 기체가 안전해지는, 광고와 반대인 구멍이 생긴다.
+      // 옛 엔진 쪽 성숙도는 나누지 않는다: 그건 이미 운항 실적으로 씻겨 나갔고,
+      // p.defectRisk 는 그 사이 인증 주사위·품질 투자를 지나온 값이다.
+      const maturity = root.AirlinerEngines.maturityRisk(to, yearOf(s.turn));
+      p.defectRisk =
+        Math.round(clamp((p.defectRisk * to.riskMult * maturity) / from.riskMult, 0.02, CONFIG.defectRiskMax) * 1000) / 1000;
       swapped.push(p.name);
     }
     // engineRelations(공급사별 인도 실적)는 손대지 않는다. 이미 인도한 기체는
