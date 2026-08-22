@@ -9016,3 +9016,148 @@ test('국산화: 관계가 깎이는 것은 카탈로그에 있는 항공사뿐�
   assert.strictEqual(s.relations.takeover, undefined, '인수 승계도 마찬가지다');
   assert.ok(s.relations[real] < beforeReal, '실재하는 항공사는 깎여야 한다');
 });
+
+// ─────────────────── 기존 사건의 현장 효과 ───────────────────
+
+function plantDecision(s, id, memo) {
+  const def = Dec.get(id);
+  s.decision = {
+    id,
+    name: def.name,
+    text: 'x',
+    memo: memo || {},
+    turn: s.turn,
+    options: def.options.map((o) => ({ id: o.id, label: o.label, detail: o.detail })),
+  };
+  return def;
+}
+
+test('같은 시드를 방치하면 전개가 그대로다', () => {
+  // 새 달력·캠페인·여파 타이머가 본류를 건드리면 기준선이 움직인다.
+  const a = E.newGame(88);
+  const b = E.newGame(88);
+  for (let i = 0; i < 12; i++) {
+    E.endTurn(a);
+    E.endTurn(b);
+  }
+  assert.strictEqual(a.cash, b.cash);
+  assert.strictEqual(a.reputation, b.reputation);
+  assert.strictEqual(a.log.map((l) => l.text).join('\n'), b.log.map((l) => l.text).join('\n'));
+});
+
+test('런치 커스터머 수락은 초도 물량을 지금 선주문으로 넣는다', () => {
+  const s = E.newGame(9001);
+  s.cash += 20000;
+  const launched = E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 40, material: 'aluminum' }, 'LC-180');
+  assert.ok(launched.ok, launched.error);
+  const p = launched.program;
+  const a = Data.AIRLINES.find((x) => x.id === 'panamer');
+  plantDecision(s, 'launch_customer', { program: p.id, airline: a.id });
+  const backlog0 = s.backlog.length;
+  const r = E.decide(s, 'take');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.backlog.length, backlog0 + 1, '초도 선주문이 없다');
+  const o = s.backlog[s.backlog.length - 1];
+  assert.strictEqual(o.airlineId, a.id);
+  assert.strictEqual(o.qty, 8);
+  assert.strictEqual(o.programId, p.id);
+  assert.strictEqual(p.launchAirlineId, a.id);
+  const html = P.renderPrograms(s);
+  assert.ok(/런치 커스터머/.test(html) && html.includes(a.name), '프로그램 카드에 런치 고객이 없다');
+});
+
+test('런치 커스터머를 거절하면 선주문이 생기지 않는다', () => {
+  const s = E.newGame(9002);
+  s.cash += 20000;
+  const launched = E.launchProgram(s, { segment: 'narrow', seats: 180, range: 5500, tech: 40, material: 'aluminum' }, 'LC-NO');
+  const p = launched.program;
+  plantDecision(s, 'launch_customer', { program: p.id, airline: 'panamer' });
+  const backlog0 = s.backlog.length;
+  assert.ok(E.decide(s, 'decline').ok);
+  assert.strictEqual(s.backlog.length, backlog0);
+  assert.ok(!p.launchAirlineId);
+});
+
+test('대형 부스는 이번 분기 현장 공고를 연다', () => {
+  const s = E.newGame(9003);
+  s.cash += 500;
+  const p = s.programs.find((x) => x.phase === 'production');
+  plantDecision(s, 'airshow', {});
+  const n0 = s.rfps.length;
+  const r = E.decide(s, 'full');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.rfps.length, n0 + 1, '현장 공고가 안 열렸다');
+  const show = s.rfps[s.rfps.length - 1];
+  assert.strictEqual(show.reason, 'airshow');
+  assert.strictEqual(show.segment, p.segment);
+  assert.strictEqual(show.reqSeats, p.seats);
+  assert.ok(/현장에서.*공고/.test(r.text), r.text);
+  const html = P.renderRfps(s);
+  assert.ok(/에어쇼 현장/.test(html), '수주전 탭에 현장 공고 표시가 없다');
+});
+
+test('내놓을 기체가 없으면 부스는 공고를 열지 않는다', () => {
+  const s = E.newGame(9004);
+  s.cash += 500;
+  s.programs.forEach((p) => {
+    p.phase = 'cancelled';
+  });
+  plantDecision(s, 'airshow', {});
+  const n0 = s.rfps.length;
+  const r = E.decide(s, 'full');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.rfps.length, n0);
+  assert.ok(/명함/.test(r.text), r.text);
+});
+
+test('비공개 미팅은 관계와 양산기가 있으면 그 자리 계약이다', () => {
+  const s = E.newGame(9005);
+  s.cash += 200;
+  // 판아메르는 승계 핵심 — 관계 하한이 이미 52를 넘는다.
+  plantDecision(s, 'airshow', {});
+  const backlog0 = s.backlog.length;
+  const r = E.decide(s, 'targeted');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(s.backlog.length, backlog0 + 1, '미팅 계약이 없다');
+  assert.ok(/계약/.test(r.text), r.text);
+});
+
+test('에어쇼를 건너뛰면 공고도 주문도 없다', () => {
+  const s = E.newGame(9006);
+  plantDecision(s, 'airshow', {});
+  const n0 = s.rfps.length;
+  const b0 = s.backlog.length;
+  const rep0 = s.reputation;
+  assert.ok(E.decide(s, 'skip').ok);
+  assert.strictEqual(s.rfps.length, n0);
+  assert.strictEqual(s.backlog.length, b0);
+  assert.strictEqual(s.reputation, rep0 - 2);
+});
+
+test('개요에 달력·캠페인 카드가 없다', () => {
+  const s = E.newGame(9007);
+  const html = P.renderOverview(s);
+  assert.ok(!/업계의 계절|수주 캠페인|에어쇼 달력/.test(html), html.slice(0, 200));
+  assert.ok(!P.todoList(s).some((t) => /초도비행/.test(t.text)));
+});
+
+test('설계 동결은 초도 비행 성공으로 기록된다', () => {
+  const savedEvents = Data.EVENTS.slice();
+  const savedDecisions = Dec.DECISIONS.slice();
+  Data.EVENTS.length = 0;
+  Dec.DECISIONS.length = 0;
+  try {
+    const s = E.newGame(9008);
+    s.cash += 20000;
+    const launched = E.launchProgram(s, { segment: 'regional', seats: 90, range: 2200, tech: 25, material: 'aluminum' }, 'FF-LOG');
+    const p = launched.program;
+    p.share = 100;
+    while (p.phase === 'dev' && !s.gameOver) E.endTurn(s);
+    assert.strictEqual(p.phase, 'cert');
+    assert.ok(s.log.some((l) => /초도 비행 성공/.test(l.text)), '동결 로그가 초도비행 성공을 빼먹었다');
+  } finally {
+    Data.EVENTS.push(...savedEvents);
+    Dec.DECISIONS.push(...savedDecisions);
+  }
+});
+

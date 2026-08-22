@@ -36,7 +36,7 @@
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
-  const { generateRfps, scoreBid, resolveBid, normalizeTerms } = root.AirlinerBidding;
+  const { generateRfps, makeRfp, scoreBid, resolveBid, normalizeTerms } = root.AirlinerBidding;
   const { createRng } = root.AirlinerRng;
   const Decisions = root.AirlinerDecisions;
 
@@ -4430,7 +4430,7 @@
         s.pending.revenue += deposit;
         s.stats.ordersWon += qty;
         s.pending.ordersWon = (s.pending.ordersWon || 0) + qty;
-        s.backlog.push({
+        const order = {
           id: 'ord-' + s.nextId++,
           airlineId,
           airlineName,
@@ -4444,7 +4444,18 @@
           reqEtops: !!reqEtops,
           // 정부 계약 표식 — 항공사발 취소 충격(발주 취소·9·11·연쇄 파산)이 비켜 간다.
           gov: !!gov,
-        });
+        };
+        s.backlog.push(order);
+        return order;
+      },
+      /**
+       * 이번 분기 공고 목록에 한 장을 보탠다. 에어쇼 부스처럼 "지금 현장에서
+       * 수주전이 열린다"가 다음 분기 갱신을 기다리면, 고른 자리와 입찰 자리가 어긋난다.
+       */
+      rfp: (plan) => {
+        const rfp = makeRfp(s, rng, plan);
+        s.rfps.push(rfp);
+        return rfp;
       },
     };
   }

@@ -246,7 +246,12 @@
 
     let seats;
     let range;
-    if (onProfile && airline.seatBand) {
+    if (plan && plan.seats != null && plan.range != null) {
+      // 에어쇼 현장 공고 — 부스에서 본 기체의 제원으로 쓴다. 다시 뽑으면
+      // 전시한 기체와 상관없는 요구가 나와 출품이 장난이 된다.
+      seats = Math.round(plan.seats);
+      range = Math.round(plan.range);
+    } else if (onProfile && airline.seatBand) {
       // 노선망 안의 발주 — 선호 대역 안에서 뽑는다. 이게 설계 포지셔닝을 베팅으로 만든다.
       // 대역은 해마다 조금씩 커진다(업게이지). 승계 기종이 시간이 갈수록 작아진다.
       const up = 1 + (state.turn / 4) * UPGAUGE_PER_YEAR;
@@ -266,7 +271,12 @@
     const reqEtops = range >= ETOPS_RANGE_KM;
     // 노선 설명도 마찬가지다. 본거지 노선명을 그대로 붙이면 "단거리 지선 · 짧은
     // 활주로"라고 적힌 광동체 공고가 요구 이착륙 성능 0으로 나가 서로 모순된다.
-    const route = onProfile ? airline.route || '' : `${seg.name} 신규 진출 (노선망 밖)`;
+    const route =
+      plan && plan.reason === 'airshow'
+        ? `${airline.route || seg.name} · 에어쇼 현장`
+        : onProfile
+          ? airline.route || ''
+          : `${seg.name} 신규 진출 (노선망 밖)`;
 
     // 발주 규모: 선단 계획이 쌓아 온 필요분이다. 계획 없이 부르면 예전 방식으로 뽑는다.
     let qty;
@@ -295,7 +305,7 @@
       route,
       qty,
       // 왜 지금 이 공고가 나왔는가 — 화면이 읽는다.
-      reason: plan && plan.deferred > 0 ? 'deferred' : 'plan',
+      reason: (plan && plan.reason) || (plan && plan.deferred > 0 ? 'deferred' : 'plan'),
       deferredQuarters: (plan && plan.deferred) || 0,
       priceSensitivity: airline.priceSensitivity,
       prestige: airline.prestige,

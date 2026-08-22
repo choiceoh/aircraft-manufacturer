@@ -922,6 +922,10 @@
         );
         rows.push(`<tr><th>연비 / 쾌적성</th><td>${p.efficiency} / ${p.comfort}</td></tr>`);
         rows.push(`<tr><th>정가 / 표준원가</th><td>${money(p.listPrice)} / ${money(p.unitCostBase)}</td></tr>`);
+        if (p.launchAirlineId) {
+          const launch = AIRLINES.find((a) => a.id === p.launchAirlineId);
+          if (launch) rows.push(`<tr><th>런치 커스터머</th><td>${esc(launch.name)}</td></tr>`);
+        }
         // 개발 중에는 인증 진입 때 실측치로 재확정되므로 불확실성 밴드를 함께 보여준다.
         const riskBand = p.phase === 'dev' ? ` <span class="muted">±${p.windTunnel ? 8 : 30}%</span>` : '';
         rows.push(`<tr><th>결함 위험</th><td class="${p.defectRisk > 0.25 ? 'bad' : ''}">${(p.defectRisk * 100).toFixed(1)}%${riskBand}</td></tr>`);
@@ -1468,6 +1472,7 @@
         if (rfp.reqEtops) chips.push('<b class="warn">ETOPS 필수</b>');
         if (rfp.reqField) chips.push(`<b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'}</b>`);
         if (bid) chips.push('<b class="good">응찰 중</b>');
+        if (rfp.reason === 'airshow') chips.push('<b class="good">에어쇼 현장</b>');
 
         return `<div class="card rfp">
           <div class="row between">
@@ -1482,9 +1487,11 @@
             ${airline && airline.enginePref ? `<tr><th>선호 엔진</th><td>${esc(airline.enginePref)} <span class="muted">— 맞추면 +2 · 낯선 공급사는 −1 · 이중화는 어느 쪽이든 맞고 감점을 면한다</span></td></tr>` : ''}
             <tr><th>요구 기종</th><td>${rfp.segmentName} · ${rfp.reqSeats}석급 · ${num(rfp.reqRange)}km</td></tr>
             <tr><th>발주 배경</th><td>${
-              rfp.deferredQuarters
-                ? `<b class="warn">미뤄 둔 교체 ${rfp.deferredQuarters}분기치</b> — 불황에 묶였던 물량이 한꺼번에 나왔다`
-                : '노후기 교체 · 노선 확장'
+              rfp.reason === 'airshow'
+                ? '<b>에어쇼 현장 공고</b> — 부스에서 본 기체 제원으로 지금 수주전이 열렸다'
+                : rfp.deferredQuarters
+                  ? `<b class="warn">미뤄 둔 교체 ${rfp.deferredQuarters}분기치</b> — 불황에 묶였던 물량이 한꺼번에 나왔다`
+                  : '노후기 교체 · 노선 확장'
             }</td></tr>
             <tr><th>노선 성격</th><td>${esc(rfp.route || '—')}${
               rfp.reqField ? ` · <b class="warn">${rfp.fieldKind === 'short' ? '짧은 활주로' : '고온고지'} (이착륙 ${rfp.reqField} 이상)</b>` : ''
