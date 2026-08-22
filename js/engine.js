@@ -1125,6 +1125,58 @@
     return qty;
   }
 
+  /**
+   * 아직 안 나간 자체 발주를 **원가 이전**으로 되맞춘다 — 옛 세이브 한 번만.
+   *
+   * 자체 발주를 정가로 넘기던 시절에 넣은 주문은 수주 장부에 그 정가가 박혀 있다.
+   * 그대로 두면 인도 때 재고는 `unitCostBase` 로 빠지는데 자회사는 정가로 자본화해,
+   * 이전 한 번마다 마진만큼의 그룹 자본이 생긴다 — 지금 규칙이 막으려는 바로 그것이다.
+   *
+   * **이미 나간 대수는 되돌리지 않는다.** 그건 지난 일이고 잔금도 그 값으로 치렀다.
+   * 남은 대수만 원가로 되맞추고, 그만큼 더 받아 둔 착수금을 돌려줄 몫으로 적어 둔다
+   * (`inHouseRefund`) — 실제로 자회사에 넘기는 것은 글루의 몫이다. 여기서 두 장부를
+   * 다 만지면 엔진이 항공사 계층을 알게 된다.
+   *
+   * `unitCostBase` 는 사건과 개량으로 판 중에 움직인다. 그래서 **한 번만** 돈다 —
+   * 매번 돌면 이미 합의된 값이 원가를 따라 조용히 다시 매겨진다.
+   *
+   * @returns 되돌려 줄 착수금 합계($M).
+   */
+  function rebaseInHouseOrders(s) {
+    if (!s || s.inHousePriceRebased) return 0;
+    s.inHousePriceRebased = true;
+    let back = 0;
+    for (const o of s.backlog || []) {
+      if (!o.inHouse || o.remaining <= 0) continue;
+      const p = s.programs.find((x) => x.id === o.programId);
+      if (!p) continue;
+      const base = inHouseUnitPrice(p);
+      if (!(o.unitPrice > base)) continue;
+      const rate = typeof o.depositRate === 'number' ? o.depositRate : CONFIG.depositRate;
+      back += o.remaining * (o.unitPrice - base) * rate;
+      o.unitPrice = base;
+    }
+    if (back > 0) {
+      s.cash -= back;
+      s.inHouseRefund = (s.inHouseRefund || 0) + back;
+    }
+    return back;
+  }
+
+  /**
+   * 자체 인도 계수를 세기 시작하면서 **이미 발령된 이사회 목표**가 어려워진다.
+   *
+   * 목표값은 옛 계수(자체 인도 포함)로 잡혔는데 진도는 이제 그것을 뺀다 — 45기 중
+   * 20기가 계열이던 판이 목표 100기를 받았다면, 남은 몫이 55기에서 75기로 늘어난다.
+   * 세이브를 열었다는 이유만으로 계약이 바뀌면 안 된다. 진도가 내려간 만큼 목표도 내린다.
+   */
+  function rebaseMandate(s, deliveredDrop, shareDrop) {
+    const m = s && s.mandate;
+    if (!m) return;
+    if (m.id === 'delivery' && deliveredDrop > 0) m.target = Math.max(0, Math.round(m.target - deliveredDrop));
+    if (m.id === 'share' && shareDrop > 0) m.target = Math.max(0, Math.round((m.target - shareDrop) * 1000) / 1000);
+  }
+
   function placeInHouseOrder(s, opts) {
     const o = opts || {};
     const qty = o.qty;
@@ -5206,6 +5258,8 @@
   root.AirlinerEngine = {
     newGame,
     deliveryQueue,
+    rebaseInHouseOrders,
+    rebaseMandate,
     placeInHouseOrder,
     inHouseQuote,
     operatingScore,

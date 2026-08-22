@@ -433,9 +433,17 @@
     // 어느 회사가 계열인지는 표식과 무관하게 매번 맞춘다 — 옛 세이브에는 이 값이 없고,
     // 없으면 계열 선단의 정비 수익이 그대로 그룹 자본에 들어간다.
     mfg.inHouseAirlineId = airlineId;
+    // **아직 안 나간 자체 발주를 원가로 되맞춘다.** 정가로 넘기던 시절의 주문이 장부에
+    // 남아 있으면, 인도 때 재고는 원가로 빠지고 자회사는 정가로 자본화해 이전 한 번마다
+    // 마진만큼의 그룹 자본이 생긴다. 엔진이 더 받아 둔 착수금을 `inHouseRefund` 에
+    // 적어 두면 `reconcileOrders` 가 자회사에 넘긴다 — 돌려받은 만큼 선급금도 줄여야
+    // 두 장부가 같은 값을 말한다. 엔진 쪽에 표식이 있어 한 번만 돈다.
+    const back = E.rebaseInHouseOrders(mfg);
+    if (back > 0) reduceExternalPrepaid(sky, airlineId, back * MUSD);
     if (mfg.inHouseMigrated) return;
     mfg.inHouseMigrated = true;
     if (mfg.stats && typeof mfg.stats.inHouseDelivered === 'number') return;
+    const shareBefore = E.marketShare(mfg);
     const own = new Set((mfg.programs || []).map((p) => p.id));
     const byType = {};
     for (const p of sky.planes || []) {
@@ -452,6 +460,25 @@
     }
     if (!mfg.stats) mfg.stats = {};
     mfg.stats.inHouseDelivered = (mfg.stats.inHouseDelivered || 0) + total;
+    // 이미 발령된 이사회 목표는 옛 계수로 잡힌 값이다 — 진도가 내려간 만큼 목표도
+    // 내린다. 세이브를 열었다는 이유만으로 남은 몫이 늘어나면 안 된다.
+    E.rebaseMandate(mfg, total, shareBefore - E.marketShare(mfg));
+  }
+
+  /**
+   * 되돌려 받은 착수금만큼 자회사의 선급금 기록을 줄인다.
+   *
+   * 장부를 잇는 규칙은 `reconcileOrders` 와 같다 — 기종별 총량으로 맞춘다. 자체 발주에는
+   * 두 장부를 잇는 번호가 없고, 이 계층의 다른 대조도 전부 그렇게 하고 있다.
+   */
+  function reduceExternalPrepaid(sky, airlineId, amount) {
+    if (!sky || !sky.orders || amount <= 0) return;
+    const mine = sky.orders.filter((o) => o.external && o.airlineId === airlineId && o.paid > 0);
+    const total = mine.reduce((x, o) => x + o.paid, 0);
+    if (total <= 0) return;
+    // 줄일 수 있는 것보다 더 줄이지는 않는다.
+    const cut = Math.min(amount, total);
+    for (const o of mine) o.paid -= cut * (o.paid / total);
   }
 
   function beforeTurns(mfg, sky, airlineId) {
