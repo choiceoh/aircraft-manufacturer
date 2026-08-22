@@ -2818,3 +2818,72 @@ test('통합: 제조사가 계약을 깨면 그 돈이 자회사에 들어온다
     `파기로 그룹 자본이 ${Math.round((after - before) / 1e6)}M 움직였다 — 계열 안에서 오간 돈이다`,
   );
 });
+
+test('통합: 위약금은 자회사가 정산하기 전에 들어온다', () => {
+  // 뒤늦게 들어오면 자회사는 그 돈 없이 한 분기를 난다 — 멀쩡한 기재를 급매로 팔거나
+  // 자본잠식 문턱을 넘어 문을 닫는다. 닫고 나면 줄 상대가 없어져 영영 전달되지 않는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  // 제조사가 계약을 깼다 — 위약금이 잡혔다.
+  const refundM = 60;
+  mfg.cash -= refundM;
+  mfg.inHouseRefund = refundM;
+  mfg.backlog = mfg.backlog.filter((o) => !o.inHouse);
+
+  const cash = a.cash;
+  // `betweenTurns` 는 항공사 정산 **전에** 도는 자리다.
+  G.betweenTurns(mfg, sky, meId, null);
+  assert.ok(Math.abs(a.cash - cash - refundM * G.MUSD) < 1, '항공사가 정산 전에 못 받았다');
+  assert.strictEqual(mfg.inHouseRefund, 0);
+});
+
+test('통합: 살아 있는데 못 준 위약금은 기록을 지우지 않는다', () => {
+  // 지우면 돈이 조용히 사라진다. 문 닫은 회사일 때만 지운다 — 그때는 제조사에 남고,
+  // 파산한 회사는 그룹 자본에서 0 으로 세므로 합산도 어긋나지 않는다.
+  const { mfg, sky, meId } = groupGame();
+  mfg.inHouseRefund = 50;
+  // 없는 회사를 가리키면 줄 수 없다 — 기록은 남아야 한다.
+  G.reconcileOrders(mfg, sky, 'no-such-airline');
+  assert.strictEqual(mfg.inHouseRefund, 50, '줄 상대를 못 찾았는데 기록을 지웠다');
+
+  // 문 닫은 자회사에는 못 준다. 그때는 지운다.
+  St.airline(sky, meId).alive = false;
+  G.reconcileOrders(mfg, sky, meId);
+  assert.strictEqual(mfg.inHouseRefund, 0, '파산한 자회사인데 기록이 남았다');
+});
+
+test('통합: 옛 세이브의 자체 인도 이력을 옮긴다', () => {
+  // 계수가 없으면 이미 자회사에 넘긴 기체가 전부 시장 성과로 세어져 점유율과 인도
+  // 점수를 그냥 가져간다.
+  const { mfg, sky, meId, prog } = groupGame();
+  // 계수를 세기 전에 만든 판을 흉내낸다 — 자회사가 자사 기체 3대를 굴리고 있다.
+  delete mfg.stats.inHouseDelivered;
+  delete prog.inHouseDelivered;
+  prog.delivered = 200;
+  for (let i = 0; i < 3; i++) {
+    sky.planes.push({ id: sky.nextId++, typeId: prog.id, airlineId: meId, paid: 50e6, ageQuarters: 4, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+
+  G.migrateInHouseCounters(mfg, sky, meId);
+  assert.strictEqual(mfg.stats.inHouseDelivered, 3, '굴리고 있는 자사 기체만큼 옮겨야 한다');
+  assert.strictEqual(prog.inHouseDelivered, 3);
+
+  // 두 번 돌아도 두 배가 되지 않는다.
+  G.migrateInHouseCounters(mfg, sky, meId);
+  assert.strictEqual(mfg.stats.inHouseDelivered, 3, '옮긴 값이 또 더해졌다');
+
+  // 실제 인도보다 많이 빼지 않는다.
+  const m2 = E.newGame(1234);
+  const s2 = St.newGame(1234, { programs: m2.programs });
+  const p2 = m2.programs[0];
+  p2.delivered = 1;
+  delete m2.stats.inHouseDelivered;
+  for (let i = 0; i < 5; i++) {
+    s2.planes.push({ id: s2.nextId++, typeId: p2.id, airlineId: s2.airlines[0].id, paid: 1, ageQuarters: 1, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+  G.migrateInHouseCounters(m2, s2, s2.airlines[0].id);
+  assert.strictEqual(m2.stats.inHouseDelivered, 1, '인도한 적 없는 대수까지 뺐다');
+});

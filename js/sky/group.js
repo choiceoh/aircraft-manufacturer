@@ -189,8 +189,15 @@
     const refund = mfg.inHouseRefund || 0;
     if (refund > 0) {
       const a = St.airline(sky, airlineId);
-      if (a && a.alive) a.cash += refund * MUSD;
-      mfg.inHouseRefund = 0;
+      // 문 닫은 자회사에는 줄 수 없다 — 그 돈은 제조사에 남는다(파산한 회사는 그룹
+      // 자본에서 0 으로 세므로 합산이 어긋나지도 않는다). **다만 기록은 그때만 지운다** —
+      // 살아 있는데 못 준 경우까지 지우면 돈이 조용히 사라진다.
+      if (a && a.alive) {
+        a.cash += refund * MUSD;
+        mfg.inHouseRefund = 0;
+      } else if (a && !a.alive) {
+        mfg.inHouseRefund = 0;
+      }
     }
     if (!sky.orders || !sky.orders.length) return [];
     const live = {};
@@ -367,8 +374,42 @@
    * 지수로 결산한다 — 둘 다 0분기에서 시작했는데 항공사의 첫 결산만 1분기 유가를
    * 쓴다. 두 계층의 같은 분기 리포트는 같은 조건에서 나와야 한다.
    */
+  /**
+   * 옛 세이브의 자체 인도 이력을 옮긴다.
+   *
+   * 자체 인도 대수를 세기 시작한 것은 나중이라, 그전에 만든 통합 판에는 계수가 없다.
+   * 그대로 두면 이미 자회사에 넘긴 기체가 전부 **시장에서 이긴 것**으로 세어져 점유율과
+   * 인도 점수를 그냥 가져간다.
+   *
+   * 지금 남은 자료로 셀 수 있는 것은 자회사가 **아직 굴리고 있는** 자사 기체뿐이다 —
+   * 팔았거나 잃은 기체는 되짚을 수 없으니 이 값은 하한이다. 그래도 전부 시장 성과로
+   * 세는 것보다는 참에 가깝다. 한 번만 돌도록 표식을 남긴다.
+   */
+  function migrateInHouseCounters(mfg, sky, airlineId) {
+    if (!mfg || !sky || mfg.inHouseMigrated) return;
+    mfg.inHouseMigrated = true;
+    if (mfg.stats && typeof mfg.stats.inHouseDelivered === 'number') return;
+    const own = new Set((mfg.programs || []).map((p) => p.id));
+    const byType = {};
+    for (const p of sky.planes || []) {
+      if (p.airlineId === airlineId && own.has(p.typeId)) byType[p.typeId] = (byType[p.typeId] || 0) + 1;
+    }
+    let total = 0;
+    for (const p of mfg.programs || []) {
+      const n = byType[p.id] || 0;
+      if (!n) continue;
+      // 실제로 인도된 것보다 많이 뺄 수는 없다.
+      const capped = Math.min(n, p.delivered || 0);
+      p.inHouseDelivered = (p.inHouseDelivered || 0) + capped;
+      total += capped;
+    }
+    if (!mfg.stats) mfg.stats = {};
+    mfg.stats.inHouseDelivered = (mfg.stats.inHouseDelivered || 0) + total;
+  }
+
   function beforeTurns(mfg, sky, airlineId) {
     if (!mfg || !sky || !airlineId) return;
+    migrateInHouseCounters(mfg, sky, airlineId);
     // 이 판이 통합 판이라는 표식. 명령 계층은 껍데기를 모르지만, 자사 기종을 일반
     // 발주로 살 수 없다는 규칙은 알아야 한다.
     sky.groupAirlineId = airlineId;
@@ -392,7 +433,13 @@
     if (!mfg || !sky || !airlineId) return [];
     // 인도된 기체가 방금 인증된 기종일 수 있다 — 표를 한 번 더 맞춘다.
     St.refreshTypes(sky, mfg.programs);
-    return receiveDeliveries(mfg, sky, report, airlineId);
+    const got = receiveDeliveries(mfg, sky, report, airlineId);
+    // **두 장부를 여기서 맞춘다 — 항공사가 정산하기 전에.** 제조사가 계약을 깨며
+    // 물어 준 돈이 뒤늦게 들어오면, 자회사는 그 돈 없이 한 분기를 나야 한다 — 멀쩡한
+    // 기재를 급매로 팔거나 자본잠식 문턱을 넘어 문을 닫는다. 닫고 나면 줄 상대가
+    // 없어져 그 돈은 영영 전달되지 않는다.
+    reconcileOrders(mfg, sky, airlineId);
+    return got;
   }
 
   /**
@@ -405,7 +452,8 @@
     if (!mfg || !sky || !airlineId) return [];
     // 이번 분기 정산 끝에 새로 뽑힌 공고에도 자회사가 섞여 있다.
     E.dropAirlineRfps(mfg, airlineId);
-    // 제조사 장부에서 사라진 자체 발주가 항공사 쪽에 선급금으로 남아 있지 않게 한다.
+    // 정산 중에 또 사라진 자체 발주가 있으면 여기서 한 번 더 맞춘다. (본 대조는
+    // 항공사 정산 **전**인 `betweenTurns` 에서 돈다 — 위 주석 참조.)
     reconcileOrders(mfg, sky, airlineId);
     // 자회사가 문을 닫았으면 제조사 장부의 자체 발주도 지운다. 남겨 두면 몇 분기 뒤
     // 받을 상대 없이 인도되면서 잔금이 매출로 잡힌다.
@@ -430,6 +478,7 @@
     receiveDeliveries,
     consumeOrder,
     reconcileOrders,
+    migrateInHouseCounters,
     applyRivalry,
     combinedEquity,
     groupScore,
