@@ -2018,3 +2018,108 @@ test('명령: 처분으로 들어오는 돈은 잔존가가 아니라 잔존가 
   assert.ok(Math.abs(got - res * Act.RESALE_RATE) < 1e-6, `${Math.round(got)} vs ${Math.round(res * Act.RESALE_RATE)}`);
   assert.ok(got < res, '잔존가를 그대로 주면 화면 표기와 어긋날 일도 없다 — 검사가 죽었다');
 });
+
+test('상태: 슬롯은 자본이 아니다 — 매입비만큼 자기자본이 줄어든다', () => {
+  // 임차라 반납해도 한 푼 못 받는데(`sellSlots`) 권리금이라며 자본에 얹고 있었다.
+  // 팔 수 없는 값을 자산으로 세면 차입 한도가 늘고 자본잠식이 미뤄진다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const city = 'shanghai';
+  const before = St.equity(s, a);
+  const cost = Act.slotCost(s, a.id, city, 5);
+  assert.ok(cost > 0);
+  assert.strictEqual(Act.buySlots(s, a.id, city, 5).ok, true);
+  const after = St.equity(s, a);
+  assert.ok(
+    Math.abs((before - after) - cost) < 1e-6,
+    `자본이 ${Math.round((before - after) / 1e6)}M 줄어야 하는데 ${Math.round(cost / 1e6)}M 을 냈다`,
+  );
+  // 반납해도 아무 일이 없어야 한다 — 자산이 아니니 자본도 그대로다.
+  assert.strictEqual(Act.sellSlots(s, a.id, city, 5).ok, true);
+  assert.ok(Math.abs(St.equity(s, a) - after) < 1e-6, '반납이 자본을 움직였다 — 자산으로 세고 있다');
+
+  // 기단을 다 잃고 슬롯만 쥔 회사가 자본을 부풀리지 못한다.
+  s.planes = s.planes.filter((p) => p.airlineId !== a.id);
+  a.cash = 0;
+  a.debt = 0;
+  s.orders = [];
+  a.slots = { shanghai: 60, seoul: 60 };
+  assert.strictEqual(St.equity(s, a), 0, `빈 회사 자본이 ${Math.round(St.equity(s, a) / 1e6)}M 이다`);
+});
+
+test('상태: 경영 기간 뒤에 오는 발주는 인도하지 않는다', () => {
+  // 마지막 분기에도 `deliverOrders` 가 도는데 `s.turn + 1` 로 재면 2018년 1분기
+  // 인도분까지 램프에 세워 놓고, 성적표가 판이 끝난 뒤에 오는 기체를 자산으로 센다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const typeId = Object.keys(s.types)[0];
+  s.turn = s.totalTurns - 1; // 마지막 분기
+  const order = { id: s.nextId++, airlineId: a.id, typeId, count: 2, paid: 100e6, deliverTurn: s.totalTurns };
+  s.orders = [order];
+  const fleetBefore = St.planesOf(s, a.id).length;
+
+  St.advance(s);
+
+  assert.strictEqual(s.turn, s.totalTurns, '판이 끝나야 한다');
+  assert.strictEqual(St.planesOf(s, a.id).length, fleetBefore, '기간 뒤 인도분이 기단에 들어왔다');
+  assert.ok(s.orders.some((o) => o.id === order.id), '발주는 그대로 남아 있어야 한다');
+
+  // 기간 안(마지막 분기)에 오는 발주는 그대로 인도된다 — 검사가 너무 세지 않은지 본다.
+  const s2 = St.newGame(1234);
+  s2.turn = s2.totalTurns - 2;
+  const a2 = s2.airlines[0];
+  s2.orders = [{ id: s2.nextId++, airlineId: a2.id, typeId, count: 2, paid: 100e6, deliverTurn: s2.totalTurns - 1 }];
+  const n2 = St.planesOf(s2, a2.id).length;
+  St.advance(s2);
+  assert.strictEqual(St.planesOf(s2, a2.id).length, n2 + 2, '기간 안 인도분까지 막혔다');
+});
+
+test('상태: 인도 대기 중인 발주가 물고 있는 기종은 표에서 사라지지 않는다', () => {
+  // 발주와 인도 사이 두 분기에 단종되면 표에서 지워지고, 인도된 기체의 기종이
+  // `undefined` 라 화면·채산이 그 자리에서 터진다.
+  const spec = { id: 'p9', name: '막차', phase: 'production', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const programs = [spec];
+  const s = St.newGame(1234, { programs });
+  assert.ok(s.types.p9, '양산 중이면 표에 있어야 한다');
+
+  const a = s.airlines[0];
+  a.cash = 5000e6;
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'p9', 1).ok, true);
+  assert.ok(s.orders.some((o) => o.typeId === 'p9'), '발주가 들어가야 한다');
+
+  // 마지막 생산 분기였다 — 다음 분기에 접는다. 이 기종을 굴리는 기체는 아직 없다.
+  assert.ok(!s.planes.some((p) => p.typeId === 'p9'), '아직 인도 전이어야 검사가 산다');
+  spec.phase = 'cancelled';
+  St.refreshTypes(s, programs);
+  assert.ok(s.types.p9, '발주가 물고 있는 기종이 표에서 사라졌다');
+
+  // 인도까지 굴려도 기종이 살아 있어야 한다.
+  St.advance(s, { programs });
+  St.advance(s, { programs });
+  const got = s.planes.filter((p) => p.typeId === 'p9');
+  assert.ok(got.length >= 1, '인도가 안 됐다');
+  for (const p of got) assert.ok(s.types[p.typeId] && s.types[p.typeId].name, '인도된 기체의 기종이 없다');
+  // 화면이 실제로 이 기체를 그릴 수 있어야 한다 — 여기서 터지던 자리다.
+  assert.doesNotThrow(() => SP.renderFleet(s, a.id));
+});
+
+test('상태: 이번 분기에 문 닫은 회사의 기록도 청산 뒤 잔액을 적는다', () => {
+  // `living` 만 돌면 방금 파산한 회사의 마지막 기록에 청산 전 잔액이 남아, 기단·슬롯을
+  // 다 잃은 회사가 기록에서는 마이너스 현금과 빚을 그대로 지고 있는 것으로 보인다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  // 이번 분기 정산에서 문을 닫도록 세운다.
+  a.negativeQuarters = St.BALANCE.NEGATIVE_QUARTERS_TO_FOLD;
+  a.cash = -500e6;
+  a.debt = 800e6;
+
+  St.advance(s);
+
+  assert.strictEqual(a.alive, false, '문을 닫아야 검사가 산다');
+  const r = a.results[a.results.length - 1];
+  assert.ok(r, '기록이 있어야 한다');
+  assert.strictEqual(r.cash, a.cash, `기록 현금 ${Math.round(r.cash / 1e6)}M 이 상태 ${Math.round(a.cash / 1e6)}M 와 다르다`);
+  assert.strictEqual(r.debt, a.debt, '기록 부채가 상태와 다르다');
+  assert.strictEqual(r.debt, 0, '청산 뒤인데 빚이 남아 있다');
+  assert.strictEqual(r.equity, St.equity(s, a), '기록 자본이 상태와 다르다');
+});

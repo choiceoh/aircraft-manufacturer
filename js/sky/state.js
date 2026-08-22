@@ -165,6 +165,11 @@
     if (programs) s.programs = programs;
     const next = typeTable(s.programs);
     for (const p of s.planes) if (!next[p.typeId] && s.types[p.typeId]) next[p.typeId] = s.types[p.typeId];
+    // **인도 대기 중인 발주가 물고 있는 기종도 남긴다.** 발주와 인도 사이 두 분기에
+    // 그 기종이 단종되면(카탈로그에서 빠지거나 프로그램이 생산을 접으면) 표에서 지워지고,
+    // 두 분기 뒤 인도된 기체는 `s.types[p.typeId]` 가 `undefined` 라 화면·채산이 그 자리에서
+    // 터진다. 마지막 생산 분기에 발주하면 실제로 그렇게 된다.
+    for (const o of s.orders || []) if (!next[o.typeId] && s.types[o.typeId]) next[o.typeId] = s.types[o.typeId];
     s.types = next;
     return s;
   }
@@ -277,18 +282,19 @@
   }
 
   /**
-   * 자기자본 = 현금 + 기재 + 슬롯 권리금 + **선급 발주** − 부채. 슬롯은 임차라 자산이 아니다.
+   * 자기자본 = 현금 + 기재 + **선급 발주** − 부채.
+   *
+   * **슬롯은 자산이 아니다.** 임차라 반납해도 한 푼 못 받는다(`sellSlots`). 그런데도
+   * 권리금이라며 자본에 얹고 있었다 — 팔 수 없는 값을 자산으로 세면 차입 한도가 그만큼
+   * 늘고 자본잠식이 미뤄진다. 건강한 회사에서는 자본의 0.9% 라 티가 안 나지만, 기단을
+   * 다 잃고 슬롯만 쥔 회사에서는 자본의 일곱 배까지 부풀어 죽을 때를 넘겼다. 매입비는
+   * 돌려받지 못하는 지출이니 그 자리에서 자본을 깎는 게 맞다.
    *
    * 발주 대금은 이미 현금에서 빠져나갔다. 인도 전까지 선급금으로 잡아 주지 않으면 대형
    * 발주 한 번에 자기자본이 두 분기 동안 발주액만큼 꺼졌다가 인도와 함께 되살아난다 —
    * 그동안 차입 한도가 깎이고 자본잠식으로 오인된다(3대 발주에 자본 2,724M → 1,558M).
    */
   function equity(s, a) {
-    let slots = 0;
-    for (const city of Object.keys(a.slots || {})) {
-      const c = Cities.get(city);
-      slots += a.slots[city] * B.SLOT_BASE_PRICE * ((c.standing + c.tour) / 100) * s.world.inflation * 0.5 * Econ.BALANCE.FARE_SCALE;
-    }
     // 선급금은 **치른 값**으로 잡는다. 지금 카탈로그 값으로 다시 재면 인도 대기 중에
     // 정가가 오른 것만으로 자본이 불어난다. 옛 세이브(값을 안 새긴 발주)는 카탈로그로 돌린다.
     const prepaid = (s.orders || [])
@@ -298,7 +304,7 @@
           x + (typeof o.paid === 'number' ? o.paid : s.types[o.typeId] ? s.types[o.typeId].price * o.count : 0),
         0,
       );
-    return a.cash + fleetValue(s, planesOf(s, a.id)) + slots + prepaid - a.debt;
+    return a.cash + fleetValue(s, planesOf(s, a.id)) + prepaid - a.debt;
   }
 
   function interestRate(s, a) {
@@ -658,7 +664,10 @@
    * 매각 대금을 순익에 넣으면 노선이 돈을 번 것으로 보인다.
    */
   function snapshotBalances(s) {
-    for (const a of living(s)) {
+    // **이번 분기에 문 닫은 회사까지 본다.** `living` 만 돌면 방금 파산한 회사의 마지막
+    // 기록에 청산 전 잔액이 남아, 기단·슬롯을 다 잃은 회사가 기록에서는 마이너스 현금과
+    // 빚을 그대로 지고 있는 것으로 보인다 — 화면과 상태가 어긋난다.
+    for (const a of s.airlines) {
       const r = a.results[a.results.length - 1];
       if (!r || r.turn !== s.turn) continue;
       r.cash = a.cash;
@@ -694,7 +703,12 @@
    */
   function deliverOrders(s) {
     if (!s.orders || !s.orders.length) return;
-    const due = s.orders.filter((o) => o.deliverTurn <= s.turn + 1);
+    // 경영 기간 **뒤에** 도착하는 기체는 인도하지 않는다. 마지막 분기(2017년 4분기)에도
+    // 이 함수가 도는데, `s.turn + 1` 로 재면 2018년 1분기 인도분까지 램프에 세워 놓고
+    // 성적표가 그 기체를 자산으로 센다 — 판이 끝난 뒤에 오는 기체다. 발주인 채로 둔다
+    // (선급금으로 자기자본에는 이미 잡혀 있으니 값이 사라지지는 않는다).
+    const last = Math.min(s.turn + 1, s.totalTurns - 1);
+    const due = s.orders.filter((o) => o.deliverTurn <= last);
     if (!due.length) return;
     for (const o of due) {
       // 죽은 회사에는 인도하지 않는다 (fold 가 지우지 못한 경로가 있어도 여기서 막힌다).
