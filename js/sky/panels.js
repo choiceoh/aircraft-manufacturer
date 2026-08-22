@@ -162,8 +162,9 @@
     const stockOf = (id) => G.coveredByStock(mfg, id);
     const lineState = (id) => {
       const ls = (mfg.lines || []).filter((l) => l.programId === id);
-      if (!ls.length) return { ok: false, why: '조립 라인 없음 — 재고를 다 쓰면 더 못 만든다' };
-      if (ls.every((l) => l.idle)) return { ok: false, why: '조립 라인이 모두 가동 중지 상태다' };
+      if (!ls.length) return { ok: false, idle: false, why: '조립 라인 없음 — 재고를 다 쓰면 더 못 만든다' };
+      // 멈춰 있는 것과 아예 없는 것은 값이 다르다 — 재가동은 신설의 몇 분의 일이다.
+      if (ls.every((l) => l.idle)) return { ok: false, idle: true, why: '조립 라인이 모두 가동 중지 — 재가동하면 된다' };
       return { ok: true, why: '' };
     };
     const progs = G.orderablePrograms(mfg)
@@ -227,18 +228,30 @@
         pending.length
           ? (() => {
               const n = pending.reduce((x, o) => x + o.count, 0);
-              // 기종마다 "재고로 못 덮고 만들 라인도 없는" 대수만 센다.
+              // 기종마다 "재고로 못 덮고 만들 라인도 없는" 대수를, **막힌 이유별로** 센다.
+              // 놀고 있는 라인은 다시 돌리면 되고 그건 새로 세우는 값의 몇 분의 일이다 —
+              // 두 경우를 한 문장으로 묶으면 재가동만 하면 될 판에 비싼 라인을 세우게 만든다.
               const byType = {};
               for (const o of pending) byType[o.typeId] = (byType[o.typeId] || 0) + o.count;
-              let stuck = 0;
+              let stuckNew = 0;
+              let stuckIdle = 0;
               for (const id of Object.keys(byType)) {
-                if (lineState(id).ok) continue;
-                stuck += Math.max(0, byType[id] - stockOf(id));
+                const ls = lineState(id);
+                if (ls.ok) continue;
+                const short = Math.max(0, byType[id] - stockOf(id));
+                if (ls.idle) stuckIdle += short;
+                else stuckNew += short;
               }
               return `<p class="muted">인도 대기 ${n}기 · 선급금 ${money(pending.reduce((x, o) => x + o.paid, 0))}</p>
                 ${
-                  stuck
-                    ? `<p class="order-warn">그중 <b>${stuck}기</b>는 재고로도 못 덮고 만들 라인도 없어 오지 않는다.
+                  stuckIdle
+                    ? `<p class="order-warn">그중 <b>${stuckIdle}기</b>는 재고로도 못 덮는데 그 기종 라인이 모두 멈춰 있다.
+                       제조사 화면 <b>생산</b> 탭에서 <b>재가동</b>하면 된다 — 새로 세울 필요는 없다.</p>`
+                    : ''
+                }
+                ${
+                  stuckNew
+                    ? `<p class="order-warn">그중 <b>${stuckNew}기</b>는 재고로도 못 덮고 만들 라인도 없어 오지 않는다.
                        제조사 화면 <b>생산</b> 탭에서 라인을 세워야 한다.</p>`
                     : ''
                 }`;

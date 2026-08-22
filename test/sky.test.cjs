@@ -3201,3 +3201,37 @@ test('통합: 불러온 판의 회사 이름이 카탈로그를 따라간다', (
   // 거점은 판의 상태다 — 슬롯도 노선도 거기 걸려 있어 지금 옮기면 노선망이 부서진다.
   assert.strictEqual(a.home, home, '거점까지 옮겨 굴러가던 노선망을 부쉈다');
 });
+
+test('통합: 멈춘 라인은 재가동하라고, 없는 라인은 세우라고 말한다', () => {
+  // 두 경우를 한 문장으로 묶으면, 재가동만 하면 될 판에 비싼 라인을 새로 세우게 만든다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  // 재고와 남의 주문을 치워 이 기종이 오로지 라인 사정으로만 막히게 한다.
+  mfg.backlog = mfg.backlog.filter((o) => o.inHouse);
+  prog.stock = 0;
+
+  const savedShell = globalThis.AirlinerShell;
+  const savedUi = globalThis.AirlinerUI;
+  globalThis.AirlinerShell = { shell: { mode: 'group' } };
+  globalThis.AirlinerUI = { ui: { state: mfg } };
+  try {
+    // 라인이 있는데 전부 멈춰 있다 — 다시 돌리면 된다.
+    const lines = mfg.lines.filter((l) => l.programId === prog.id);
+    assert.ok(lines.length, '이 기종에 라인이 있어야 검사가 산다');
+    for (const l of lines) l.idle = true;
+    const idle = SP.groupCard(sky, meId);
+    assert.ok(/재가동/.test(idle), `멈춘 라인인데 재가동을 안 알려 준다: ${/오지 않는다/.test(idle)}`);
+    assert.ok(!/라인을 세워야 한다/.test(idle), '재가동하면 되는데 새로 세우라고 했다');
+    assert.ok(/<b>3기<\/b>/.test(idle), '막힌 3기를 안 세었다');
+
+    // 라인이 아예 없다 — 세우는 수밖에 없다.
+    mfg.lines = mfg.lines.filter((l) => l.programId !== prog.id);
+    const none = SP.groupCard(sky, meId);
+    assert.ok(/라인을 세워야 한다/.test(none), '라인이 없는데 세우라고 안 한다');
+    assert.ok(!/재가동/.test(none), '없는 라인을 재가동하라고 했다');
+  } finally {
+    globalThis.AirlinerShell = savedShell;
+    globalThis.AirlinerUI = savedUi;
+  }
+});
