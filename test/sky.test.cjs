@@ -12,10 +12,17 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
-for (const f of ['sky/cities.js', 'sky/demand.js']) require(path.join(JS, f));
+// 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js']) {
+  require(path.join(JS, f));
+}
 
 const C = globalThis.AirlinerCities;
 const D = globalThis.AirlinerDemand;
+const T = globalThis.AirlinerSkyTypes;
+const Fleet = globalThis.AirlinerFleet;
+const Design = globalThis.AirlinerDesign;
+const E = globalThis.AirlinerEngine;
 
 // ─────────────────────────────── 세계 ───────────────────────────────
 
@@ -159,4 +166,83 @@ test('수요: 도시 성장이 수요를 밀어 올린다', () => {
   const flat = D.annualBase(a, b).total;
   const grown = D.annualBase(a, b, 1.5, 1.0).total;
   assert.ok(grown > flat, '성장한 도시가 더 큰 수요를 낸다');
+});
+
+// ─────────────────────────── 기종 어댑터 ───────────────────────────
+
+test('기종: sky-tycoon 이 손으로 적은 값과 어긋나지 않는다', () => {
+  // 유도식(좌석·급·세대)이 저쪽 카탈로그를 얼마나 재현하나. 이게 벌어지면 노선
+  // 채산이 저쪽 밸런스와 다른 세계로 간다.
+  const SKY = {
+    'b737-800': { fuel: 2.9, maint: 420, crew: 440, turn: 0.6 },
+    a320: { fuel: 3.0, maint: 470, crew: 450, turn: 0.65 },
+    'b777-200er': { fuel: 7.9, maint: 900, crew: 800, turn: 1.3 },
+    'b747-400': { fuel: 11.5, maint: 1360, crew: 1080, turn: 1.7 },
+    'b787-9': { fuel: 5.7, maint: 700, crew: 780, turn: 1.1 },
+    'a350-900': { fuel: 5.9, maint: 720, crew: 810, turn: 1.2 },
+    'b767-300er': { fuel: 5.6, maint: 780, crew: 690, turn: 1.1 },
+  };
+  const errors = [];
+  for (const [id, want] of Object.entries(SKY)) {
+    const a = Fleet.AIRCRAFT.find((x) => x.id === id);
+    assert.ok(a, `${id}: 카탈로그에 있어야 한다`);
+    const got = T.fromRival(a, Design.evaluate);
+    for (const key of ['fuel', 'maint', 'crew', 'turn']) {
+      const err = Math.abs(got[key] - want[key]) / want[key];
+      assert.ok(err < 0.25, `${a.name} ${key}: ${got[key]} vs ${want[key]} (${(err * 100).toFixed(0)}%)`);
+      errors.push(err);
+    }
+  }
+  const mean = errors.reduce((x, y) => x + y, 0) / errors.length;
+  assert.ok(mean < 0.1, `평균 오차가 10% 안이어야 한다 (${(mean * 100).toFixed(1)}%)`);
+});
+
+test('기종: 광동체가 좌석당 연료를 더 먹는다', () => {
+  // 멀리 빨리 나는 값이다. 뒤집히면 장거리에 협동체를 깔면 그만인 게임이 된다.
+  const narrow = T.fromRival(Fleet.AIRCRAFT.find((a) => a.id === 'b737-800'), Design.evaluate);
+  const wide = T.fromRival(Fleet.AIRCRAFT.find((a) => a.id === 'b777-200er'), Design.evaluate);
+  assert.ok(wide.fuel / wide.seats > narrow.fuel / narrow.seats, '광동체가 좌석당 더 먹어야 한다');
+  assert.ok(wide.speed > narrow.speed, '대신 더 빠르다');
+  assert.strictEqual(wide.widebody, true);
+  assert.strictEqual(narrow.widebody, false);
+});
+
+test('기종: 세대가 좋을수록 연료·정비가 준다', () => {
+  const old = Fleet.AIRCRAFT.find((a) => a.id === 'b747-400'); // eff 0.88
+  const neo = Fleet.AIRCRAFT.find((a) => a.id === 'b787-9'); // eff 1.20
+  const a = T.fromRival(old, Design.evaluate);
+  const b = T.fromRival(neo, Design.evaluate);
+  assert.ok(b.fuel / b.seats < a.fuel / a.seats, '신형이 좌석당 덜 먹어야 한다');
+  assert.ok(b.maint / b.seats < a.maint / a.seats, '정비도 마찬가지다');
+  // 승무원비는 세대를 타지 않는다 — 사람 값을 기술로 깎을 수는 없다.
+  assert.ok(Math.abs(b.crew / b.seats - a.crew / a.seats) < 0.35, '승무원비는 좌석에만 붙는다');
+});
+
+test('기종: 우리 기체와 남의 기체가 같은 모양으로 나온다', () => {
+  const rival = T.fromRival(Fleet.AIRCRAFT.find((a) => a.id === 'b737-800'), Design.evaluate);
+  const s = E.newGame(5001, 'deneb');
+  const p = s.programs.find((x) => x.segment === 'narrow');
+  const mine = T.fromProgram(p, '데네브');
+  assert.deepStrictEqual(Object.keys(rival).sort(), Object.keys(mine).sort(), '항공사 계층은 출처를 몰라도 된다');
+  assert.strictEqual(mine.own, true);
+  assert.strictEqual(rival.own, false);
+  for (const k of ['seats', 'range', 'speed', 'fuel', 'maint', 'crew', 'turn', 'price']) {
+    assert.ok(Number.isFinite(mine[k]) && mine[k] > 0, `${k} 가 성해야 한다 (${mine[k]})`);
+  }
+});
+
+test('기종: 값은 이 게임의 정가를 그대로 옮긴다 — 환율이 없다', () => {
+  // 두 게임의 기체 값은 모양이 달라 환율 하나로 못 누른다(0.29~0.73). 기체 값을
+  // 정하는 것이 이 게임의 본체이므로 그쪽을 기준으로 두고, 운임을 거기 맞춘다.
+  const s = E.newGame(5002, 'deneb');
+  const p = s.programs[0];
+  const t = T.fromProgram(p, '데네브');
+  assert.strictEqual(t.price, p.listPrice * 1e6, '정가에 배수가 끼면 안 된다');
+});
+
+test('기종: 취항 연도가 늦을수록 기술 수준이 높다', () => {
+  assert.ok(T.techFromEis(2017) > T.techFromEis(1998), '시대를 타야 한다');
+  assert.strictEqual(T.techFromEis(1998), 50, '1998년을 기준으로 둔다');
+  // 창 밖 연도로도 값이 폭주하지 않는다.
+  assert.ok(T.techFromEis(1950) >= 30 && T.techFromEis(2100) <= 100);
 });
