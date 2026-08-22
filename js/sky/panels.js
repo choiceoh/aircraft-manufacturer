@@ -88,10 +88,13 @@
       const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
       return !!(mfg && mfg.gameOver);
     })();
-    const over = s.turn >= s.totalTurns || !me.alive || groupOver;
+    // **항공사 성적표는 항공사 자신의 끝에만 뜬다.** `finalCard` 는 "20년 경영을
+    // 마쳤다"고 적고 지금 순위를 최종 순위로 내놓는다 — 제조사만 무너진 시점에 띄우면
+    // 아직 굴러가는 회사를 다 끝난 것처럼 말한다. 그룹 성적표만 앞당긴다.
+    const over = s.turn >= s.totalTurns || !me.alive;
     return `
     <section class="cards">
-      ${over ? groupFinalCard(s, meId) : ''}
+      ${over || groupOver ? groupFinalCard(s, meId) : ''}
       ${over ? finalCard(s, meId) : ''}
       <div class="card">
         <h3>${esc(me.name)}</h3>

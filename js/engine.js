@@ -3137,7 +3137,9 @@
       }
 
       if (o.remaining === 0) {
-        adjustReputation(s, 1);
+        // **자기 자회사 주문을 다 채운 것은 평판이 아니다.** 주면 같은 매입을 1기짜리
+        // 주문 여러 건으로 쪼개는 것만으로 대당 평판 1점(그룹 점수 12점)이 나온다.
+        if (!o.inHouse) adjustReputation(s, 1);
         // 취소분을 빼야 실제 인도량이다. o.qty 를 쓰면 10기 중 5기가 취소되고 5기만
         // 인도돼도 "10기 인도 완료"로 기록돼 경영 기록이 실적과 어긋난다.
         const shipped = o.qty - (o.cancelled || 0);

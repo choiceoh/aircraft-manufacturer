@@ -6109,8 +6109,8 @@ test('이중화 인도는 항공사가 선호하는 공급사의 실적이 된�
       });
       return st;
     };
-    // 에어아스타나(IAE 선호) — 대안 쪽을 달아 나간다. (승계 시딩분이 있으므로 증가분으로 잰다.)
-    const a = mk('kosmo', '에어아스타나');
+    // 아에로플로트(IAE 선호) — 대안 쪽을 달아 나간다. (승계 시딩분이 있으므로 증가분으로 잰다.)
+    const a = mk('kosmo', '아에로플로트');
     const aIae = a.engineRelations.IAE || 0;
     E.endTurn(a);
     assert.strictEqual((a.engineRelations.IAE || 0) - aIae, 4, 'IAE 실적으로 쌓여야 한다');
