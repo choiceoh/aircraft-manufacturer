@@ -48,11 +48,16 @@
     return Math.max(0, St.totalSlots(s, city) - taken);
   }
 
-  /** 슬롯 한 자리 값. 마를수록 가파르게 오르고, 안방은 싸다. */
-  function slotPrice(s, airlineId, city) {
+  /**
+   * 슬롯 한 자리 값. 마를수록 가파르게 오르고, 안방은 싸다.
+   *
+   * `taken` 은 "이번에 이미 집은 자리 수" — 여러 자리를 한꺼번에 살 때 값이 자리마다
+   * 오르는 것을 **상태를 건드리지 않고** 재기 위한 것이다.
+   */
+  function slotPrice(s, airlineId, city, taken) {
     const c = Cities.get(city);
     const total = St.totalSlots(s, city);
-    const free = unsoldSlots(s, city);
+    const free = Math.max(0, unsoldSlots(s, city) - (taken || 0));
     const scarcity = Math.min(1, Math.max(0, (total - free + 1) / total));
     const a = St.airline(s, airlineId);
     const home = a && a.home === city ? B.SLOT_HOME_DISCOUNT : 1;
@@ -64,17 +69,15 @@
    * n 자리를 살 때의 값. **한 자리마다 다시 매긴다** — 현재 단가에 개수를 곱하면
    * 실제보다 싸게 잡혀, 예산은 통과했는데 매입이 실패한다. 그때 반대편 슬롯은 이미
    * 사둔 뒤라 노선도 못 열고 슬롯만 놀린다.
+   *
+   * 값을 재는 것만으로 상태가 바뀌면 안 된다. 예전에는 슬롯 수를 실제로 올렸다 되돌렸는데,
+   * 한 번도 안 가진 도시에 `0` 짜리 키가 남아 "슬롯을 가진 도시" 목록이 세계 전체로
+   * 불어났다 — 취항 후보 화면이 이스탄불을 대한항공의 거점으로 내놨다.
    */
   function slotCost(s, airlineId, city, count) {
-    const a = St.airline(s, airlineId);
-    if (!a || count <= 0) return 0;
-    const before = St.slotsAt(a, city);
+    if (count <= 0) return 0;
     let total = 0;
-    for (let i = 0; i < count; i++) {
-      a.slots[city] = before + i;
-      total += slotPrice(s, airlineId, city);
-    }
-    a.slots[city] = before;
+    for (let i = 0; i < count; i++) total += slotPrice(s, airlineId, city, i);
     return total;
   }
 

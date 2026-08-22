@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
 // 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js']) {
   require(path.join(JS, f));
 }
 
@@ -375,6 +375,7 @@ const M = globalThis.AirlinerSkyMarket;
 const St = globalThis.AirlinerSkyState;
 const Act = globalThis.AirlinerSkyActions;
 const Ai = globalThis.AirlinerSkyAi;
+const SP = globalThis.AirlinerSkyPanels;
 
 /** 기종 표 — 경쟁 카탈로그를 항공사 계층이 쓰는 모양으로. */
 const TYPES = {};
@@ -1137,4 +1138,94 @@ test('AI: 플레이어 회사는 건드리지 않는다', () => {
   const after = St.routesOf(s, me);
   assert.strictEqual(after.length, JSON.parse(before).length, '노선 수가 그대로여야 한다');
   for (const r of after) assert.strictEqual(r.fareMul, 1, 'AI 가 운임을 건드리면 안 된다');
+});
+
+// ── 화면 ──
+
+/**
+ * 화면 렌더러는 순수 함수라 브라우저 없이 잰다. 실제 조작·레이아웃은 별도로 브라우저에서
+ * 확인했고(가로 넘침 0 · 콘솔 오류 없음), 여기서는 **문자열이 깨지지 않는가**만 본다 —
+ * 그게 깨지면 화면이 통째로 빈 칸이 되는데 테스트가 없으면 눌러 보기 전에는 모른다.
+ */
+const SCREENS = [
+  ['개요', (s, me, f) => SP.renderOverview(s, me, f)],
+  ['노선', (s, me, f) => SP.renderRoutes(s, me, f)],
+  ['취항', (s, me, f) => SP.renderOpen(s, me, f)],
+  ['기재', (s, me, f) => SP.renderFleet(s, me, f)],
+  ['지도', (s, me, f) => SP.renderMap(s, me, f)],
+  ['기록', (s, me, f) => SP.renderHistory(s, me, f)],
+];
+
+test('화면: 새 판에서도, 20년 굴린 판에서도 그려진다', () => {
+  for (const s of [St.newGame(1234), playedWithAi(1234, 80)]) {
+    const me = s.airlines.find((a) => a.alive).id;
+    for (const [name, render] of SCREENS) {
+      const html = render(s, me, new Set());
+      assert.ok(html && html.length > 40, `${name}: 화면이 비었다`);
+      assert.ok(!/undefined|NaN|\[object/.test(html), `${name}: 화면에 undefined/NaN 이 샜다`);
+    }
+  }
+});
+
+test('화면: 노선도 기재도 없는 회사에서 터지지 않는다', () => {
+  // 노선을 전부 접고 기재를 다 판 회사가 실제로 생긴다. 여기서 예외가 나면 화면이
+  // 통째로 빈 칸이 되어 되돌릴 방법이 없다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0].id;
+  for (const r of St.routesOf(s, me).slice()) Act.closeRoute(s, me, r.id);
+  s.planes = s.planes.filter((p) => p.airlineId !== me);
+  for (const [name, render] of SCREENS) {
+    const html = render(s, me, new Set());
+    assert.ok(html && html.length > 20, `${name}: 빈 회사에서 화면이 비었다`);
+  }
+});
+
+test('화면: 회사 이름이 태그로 해석되지 않는다', () => {
+  // 항공사 이름은 세이브에서 오고, 세이브는 사람이 고칠 수 있다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.name = '<img src=x onerror=alert(1)>';
+  const html = SP.renderOverview(s, me.id, new Set());
+  assert.ok(!/<img/.test(html), '이름이 태그로 나갔다');
+  assert.ok(/&lt;img/.test(html), '이스케이프된 형태로는 있어야 한다');
+});
+
+test('화면: 취항 후보가 같은 구간을 두 번 내놓지 않는다', () => {
+  // 양쪽 다 슬롯을 가진 구간은 출발지 순회에서 두 번 걸린다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0].id;
+  const seen = new Set();
+  // 상한을 크게 준다 — 기본 24개만 보면 중복 쌍이 잘려 나가 검사가 헛돈다.
+  for (const c of SP.openCandidates(s, me, 500)) {
+    const key = C.pairKey(c.from, c.to);
+    assert.ok(!seen.has(key), `${c.from}–${c.to}: 같은 구간이 두 번 나왔다`);
+    seen.add(key);
+  }
+});
+
+test('화면: 후보 비용은 화면과 실제 매입이 같은 값이다', () => {
+  // 예산은 통과했는데 매입이 실패하면, 반대편 슬롯은 이미 사둔 뒤라 노선도 못 열고
+  // 슬롯만 놀린다. 화면이 보여준 값 그대로 빠져나가야 한다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  const c = SP.openCandidates(s, me.id).find((x) => x.needFrom + x.needTo > 0);
+  assert.ok(c, '슬롯을 사야 하는 후보가 있어야 이 검사가 산다');
+  const before = me.cash;
+  if (c.needFrom) assert.strictEqual(Act.buySlots(s, me.id, c.from, c.needFrom).ok, true);
+  if (c.needTo) assert.strictEqual(Act.buySlots(s, me.id, c.to, c.needTo).ok, true);
+  const freq = Math.min(c.freq, Act.freeSlots(s, me.id, c.from), Act.freeSlots(s, me.id, c.to));
+  assert.strictEqual(Act.openRoute(s, me.id, c.from, c.to, [c.plane.id], freq, 1).ok, true);
+  assert.ok(Math.abs(before - me.cash - c.cost) < 1e-6, `화면 ${Math.round(c.cost / 1e6)}M vs 실제 ${Math.round((before - me.cash) / 1e6)}M`);
+});
+
+test('화면: 값을 재는 것만으로 상태가 바뀌지 않는다', () => {
+  // 슬롯값을 재려고 슬롯 수를 올렸다 되돌린 적이 있다. 한 번도 안 가진 도시에 `0` 짜리
+  // 키가 남아 "슬롯을 가진 도시"가 세계 전체로 불어났고, 취항 후보 화면이 이스탄불을
+  // 대한항공의 거점으로 내놨다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  const before = JSON.stringify([me.slots, me.cash]);
+  Act.slotCost(s, me.id, 'saopaulo', 8);
+  SP.openCandidates(s, me.id);
+  assert.strictEqual(JSON.stringify([me.slots, me.cash]), before, '조회가 상태를 바꿨다');
 });

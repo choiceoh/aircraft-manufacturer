@@ -1561,3 +1561,157 @@ details.fold > table:first-of-type {
     display: none;
   }
 }
+
+/* ── 항공사 계층 (airline.html) ── */
+
+/* 표는 좁은 화면에서 글자가 세로로 쪼개진다. 컨테이너 안에서만 가로로 흐르게 하고
+   본문은 절대 가로 스크롤이 생기지 않도록 한다. */
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+  display: block;
+  overflow-x: auto;
+}
+/* 줄바꿈 금지는 숫자 칸에만 건다 — 이름 칸까지 막으면 회사 이름 하나가 표를
+   화면 밖으로 밀어낸다. */
+.tbl th.r,
+.tbl td.r {
+  white-space: nowrap;
+}
+.tbl th,
+.tbl td {
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.tbl th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* 오른쪽 정렬 칸끼리는 왼쪽에서 벌린다. 오른쪽 여백을 0 으로 두면 옆 칸과 붙어
+   "5" 와 "4.7년" 이 "54.7년" 으로 읽힌다. */
+.tbl td.r,
+.tbl th.r {
+  text-align: right;
+  padding: 6px 0 6px 16px;
+  font-variant-numeric: tabular-nums;
+}
+.tbl tr:last-child td {
+  border-bottom: none;
+}
+.tbl tr.me {
+  color: var(--accent);
+}
+.tbl tr.sum td {
+  border-top: 1px solid var(--line);
+  border-bottom: none;
+  padding-top: 8px;
+}
+
+/* 유휴 기재 줄 — 기종·나이·배속·처분이 한 줄에 들어간다. */
+.panel .lines li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.panel .lines li:last-child {
+  border-bottom: none;
+}
+/* 셀렉트는 브라우저 기본 흰 상자로 뜬다 — 어두운 계기판에서 혼자 튄다. */
+.panel .lines select {
+  flex: 1 1 150px;
+  background: #0f1621;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+.panel button.wide {
+  width: 100%;
+  text-align: left;
+}
+
+/* 노선망 지도 — viewBox 안에 라벨을 두므로 지도와 함께 줄어든다. */
+.map-rival {
+  stroke: #2b3a4d;
+  stroke-width: 1;
+}
+.map-mine {
+  stroke: var(--accent);
+  stroke-width: 2;
+  opacity: 0.92;
+}
+.map-city {
+  fill: #56687e;
+}
+.map-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+.map-key-mine {
+  color: var(--accent);
+}
+
+/* 숫자 한 칸 — 라벨 위, 값 아래. 좁은 화면에서 두 칸씩 접힌다. */
+.sky-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px 14px;
+  margin: 12px 0 4px;
+}
+.sky-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sky-stat.wide {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 10px 0 4px;
+}
+.sky-stat span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sky-stat b {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.sky-stat i {
+  font-size: 11px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+/* 표를 담은 카드는 한 줄을 통째로 쓴다 — 170px 칸에 접히면 머리글이 글자마다 꺾인다. */
+.card.full {
+  grid-column: 1 / -1;
+}
+
+/* 지도는 폭에 맞추지 않고 컨테이너 안에서 가로로 흐른다 — 420px 에 세계를 우겨 넣으면
+   유럽이 점 하나가 되어 아무것도 못 읽는다. */
+.map-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.map {
+  width: 940px;
+  height: 470px;
+  display: block;
+}
+@media (min-width: 1000px) {
+  .map {
+    width: 100%;
+    height: auto;
+  }
+}
