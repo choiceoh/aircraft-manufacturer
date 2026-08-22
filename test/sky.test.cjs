@@ -1873,3 +1873,74 @@ test('화면: 파산한 회사에 "0위"가 뜨지 않는다', () => {
   assert.ok(!/>0위</.test(html) && !/\b0위\b/.test(html), '0위가 떴다');
   assert.ok(/파산/.test(html), '파산이라고 말해야 한다');
 });
+
+test('상태: 상각 총액이 실제 장부가 하락과 같다', () => {
+  // 장부가는 60분기에 산 값의 20% 까지만 내려가는데 상각을 100% 로 잡으면, 실제
+  // 가치 하락보다 20% 를 더 비용으로 털어낸다 — 순익이 눌리고 있지도 않은 손실에
+  // 절세 효과가 붙는다.
+  const s = St.newGame(1234);
+  const t = s.types['b737-400'];
+  const plane = { id: 1, typeId: 'b737-400', ageQuarters: 0, paid: null };
+  const drop = St.residual(t, 0) - St.residual(t, St.BALANCE.DEPRECIATION_QUARTERS);
+  const total = St.depreciation(s, [plane]) * St.BALANCE.DEPRECIATION_QUARTERS;
+  assert.ok(Math.abs(total - drop) < 1, `상각 ${Math.round(total / 1e6)}M vs 장부가 하락 ${Math.round(drop / 1e6)}M`);
+  // 다 늙은 기체는 더 이상 털지 않는다.
+  assert.strictEqual(St.depreciation(s, [{ ...plane, ageQuarters: St.BALANCE.DEPRECIATION_QUARTERS }]), 0);
+});
+
+test('상태: 옛 세이브의 누적 승객이 첫 정산에 날아가지 않는다', () => {
+  // `|| 0` 으로 두면 카운터가 없던 세이브에서 그때까지의 수송량이 통째로 사라진다 —
+  // 마이그레이션 대체값이 첫 정산에 덮인다.
+  const s = St.newGame(1234);
+  for (let i = 0; i < 8; i++) St.advance(s);
+  const a = s.airlines[0];
+  const before = a.lifetimePax;
+  assert.ok(before > 0);
+  delete a.lifetimePax; // 옛 세이브 흉내
+  assert.strictEqual(St.lifetimePaxOf(a), before, '기록에서 복구돼야 한다');
+  St.advance(s);
+  assert.ok(a.lifetimePax > before, `한 분기 뒤 ${Math.round(a.lifetimePax)} — 이전 기록이 날아갔다`);
+});
+
+test('상태: 급매로 기재가 빠지면 편수도 따라 내려간다', () => {
+  // 안 내리면 시장은 조용히 잘라 태우는데 슬롯 점유와 화면은 그 편수를 그대로 세,
+  // 못 쓰는 슬롯이 잠긴다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const r = St.routesOf(s, a.id).find((x) => x.active);
+  const dist = C.distance(r.from, r.to);
+  a.slots[r.from] = 300;
+  a.slots[r.to] = 300;
+  const spares = St.planesOf(s, a.id).filter((x) => x.routeId === null && Econ.canFly(s.types[x.typeId], dist));
+  Act.assignPlanes(s, a.id, r.id, St.assignedTo(s, r.id).map((x) => x.id).concat(spares.slice(0, 2).map((x) => x.id)));
+  Act.tuneRoute(s, a.id, r.id, { freq: Econ.capacity(St.assignedTo(s, r.id), dist, (t) => s.types[t]).maxFreq });
+
+  // 유휴기를 치우면 급매가 배속된 기재를 판다.
+  s.planes = s.planes.filter((p) => p.airlineId !== a.id || p.routeId !== null);
+  a.cash = -40e6;
+  St.advance(s);
+
+  const left = St.assignedTo(s, r.id);
+  assert.ok(left.length > 0 && left.length < 3, `한 대만 팔려야 검사가 산다 (${left.length}대 남음)`);
+  const cap = Econ.capacity(left, dist, (t) => s.types[t]).maxFreq;
+  assert.ok(r.freq <= cap, `편수 ${r.freq} 가 남은 기재의 한계 ${cap} 를 넘는다`);
+  // 못 뛰는 편수가 남으면 그만큼 슬롯이 잠긴 채 반납도 재사용도 안 된다.
+  // (`usedSlots` 는 그 공항의 모든 노선 편수를 더하므로 이 노선 몫만 따로 잰다.)
+  const other = St.routesOf(s, a.id)
+    .filter((x) => x.active && x.id !== r.id && (x.from === r.from || x.to === r.from))
+    .reduce((x, y) => x + y.freq, 0);
+  assert.strictEqual(Act.usedSlots(s, a.id, r.from) - other, r.freq, '점유 슬롯이 편수와 어긋난다');
+  assert.ok(Act.freeSlots(s, a.id, r.from) >= 0, '쥔 슬롯보다 많이 쓰고 있다');
+});
+
+test('명령: 기재 목록이 배열이 아니면 예외 대신 실패를 돌려준다', () => {
+  // 명령 계층은 예외가 아니라 `{ ok: false }` 를 돌려주기로 되어 있다. 예외가 나가면
+  // 부르는 쪽(이벤트 핸들러·연동)이 통째로 끊긴다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const routeId = St.routesOf(s, a.id)[0].id;
+  for (const bad of [null, undefined, 5, 'x', {}]) {
+    assert.strictEqual(Act.assignPlanes(s, a.id, routeId, bad).ok, false, `배속 ${JSON.stringify(bad)}`);
+    assert.strictEqual(Act.openRoute(s, a.id, a.home, 'shanghai', bad, 5, 1).ok, false, `취항 ${JSON.stringify(bad)}`);
+  }
+});

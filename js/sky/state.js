@@ -238,10 +238,13 @@
     return sum;
   }
 
+  /** 15년(60분기)을 다 굴려도 산 값의 이만큼은 남는다. */
+  const RESIDUAL_FLOOR = 0.2;
+
   /** 기체 잔존가치 — 15년에 걸쳐 산 값의 20% 까지 내려간다. */
   function residual(type, ageQuarters, paid) {
     const left = Math.max(0, 1 - ageQuarters / B.DEPRECIATION_QUARTERS);
-    return basis(type, paid) * (0.2 + 0.8 * left);
+    return basis(type, paid) * (RESIDUAL_FLOOR + (1 - RESIDUAL_FLOOR) * left);
   }
 
   /**
@@ -258,11 +261,19 @@
     return planes.reduce((sum, p) => sum + residual(types[p.typeId], p.ageQuarters, p.paid), 0);
   }
 
+  /**
+   * 감가상각 — **잔존가치 위의 몫만** 턴다.
+   *
+   * 장부가는 60분기에 걸쳐 산 값의 20% 까지만 내려가는데(잔존가치), 상각을 100% 로
+   * 잡으면 실제 가치 하락(80%)보다 20% 를 더 비용으로 털어낸다. 76M 짜리 기체의
+   * 장부가는 61M 만 떨어지는데 상각은 76M 이 나가는 식이다 — 순익이 그만큼 눌리고
+   * 있지도 않은 손실에 절세 효과가 붙는다.
+   */
   function depreciation(s, planes) {
     const types = s.types || typeTable(s.programs);
     return planes
       .filter((p) => p.ageQuarters < B.DEPRECIATION_QUARTERS)
-      .reduce((sum, p) => sum + basis(types[p.typeId], p.paid) / B.DEPRECIATION_QUARTERS, 0);
+      .reduce((sum, p) => sum + (basis(types[p.typeId], p.paid) * (1 - RESIDUAL_FLOOR)) / B.DEPRECIATION_QUARTERS, 0);
   }
 
   /**
@@ -610,7 +621,9 @@
 
       const eq = equity(s, a);
       a.negativeQuarters = eq < 0 ? a.negativeQuarters + 1 : 0;
-      a.lifetimePax = (a.lifetimePax || 0) + pax;
+      // `|| 0` 으로 두면 카운터가 없던 옛 세이브에서 그때까지의 수송량이 통째로
+      // 날아간다 — 마이그레이션 대체값(`lifetimePaxOf`)이 첫 정산에 덮인다.
+      a.lifetimePax = lifetimePaxOf(a) + pax;
       a.results.push({
         turn: s.turn,
         revenue,
@@ -733,11 +746,19 @@
   function removePlane(s, p) {
     s.planes = s.planes.filter((x) => x.id !== p.id);
     if (p.routeId === null) return;
+    const r = s.routes.find((x) => x.id === p.routeId);
+    if (!r) return;
+    const left = assignedTo(s, p.routeId);
     // 마지막 기재가 빠진 노선은 닫는다 — 좌석 없는 노선이 시장에 남으면 안 된다.
-    if (!assignedTo(s, p.routeId).length) {
-      const r = s.routes.find((x) => x.id === p.routeId);
-      if (r) r.active = false;
+    if (!left.length) {
+      r.active = false;
+      r.freq = 0;
+      return;
     }
+    // 남은 기재로 못 뛰는 편수는 내린다. 안 내리면 시장은 조용히 잘라 태우는데
+    // 슬롯 점유(`usedSlots`)와 화면은 그 편수를 그대로 세, 못 쓰는 슬롯이 잠긴다.
+    const cap = Econ.capacity(left, Cities.distance(r.from, r.to), (t) => s.types[t]);
+    if (r.freq > cap.maxFreq) r.freq = Math.max(1, cap.maxFreq);
   }
 
   function fold(s, a) {

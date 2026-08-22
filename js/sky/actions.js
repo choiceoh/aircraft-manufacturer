@@ -128,7 +128,9 @@
     // 다음 정산에서 점유율·수입·현금이 줄줄이 NaN 이 된다. `tuneRoute` 와 같은 문이다.
     if (fareMul !== undefined && !Number.isFinite(fareMul)) return fail('운임 배수가 올바르지 않습니다.');
     if (serviceExtra !== undefined && !Number.isFinite(serviceExtra)) return fail('서비스 등급이 올바르지 않습니다.');
-    if (!planeIds || !planeIds.length) return fail('투입할 기재를 고르세요.');
+    // 배열이 아니면 아래 `new Set(...)` 이 TypeError 를 던진다 — 명령 계층은 예외가
+    // 아니라 `{ ok: false }` 를 돌려주기로 되어 있다.
+    if (!Array.isArray(planeIds) || !planeIds.length) return fail('투입할 기재를 고르세요.');
 
     const dist = Cities.distance(from, to);
     // 같은 기체를 두 번 적으면 수송력이 그만큼 부풀어, 한 대로 주 60왕복짜리 노선을
@@ -216,6 +218,7 @@
     const r = s.routes.find((x) => x.id === routeId && x.airlineId === airlineId);
     if (!r || !r.active) return fail('없는 노선입니다.');
     const dist = Cities.distance(r.from, r.to);
+    if (!Array.isArray(planeIds)) return fail('투입할 기재를 고르세요.');
     if (new Set(planeIds).size !== planeIds.length) return fail('같은 기재를 두 번 넣을 수 없습니다.');
     const planes = [];
     for (const id of planeIds) {
