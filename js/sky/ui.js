@@ -147,8 +147,16 @@
     if (s.turn >= s.totalTurns || !me || !me.alive) return true;
     // 통합 판에서는 제조사가 무너져도 끝이다 — 그룹 성적이 이미 F 로 정해졌는데
     // 여기만 계속 굴리면 두 달력이 갈라진다.
+    //
+    // **다만 이미 시작한 넘김은 막지 않는다.** 껍데기는 제조사 → 항공사 순으로 돌리는데,
+    // 제조사 정산이 마지막 분기나 파산에 닿으면 그 자리에서 `groupOver()` 가 참이 된다 —
+    // 여기서 막으면 아직 오지 않은 우리 정산이 통째로 건너뛰어져, 끝난 판마다 자회사의
+    // 마지막 분기가 빠지고 두 세이브가 80 대 79 로 갈라진 채 저장된다. 다시 열면 결과
+    // 화면 대신 달력 불일치 화면이 뜬다. 막아야 하는 것은 **다음** 넘김이다.
     const Shell = root.AirlinerShell;
-    return !!(Shell && Shell.shell.mode === 'group' && Shell.groupOver());
+    if (!Shell || Shell.shell.mode !== 'group') return false;
+    if (typeof Shell.isTurning === 'function' && Shell.isTurning()) return false;
+    return !!Shell.groupOver();
   }
 
   /** 껍데기가 묻는 종료 여부 — 자기 계층 기준만 답한다(그룹 판정은 껍데기가 모은다). */
@@ -403,6 +411,9 @@
       const d = JSON.parse(raw);
       if (!d || !d.state || !d.state.airlines) return false;
       St.restoreTypes(d.state, d.keepTypes);
+      // 카탈로그에서 이름이 바뀐 회사를 맞춘다 — 세이브는 회사 기록을 통째로 들고 오므로
+      // 안 맞추면 같은 회사를 두 계층이 다른 이름으로 부른다.
+      St.migrateNames(d.state);
       ui.state = d.state;
       ui.meId = d.meId;
       ui.tab = d.tab || 'overview';

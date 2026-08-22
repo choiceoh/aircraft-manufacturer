@@ -9161,3 +9161,47 @@ test('설계 동결은 초도 비행 성공으로 기록된다', () => {
   }
 });
 
+
+test('통합: 자회사에 넘긴 대수는 점유율에도 이사회 목표에도 안 들어간다', () => {
+  // 성적에서만 빼고 이사회 목표는 원값을 읽으면, 자기한테 팔아 목표를 채우고 증자와
+  // 평판을 받아 그 평판으로 다시 성적을 올릴 수 있다. 한 자로 재야 한다.
+  const s = E.newGame(20260822);
+  s.stats.delivered = 100;
+  s.stats.rivalDelivered = 900;
+  const share = E.marketShare(s);
+  assert.ok(Math.abs(share - 0.1) < 1e-9, '이 판의 기준 점유율이 달라졌다');
+
+  s.mandate = {
+    id: 'delivery', name: '인도 확대',
+    target: E.mandateStatus(s).target, text: '인도 목표',
+    issuedTurn: s.turn, dueTurn: s.turn + 20,
+  };
+  const before = E.mandateStatus(s);
+
+  // 자회사에 20기를 넘긴다 — 시장에서 이긴 것이 아니다.
+  s.stats.delivered += 20;
+  s.stats.inHouseDelivered = 20;
+
+  assert.ok(Math.abs(E.marketShare(s) - share) < 1e-9, `자체 인도로 점유율이 ${E.marketShare(s)} 가 됐다`);
+  const after = E.mandateStatus(s);
+  assert.strictEqual(after.now, before.now, `자체 인도로 이사회 목표가 ${before.now} → ${after.now} 로 나아갔다`);
+
+  // 바깥에 판 20기는 그대로 센다 — 규칙이 자체 발주만 걷어내는지 확인한다.
+  s.stats.delivered += 20;
+  assert.ok(E.marketShare(s) > share, '외부 인도가 점유율에 안 실렸다');
+  assert.strictEqual(E.mandateStatus(s).now, before.now + 20, '외부 인도가 목표 진도에 안 실렸다');
+});
+
+test('통합: 점유율 목표도 자체 인도로는 못 채운다', () => {
+  const s = E.newGame(20260823);
+  s.stats.delivered = 100;
+  s.stats.rivalDelivered = 900;
+  s.mandate = null;
+  const def = { id: 'share' };
+  s.mandate = { ...def, name: '점유율 확보', target: 0.15, text: '점유율 15%', issuedTurn: s.turn, dueTurn: s.turn + 20 };
+  const before = E.mandateStatus(s).now;
+
+  s.stats.delivered += 200;
+  s.stats.inHouseDelivered = 200;
+  assert.strictEqual(E.mandateStatus(s).now, before, '자기한테 판 200기로 점유율 목표가 나아갔다');
+});

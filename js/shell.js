@@ -131,6 +131,19 @@
    * 제조사 → 항공사 순서로 고정한다(파일 첫머리 참조). 통합 모드가 아니면 도는 계층이
    * 하나뿐이라 순서는 의미가 없다.
    */
+  /**
+   * 지금 분기 넘김이 도는 중인가.
+   *
+   * **넘김이 시작된 뒤에는 `groupOver()` 로 계층을 막으면 안 된다.** 제조사가 먼저
+   * 정산하므로, 그 정산이 마지막 분기나 파산에 닿는 순간 `groupOver()` 가 참이 되고
+   * 아직 오지 않은 `air.turn()` 이 통째로 건너뛰어진다 — 끝난 판마다 자회사의 마지막
+   * 분기가 빠지고 두 세이브의 달력이 80 대 79 로 갈라진다. 막아야 하는 것은 **다음**
+   * 넘김이지 이미 시작한 넘김이 아니다.
+   */
+  function isTurning() {
+    return turning;
+  }
+
   function turn() {
     if (turning) return;
     // 끝난 판은 더 넘기지 않는다. 두 계층이 각자 자기만 보고 판단하므로 여기서 한 번
@@ -372,7 +385,7 @@
     }
   }
 
-  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, groupOver, choose, reset, showLayer, boot };
+  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, groupOver, isTurning, choose, reset, showLayer, boot };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

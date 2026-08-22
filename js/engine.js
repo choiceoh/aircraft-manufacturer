@@ -3034,12 +3034,22 @@
     }
   }
 
-  function runDeliveries(s, report) {
-    // 약속한 주문을 먼저 인도한다. 같은 우선순위면 오래된 수주부터.
-    // 우선 인도는 공짜가 아니다 — 다른 주문을 뒤로 밀어 그쪽 약속을 깨뜨린다.
-    const orders = s.backlog
+  /**
+   * 인도 차례 — 약속한 주문을 먼저, 같은 우선순위면 오래된 수주부터.
+   * 우선 인도는 공짜가 아니다 — 다른 주문을 뒤로 밀어 그쪽 약속을 깨뜨린다.
+   *
+   * 함수로 빼 둔 이유는 **화면도 같은 차례를 봐야 하기 때문**이다. 통합 모드의 모회사
+   * 카드는 자체 발주가 재고로 덮이는지 알려 주는데, 그러려면 앞에 몇 대가 서 있는지를
+   * 인도가 쓰는 것과 같은 순서로 세어야 한다. 정렬을 두 군데 적어 두면 한쪽만 바뀐다.
+   */
+  function deliveryQueue(s) {
+    return s.backlog
       .filter((o) => o.remaining > 0)
       .sort((a, b) => pledgeOf(b).priority - pledgeOf(a).priority || a.wonTurn - b.wonTurn);
+  }
+
+  function runDeliveries(s, report) {
+    const orders = deliveryQueue(s);
     for (const o of orders) {
       const p = s.programs.find((x) => x.id === o.programId);
       if (!p || p.stock <= 0) continue;
@@ -4065,8 +4075,10 @@
     {
       id: 'delivery',
       name: '인도 확대',
-      target: (s) => Math.round(s.stats.delivered + 55 + s.turn * 0.8),
-      progress: (s) => s.stats.delivered,
+      // 자회사에 넘긴 대수는 목표에도 진도에도 안 들어간다 — 자기한테 팔아 이사회
+      // 목표를 채우면 증자와 평판이 공짜로 나온다. 기준선과 진도를 같은 자로 잰다.
+      target: (s) => Math.round(marketDelivered(s) + 55 + s.turn * 0.8),
+      progress: (s) => marketDelivered(s),
       describe: (t) => `20년 누적 인도 ${t}기 달성`,
       unit: '기',
     },
@@ -4822,12 +4834,26 @@
     return Object.values((s.fleets || {}).gov || {}).reduce((a, b) => a + b, 0);
   }
 
+  /**
+   * 시장에서 이긴 몫만 센다.
+   *
+   * 군용 인도는 민항 시장 밖이다 — 경쟁사 물량이 민항 카탈로그에서만 나오므로,
+   * 특수기까지 세면 점유율·순위·이사회 목표가 군 계약만으로 공짜로 오른다.
+   *
+   * **자회사에 넘긴 대수도 같은 이유로 뺀다.** 시장에서 이긴 것이 아니라 왼손이 오른손에
+   * 준 것이다. 한 군데서 빼야 한다 — 성적에서만 빼고 이사회 목표는 원값을 읽으면,
+   * 자기한테 팔아 목표를 채우고 증자와 평판을 받아 그 평판으로 성적을 올릴 수 있다.
+   * 통합 모드가 아니면 이 계수가 0 이라 아무것도 달라지지 않는다.
+   */
   function marketShare(s) {
-    // 군용 인도는 민항 시장 밖이다 — 경쟁사 물량이 민항 카탈로그에서만 나오므로,
-    // 특수기까지 세면 점유율·순위·이사회 목표가 군 계약만으로 공짜로 오른다.
-    const mine = Math.max(0, s.stats.delivered - govDelivered(s));
-    const total = mine + s.stats.rivalDelivered;
-    return total > 0 ? mine / total : 0;
+    const mine = marketDelivered(s) - govDelivered(s);
+    const total = Math.max(0, mine) + s.stats.rivalDelivered;
+    return total > 0 ? Math.max(0, mine) / total : 0;
+  }
+
+  /** 누적 인도 중 시장에서 이긴 몫 — 자회사에 넘긴 대수를 뺀다. */
+  function marketDelivered(s) {
+    return Math.max(0, s.stats.delivered - ((s.stats && s.stats.inHouseDelivered) || 0));
   }
 
   /**
@@ -4957,12 +4983,9 @@
    */
   function operatingScore(s) {
     const ownership = 1 - (s.equityDilution || 0);
-    // **자회사에 넘긴 대수는 뺀다.** 시장에서 이긴 것이 아니라 왼손이 오른손에 준
-    // 것이다 — 안 빼면 자기한테 팔아 점유율과 인도 점수를 만들 수 있다.
-    const inHouse = (s.stats && s.stats.inHouseDelivered) || 0;
-    const mine = Math.max(0, s.stats.delivered - govDelivered(s) - inHouse);
-    const total = mine + s.stats.rivalDelivered;
-    const share = total > 0 ? mine / total : 0;
+    // 자회사에 넘긴 대수는 `marketShare` 가 이미 뺀다 — 왼손이 오른손에 준 것이지
+    // 시장에서 이긴 것이 아니다.
+    const share = marketShare(s);
     // 급별 가중이 다르므로 프로그램마다 그 프로그램의 가중으로 뺀다.
     const delivered = s.programs.reduce(
       (acc, p) =>
@@ -5157,6 +5180,7 @@
 
   root.AirlinerEngine = {
     newGame,
+    deliveryQueue,
     placeInHouseOrder,
     inHouseQuote,
     operatingScore,

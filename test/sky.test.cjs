@@ -3053,3 +3053,151 @@ test('통합: 바로 직전 이름으로 저장된 판도 결정 본문이 맞�
     assert.strictEqual(s.decision.memo.airlineName, '아에로플로트');
   }
 });
+
+test('통합: 끝나는 분기에도 자회사가 자기 분기를 마친다', () => {
+  // 껍데기는 제조사 → 항공사 순으로 돌린다. 제조사 정산이 마지막 분기나 파산에 닿는
+  // 순간 그룹 종료 판정이 참이 되는데, 항공사가 그걸 보고 자기 차례를 건너뛰면 끝난
+  // 판마다 자회사의 마지막 분기가 빠지고 두 세이브의 달력이 갈라진다.
+  const path = require('node:path');
+  const JSDIR = path.join(__dirname, '..', 'js');
+  require(path.join(JSDIR, 'shell.js'));
+  require(path.join(JSDIR, 'sky', 'ui.js'));
+  const Shell = globalThis.AirlinerShell;
+  const SkyUi = globalThis.AirlinerSkyUi;
+
+  // 화면은 없어도 된다 — 넘김 경로만 돌린다.
+  const el = () => ({
+    innerHTML: '', className: '', textContent: '', dataset: {}, style: {},
+    addEventListener() {}, appendChild() {}, scrollIntoView() {},
+    querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+    setAttribute() {}, getAttribute: () => null,
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+  });
+  const cache = {};
+  const savedDoc = globalThis.document;
+  const savedLs = globalThis.localStorage;
+  globalThis.document = {
+    readyState: 'complete', body: el(), addEventListener() {},
+    getElementById: (id) => (cache[id] || (cache[id] = el())),
+    querySelector: () => null, querySelectorAll: () => [], createElement: () => el(),
+  };
+  const store = {};
+  globalThis.localStorage = {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: (k) => { delete store[k]; },
+  };
+
+  const savedMaker = Shell.shell.layer;
+  const savedMode = Shell.shell.mode;
+  try {
+    const { mfg, sky, meId } = groupGame();
+    // 두 계층을 같은 마지막 분기에 세운다.
+    const LAST = Data.CONFIG.totalTurns - 1;
+    mfg.turn = LAST;
+    sky.turn = sky.totalTurns - 1;
+    SkyUi.ui.state = sky;
+    SkyUi.ui.meId = meId;
+
+    // 제조사 자리는 흉내낸다 — 여기서 재는 것은 껍데기의 순서와 항공사의 응답이다.
+    let makerTurns = 0;
+    Shell.register('maker', {
+      boot() {}, render() {},
+      turn() { makerTurns++; mfg.turn++; mfg.gameOver = { reason: 'end' }; return null; },
+      save() {}, clearSave() {},
+      isOver: () => !!mfg.gameOver,
+      state: () => mfg,
+    });
+    Shell.shell.mode = 'group';
+    Shell.shell.layer = 'maker';
+
+    Shell.turn();
+
+    assert.strictEqual(makerTurns, 1, '제조사가 안 돌았다면 이 검사는 아무것도 안 잰다');
+    assert.strictEqual(sky.turn, sky.totalTurns, `자회사가 마지막 분기를 건너뛰었다 (${sky.turn})`);
+    assert.strictEqual(mfg.turn, sky.turn, `달력이 ${mfg.turn} 대 ${sky.turn} 로 갈라졌다`);
+    assert.strictEqual(sky.turn, LAST + 1, '두 계층이 같은 자리에서 끝나야 한다');
+
+    // 그리고 **다음** 넘김은 막혀야 한다 — 끝난 판을 더 굴리면 안 된다.
+    Shell.turn();
+    assert.strictEqual(makerTurns, 1, '끝난 판에서 한 분기 더 돌았다');
+    assert.strictEqual(sky.turn, sky.totalTurns);
+  } finally {
+    Shell.shell.mode = savedMode;
+    Shell.shell.layer = savedMaker;
+    SkyUi.ui.state = null;
+    if (savedDoc === undefined) delete globalThis.document;
+    else globalThis.document = savedDoc;
+    if (savedLs === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = savedLs;
+  }
+});
+
+test('통합: 재고가 앞줄에 얼마나 남는지로 센다 — 순서까지 본다', () => {
+  // `runDeliveries` 는 우선순위·수주 시점으로 한 줄을 세우고 앞에서부터 재고를 준다.
+  // 남의 주문을 무조건 다 빼면 내가 앞줄일 때도 "영영 안 온다"고 겁을 주고, 아예 안
+  // 빼면 남이 다 가져갈 때도 "막힌 기체 0" 이라 안심시킨다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  // 창업 수주가 이미 이 기종에 걸려 있다 — 줄 세우기만 재려면 비우고 시작한다.
+  mfg.backlog = mfg.backlog.filter((o) => o.programId !== prog.id);
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  const mine = mfg.backlog.find((o) => o.inHouse && o.programId === prog.id);
+  assert.ok(mine, '자체 주문이 장부에 없다');
+
+  const other = {
+    ...mine, inHouse: false, id: 'outside-1', airlineId: 'someone-else',
+    remaining: 4, wonTurn: mine.wonTurn + 1, pledge: 'standard',
+  };
+  mfg.backlog.push(other);
+  prog.stock = 5;
+
+  // 내가 먼저 수주했다 — 5기 중 3기는 내 몫이다.
+  assert.strictEqual(G.coveredByStock(mfg, prog.id), 3, '앞줄인데 남의 주문에 재고를 다 내줬다');
+
+  // 남이 먼저 수주했다면 4기를 가져가고 나에게는 1기만 남는다.
+  other.wonTurn = mine.wonTurn - 1;
+  assert.strictEqual(G.coveredByStock(mfg, prog.id), 1, '뒷줄인데 재고를 통째로 내 몫으로 셌다');
+
+  // 우선 인도 약속은 수주 시점을 앞선다.
+  other.wonTurn = mine.wonTurn + 1;
+  other.pledge = 'early';
+  assert.strictEqual(G.coveredByStock(mfg, prog.id), 1, '우선 인도 약속이 줄을 앞서지 못했다');
+});
+
+test('통합: 자회사 운영 점수에도 증자 희석이 걸린다', () => {
+  // 자본 항목과 제조사 운영에만 걸고 여기만 원값으로 두면, 승객과 노선망에 점수를 몰아
+  // "성적을 깎는다"고 안내된 증자를 피해 갈 수 있다.
+  const { mfg, sky, meId } = groupGame();
+  const a = St.airline(sky, meId);
+  a.lifetimePax = 40e6;
+  const rowsOf = (s) => s.rows.filter((r) => r.label.startsWith('항공사'));
+  const base = rowsOf(G.groupScore(mfg, sky, meId));
+  assert.ok(base.length && base.some((r) => r.points > 0), '항공사 항목이 있어야 검사가 산다');
+
+  mfg.equityDilution = 0.4;
+  const diluted = rowsOf(G.groupScore(mfg, sky, meId));
+  for (let i = 0; i < base.length; i++) {
+    assert.ok(
+      Math.abs(diluted[i].points - base[i].points * 0.6) <= 1,
+      `${base[i].label}: ${diluted[i].points} (원래 ${base[i].points}, 60% 여야 한다)`,
+    );
+  }
+  assert.ok(diluted.some((r) => /우리 몫/.test(r.detail)), '무엇이 걸렸는지 화면에 안 적혔다');
+});
+
+test('통합: 불러온 판의 회사 이름이 카탈로그를 따라간다', () => {
+  // 세이브는 회사 기록을 통째로 들고 온다 — 안 맞추면 제조사 계층은 아에로플로트라
+  // 부르는 회사를 항공사 화면이 옛 이름으로 부른다. 같은 id 인데 두 이름이 된다.
+  const sky = St.newGame(4242);
+  const a = sky.airlines.find((x) => x.id === 'kosmo');
+  assert.ok(a, 'kosmo 자리가 없으면 이 검사는 아무것도 안 잰다');
+  const home = a.home;
+  a.name = '에어아스타나';
+
+  St.migrateNames(sky);
+  const seed = Data.AIRLINES.find((x) => x.id === 'kosmo');
+  assert.strictEqual(a.name, seed.name, '옛 이름이 그대로 남았다');
+  // 거점은 판의 상태다 — 슬롯도 노선도 거기 걸려 있어 지금 옮기면 노선망이 부서진다.
+  assert.strictEqual(a.home, home, '거점까지 옮겨 굴러가던 노선망을 부쉈다');
+});

@@ -349,8 +349,17 @@
       detail: '누적 인도 · 시장 점유율 · 평판 (순자산은 그룹 자본에서 센다)',
       points: E.operatingScore(mfg),
     });
+    // **자회사 운영 항목에도 같은 희석을 건다.** 증자는 모회사의 지분을 파는 일이고,
+    // 자회사는 그 모회사가 통째로 가진 회사다 — 여기만 원값으로 두면 승객과 노선망에
+    // 점수를 몰아 "성적을 깎는다"고 안내된 증자를 피해 갈 수 있다.
     const air = St.operatingScore(sky, airlineId);
-    for (const r of air.rows) rows.push({ label: `항공사 ${r.label}`, detail: r.detail, points: r.points });
+    for (const r of air.rows) {
+      rows.push({
+        label: `항공사 ${r.label}`,
+        detail: r.detail + (ownership < 1 ? ` · 우리 몫 ${(ownership * 100).toFixed(0)}%` : ''),
+        points: Math.round(r.points * ownership),
+      });
+    }
 
     const score = alive ? rows.reduce((x, r) => x + r.points, 0) : 0;
     let grade = 'F';
@@ -364,6 +373,30 @@
       }
     }
     return { score, grade, alive, rows, equity: eq };
+  }
+
+  /**
+   * 이 기종의 자체 발주 중 **이미 만들어 둔 재고로 덮이는 대수**.
+   *
+   * `runDeliveries` 는 수주 장부를 우선순위와 수주 시점으로 한 줄로 세우고 앞에서부터
+   * 재고를 꺼내 준다. 그러니 재고를 통째로 내 몫으로 치면 앞선 외부 주문이 다 가져갈
+   * 때도 "막힌 기체 0" 이라 안심시키고, 거꾸로 남의 주문을 전부 빼면 내 주문이 더
+   * 앞줄일 때도 "영영 안 온다"고 겁을 준다 — 둘 다 비싼 라인을 잘못 세우게 만든다.
+   * 그래서 세는 대신 **인도가 쓰는 그 줄을 그대로 걸어 본다**(`E.deliveryQueue`).
+   */
+  function coveredByStock(mfg, programId) {
+    const p = (mfg.programs || []).find((x) => x.id === programId);
+    if (!p) return 0;
+    let stock = p.stock || 0;
+    let mine = 0;
+    for (const o of E.deliveryQueue(mfg)) {
+      if (stock <= 0) break;
+      if (o.programId !== programId) continue;
+      const n = Math.min(o.remaining, stock);
+      stock -= n;
+      if (o.inHouse) mine += n;
+    }
+    return mine;
   }
 
   /** 아직 인도되지 않은 자체 발주의 선급금 — 그룹 안에서만 오간 돈이다. */
@@ -491,6 +524,7 @@
     migrateInHouseCounters,
     applyRivalry,
     combinedEquity,
+    coveredByStock,
     groupScore,
     GROUP_EQUITY_RATE,
     GROUP_CUTS,
