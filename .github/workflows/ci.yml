@@ -19,3 +19,5 @@ jobs:
           node-version: '22'
       # 의존성이 없다. 소스가 globalThis 에 붙는 IIFE라 require 만으로 로드된다.
       - run: node --test test/engine.test.cjs
+      # 항공사 계층은 판을 만들지 않고도 검증되므로 파일을 나눠 둔다.
+      - run: node --test test/sky.test.cjs
