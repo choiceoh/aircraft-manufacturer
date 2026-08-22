@@ -9205,3 +9205,90 @@ test('통합: 점유율 목표도 자체 인도로는 못 채운다', () => {
   s.stats.inHouseDelivered = 200;
   assert.strictEqual(E.mandateStatus(s).now, before, '자기한테 판 200기로 점유율 목표가 나아갔다');
 });
+
+test('통합: 자체 인도가 이정표 문턱을 삼키지 않는다', () => {
+  // 계수는 올려 놓고 이정표 호출만 건너뛰면 문턱이 조용히 넘어간다 — 자회사에 넘긴
+  // 100호기 뒤에 오는 진짜 첫 외부 인도가 그 순간을 영영 되찾지 못한다.
+  const s = E.newGame(20260824);
+  const p = s.programs.find((x) => !x.legacy && x.phase === 'production') || s.programs[0];
+  p.legacy = false;
+  p.delivered = 96;
+  p.inHouseDelivered = 0;
+  s.stats.delivered = 96;
+  s.stats.inHouseDelivered = 0;
+  s.backlog = [];
+  s.milestones = [];
+  s.lines = [];
+  p.stock = 20;
+  delete s.effects.grounded[p.id];
+
+  const order = (airlineId, qty, inHouse) => ({
+    id: 'ord-t' + s.nextId++, airlineId, airlineName: airlineId, programId: p.id, programName: p.name,
+    qty, remaining: qty, unitPrice: p.listPrice, wonTurn: s.turn, reqEtops: false, gov: false,
+    ...(inHouse ? { inHouse: true } : {}),
+  });
+  const deliver = (o) => {
+    s.backlog = [o];
+    p.stock = 20;
+    E.endTurn(s);
+  };
+
+  // 자회사에 8기 — 100호기 문턱을 지나지만 이정표는 없어야 한다.
+  deliver(order('kosmo', 8, true));
+  assert.strictEqual(p.delivered, 104, '자체 인도가 안 됐다면 이 검사는 아무것도 안 잰다');
+  assert.strictEqual(p.inHouseDelivered, 8);
+  assert.strictEqual(s.milestones.length, 0, `자체 인도로 이정표가 ${s.milestones.length}개 생겼다`);
+
+  // 이제 바깥에 8기 — 바깥 기준으로 96 → 104 라 100호기는 **여기서** 나와야 한다.
+  const rep = s.reputation;
+  deliver(order('hanul', 8, false));
+  const hit = s.milestones.filter((m) => /100호기/.test(m.text));
+  assert.strictEqual(hit.length, 1, `외부 인도가 100호기 이정표를 못 받았다 (${JSON.stringify(s.milestones.map((m) => m.text))})`);
+  assert.ok(s.reputation > rep, '이정표 평판이 안 올랐다');
+});
+
+test('통합: 계열 선단은 정비·화물·개조 키트 수익을 만들지 않는다', () => {
+  // 우리가 우리 기체를 손보고 우리에게 청구한다 — 밖에서 아무 일도 없었는데 그룹
+  // 자본이 매 분기 늘면, 자회사에 넘길수록 성적이 오르는 길이 열린다.
+  const base = E.newGame(20260825);
+  const mine = E.newGame(20260825);
+  const bp = base.programs[0];
+  const mp = mine.programs[0];
+  bp.freighter = true;
+  mp.freighter = true;
+
+  // 같은 대수인데 한쪽은 그 전부가 자회사 몫이다.
+  const extra = 60;
+  for (const [s, p, inHouse] of [[base, bp, 0], [mine, mp, extra]]) {
+    p.delivered += extra;
+    s.stats.delivered += extra;
+    if (inHouse) {
+      p.inHouseDelivered = inHouse;
+      s.stats.inHouseDelivered = inHouse;
+    }
+  }
+
+  const svc = (s) => E.serviceIncome(s).total;
+  const before = svc(base);
+  const after = svc(mine);
+  assert.ok(before > 0, '기준 판의 서비스 수익이 0 이면 이 검사는 아무것도 안 잰다');
+  assert.ok(after < before, `계열 ${extra}기가 서비스 수익을 그대로 벌었다 (${after} vs ${before})`);
+
+  // 자회사 몫을 뺀 판과, 애초에 그만큼 덜 판 판이 같아야 한다.
+  const none = E.newGame(20260825);
+  none.programs[0].freighter = true;
+  assert.ok(Math.abs(svc(none) - after) < 1e-6, `계열분을 뺀 값이 안 판 값과 다르다 (${after} vs ${svc(none)})`);
+});
+
+test('통합: 경력 순위표의 우리 인도 대수가 점유율과 같은 자를 쓴다', () => {
+  const s = E.newGame(20260826);
+  s.stats.delivered = 200;
+  s.stats.rivalDelivered = 800;
+  s.stats.inHouseDelivered = 50;
+  const us = E.makerStandings(s).find((r) => r.us);
+  assert.strictEqual(us.delivered, 150, `순위표가 자체 인도 50기를 시장 실적으로 셌다 (${us.delivered})`);
+  assert.ok(
+    Math.abs(us.share - E.marketShare(s)) < 1e-6,
+    `순위표 점유율 ${us.share} 과 점유율 카드 ${E.marketShare(s)} 가 어긋난다`,
+  );
+});

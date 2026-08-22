@@ -1135,6 +1135,9 @@
     const airline = AIRLINES.find((a) => a.id === o.airlineId);
     if (!airline) return { ok: false, error: '없는 항공사입니다.' };
 
+    // 어느 회사가 우리 자회사인지 새겨 둔다 — 계열 선단의 정비 수익을 걷어내려면
+    // 엔진도 그 id 를 알아야 한다(선단은 항공사별로만 쌓인다).
+    s.inHouseAirlineId = airline.id;
     const unitPrice = inHouseUnitPrice(p);
     const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
     s.cash += deposit;
@@ -1743,8 +1746,8 @@
     }
     const n = Math.min(qty, p.stock);
     const revenue = Math.round(n * p.listPrice * 0.68);
-    const progBefore = p.delivered;
-    const companyBefore = s.stats.delivered;
+    const progBefore = externalDelivered(p);
+    const companyBefore = marketDelivered(s);
     p.stock -= n;
     p.delivered += n;
     // 처분도 delivered 를 올리므로 마일스톤 문턱을 지난다. 여기서 안 세면
@@ -3088,8 +3091,11 @@
         if (home === '북미' || home === '서유럽') duty = Math.round(n * o.unitPrice * TRADE_TARIFF_RATE);
       }
       const revenue = now - royalty - duty;
-      const progBefore = p.delivered;
-      const companyBefore = s.stats.delivered;
+      // **바깥에 판 대수로 센다.** 자체 인도는 이정표가 아닌데, 계수는 올려 놓고
+      // 호출만 건너뛰면 문턱이 조용히 넘어간다 — 자회사에 넘긴 100호기 뒤에 오는
+      // 진짜 첫 외부 인도가 그 순간을 영영 되찾지 못한다.
+      const progBefore = externalDelivered(p);
+      const companyBefore = marketDelivered(s);
       o.remaining -= n;
       p.stock -= n;
       p.delivered += n;
@@ -3117,9 +3123,10 @@
           balance: n * o.unitPrice * (1 - rate),
         });
       }
-      // **자체 인도는 이정표도 아니다.** 첫 인도·100/300/500기 문턱이 평판을 올리는데,
-      // 주문 완납 평판만 막아 두면 이 길로 여전히 자기한테 팔아 점수를 만들 수 있다.
-      if (!o.inHouse) recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
+      // **자체 인도는 이정표도 아니다.** 첫 인도·100/300/500기 문턱이 평판을 올린다.
+      // 따로 막지 않는다 — 바깥 인도 대수로 세므로 자체 인도의 증분이 0 이고,
+      // 이정표 함수가 스스로 돌아 나간다. 규칙이 조건문이 아니라 눈금에 들어 있다.
+      recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
       // 엔진 공급사 관계 — 그 공급사 엔진을 단 인도가 쌓일수록 협상 테이블이 생긴다.
       // 이중화 기체는 항공사가 선호하는 쪽 엔진을 달아 나간다 — A330 이 그랬다.
       const primMaker = (root.AirlinerEngines.get(p.engine) || {}).maker;
@@ -3191,7 +3198,9 @@
   }
 
   function recordDeliveryMilestones(s, p, o, progBefore, companyBefore) {
-    const n = p.delivered - progBefore;
+    // 인자로 받는 두 값도, 여기서 재는 값도 **바깥에 판 대수**다(`externalDelivered`).
+    const progAfter = externalDelivered(p);
+    const n = progAfter - progBefore;
     if (n <= 0) return;
     if (!p.legacy) {
       if (progBefore === 0) {
@@ -3212,7 +3221,7 @@
         addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
       }
       for (const m of PROGRAM_MILESTONES) {
-        if (progBefore < m.at && p.delivered >= m.at) {
+        if (progBefore < m.at && progAfter >= m.at) {
           addMilestone(s, `${p.name} ${m.at}호기 라인오프 — 공장 앞마당에서 기념식이 열렸다.`, m.rep);
         }
       }
@@ -3572,9 +3581,10 @@
     // 차이를 '기타'로 남겨 순위표 합계가 점유율 계산과 어긋나지 않게 한다.
     const allocated = rows.reduce((a, r) => a + r.delivered, 0);
     const unattributed = Math.max(0, s.stats.rivalDelivered - allocated);
-    // 군용 인도는 민항 순위 밖이다 — 점유율 계산(marketShare)과 같은 차감을
-    // 여기도 해야 순위표의 점유율이 점유율 카드와 어긋나지 않는다.
-    rows.push({ id: 'us', name: s.company, delivered: Math.max(0, s.stats.delivered - govDelivered(s)), us: true });
+    // 군용 인도도 자회사 인도도 민항 순위 밖이다 — 점유율 계산(marketShare)과 **같은
+    // 분자**를 써야 순위표가 점유율 카드·그룹 성적과 다른 말을 하지 않는다. 여기만
+    // 원값을 쓰면 자기한테 판 기체가 경력 순위에서는 시장에서 이긴 것으로 남는다.
+    rows.push({ id: 'us', name: s.company, delivered: Math.max(0, marketDelivered(s) - govDelivered(s)), us: true });
     if (unattributed > 0) rows.push({ id: 'other', name: '집계 이전 인도분', delivered: unattributed, us: false });
 
     const total = rows.reduce((a, r) => a + r.delivered, 0) || 1;
@@ -3855,7 +3865,8 @@
 
         // 이미 하늘에 있는 기체에 키트를 판다. endTurn 안에서 완성되므로
         // pending 이 아니라 이번 분기 리포트에 직접 적는다.
-        const kits = Math.round((p.delivered || 0) * p.listPrice * RETROFIT_KIT_RATE);
+        // 계열 선단에 파는 개조 키트는 왼손이 오른손에 파는 것이다.
+        const kits = Math.round(externalDelivered(p) * p.listPrice * RETROFIT_KIT_RATE);
         if (kits > 0) {
           s.cash += kits;
           report.revenue += kits;
@@ -3872,7 +3883,7 @@
           s,
           'good',
           `${p.name} ${spec.name} 완성 — ${spec.desc.split(' — ')[1] || spec.desc}.` +
-            (kits > 0 ? ` 기존 선단 ${num(p.delivered)}기 개조 키트로 ${fmtMoney(kits)}을 벌었고, 운용사 ${operators.length}곳의 신뢰가 올랐다.` : ''),
+            (kits > 0 ? ` 기존 선단 ${num(externalDelivered(p))}기 개조 키트로 ${fmtMoney(kits)}을 벌었고, 운용사 ${operators.length}곳의 신뢰가 올랐다.` : ''),
         );
       }
     }
@@ -3896,7 +3907,8 @@
         pushLog(s, 'good', `${p.name} 화물형 개조 사업이 문을 열었다.`);
       }
       // 군용 특수기는 화물기로 개조된 것이 아니다 — 그 인도분은 지원 수익이 맡는다.
-      if (p.freighter) freight += Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit;
+      // 계열 기체의 화물 개조도 같다 — 그룹 안에서 오간 돈은 그룹 자본을 못 늘린다.
+      if (p.freighter) freight += Math.max(0, externalDelivered(p) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit;
     }
     // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
@@ -3953,8 +3965,12 @@
 
   function aftermarketBase(s) {
     // 4발은 엔진 정비 계약이 두 벌 더다 — 항공사에는 짐이지만 제조사에는 수익이다.
+    // 자회사에 넘긴 기체의 정비는 그룹 안에서 도는 일이다 — 우리가 우리 기체를
+    // 손보고 우리에게 청구한다. 여기서 받으면 밖에서 아무 일도 없었는데 그룹 자본이
+    // 매 분기 늘어난다(광동체 60기면 10년에 1,656M). 통합 모드가 아니면 이 계수가
+    // 0 이라 아무것도 달라지지 않는다.
     let base = s.programs.reduce(
-      (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1),
+      (a, p) => a + externalDelivered(p) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1),
       0,
     );
     // 핵심 고객은 정비를 우리에게 전속으로 맡긴다 — 단골의 보상은 입찰 점수가
@@ -3962,7 +3978,9 @@
     for (const [airlineId, byProgram] of Object.entries(s.fleets || {})) {
       // 군 선단은 항공사 단골이 아니다 — 군의 정비 계약 경제는 지원 수익 단가에
       // 이미 들어 있어, 여기서 또 받으면 이중 계상이다.
-      if (airlineId === 'gov' || loyaltyTier(s, airlineId) < 2) continue;
+      // 자회사는 단골이 아니라 우리다 — 계열 선단의 전속 정비는 그룹 밖에서 오는 돈이
+      // 아니다. 군 선단은 지원 수익 단가에 이미 들어 있어 여기서 또 받으면 이중 계상이다.
+      if (airlineId === 'gov' || airlineId === s.inHouseAirlineId || loyaltyTier(s, airlineId) < 2) continue;
       for (const [pid, n] of Object.entries(byProgram)) {
         const p = s.programs.find((x) => x.id === pid);
         if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1) * LOYAL_SERVICE_BONUS;
@@ -3974,11 +3992,13 @@
   /** 화면이 읽는 서비스 수익 내역. */
   function serviceIncome(s) {
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
-    const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
+    // 카드가 설명하는 것은 **이 수익**이다 — 수익에서 뺀 계열 선단을 대수에만 남겨 두면
+    // "선단 300기인데 정비 수익은 240기어치"라는 설명 없는 숫자가 된다.
+    const fleet = s.programs.reduce((a, p) => a + externalDelivered(p), 0);
     const after = aftermarketBase(s) * tier.mult;
     let freight = s.programs
       .filter((p) => p.freighter)
-      .reduce((a, p) => a + Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit, 0);
+      .reduce((a, p) => a + Math.max(0, externalDelivered(p) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
     const gov = govSustainment(s);
     return { fleet, aftermarket: after, freight, gov, total: after + freight + gov, tier };
@@ -4854,6 +4874,11 @@
   /** 누적 인도 중 시장에서 이긴 몫 — 자회사에 넘긴 대수를 뺀다. */
   function marketDelivered(s) {
     return Math.max(0, s.stats.delivered - ((s.stats && s.stats.inHouseDelivered) || 0));
+  }
+
+  /** 이 기종을 **그룹 밖에** 인도한 대수. 점유율·이정표·정비 수익이 다 이 눈금을 쓴다. */
+  function externalDelivered(p) {
+    return Math.max(0, (p.delivered || 0) - (p.inHouseDelivered || 0));
   }
 
   /**

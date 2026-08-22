@@ -289,6 +289,13 @@
   }
 
   /** 양쪽 세이브를 지우고 통합 판을 처음부터 연다. */
+  /**
+   * 통합 판을 통째로 다시 시작한다.
+   *
+   * 두 컨트롤러의 "새 게임"이 여기로 온다. 한쪽만 새로 깔면 남은 쪽은 끝난 채로 남아
+   * 그룹 종료 판정이 갓 고른 회사를 그 자리에서 얼리고, 그 회사의 0분기 세이브가
+   * 먼저 있던 자회사 기록을 덮는다 — 두 판 다 잃는다.
+   */
   function startFreshGroup() {
     for (const layer of ['maker', 'airline']) {
       const p = parts[layer];
@@ -385,7 +392,7 @@
     }
   }
 
-  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, groupOver, isTurning, choose, reset, showLayer, boot };
+  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, groupOver, isTurning, newGroup: startFreshGroup, choose, reset, showLayer, boot };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

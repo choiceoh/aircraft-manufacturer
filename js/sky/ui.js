@@ -276,6 +276,12 @@
         break;
       }
       case 'new-game':
+        // 통합 판에서는 계층 하나만 새로 깔 수 없다. 제조사가 끝난 채로 남으면 갓 고른
+        // 회사가 그 자리에서 얼리고, 그 0분기 세이브가 먼저 있던 자회사 기록을 덮는다.
+        if (root.AirlinerShell && root.AirlinerShell.shell.mode === 'group') {
+          root.AirlinerShell.newGroup();
+          break;
+        }
         // 회사 선택으로 돌아간다. 그냥 `newGame()` 을 부르면 `airlines[0]`(대한항공)이
         // 잠자코 배정되어, 다른 회사를 고른 플레이어가 다음 판을 남의 회사로 시작한다.
         chooseCompany();

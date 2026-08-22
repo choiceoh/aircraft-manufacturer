@@ -657,6 +657,12 @@
         break;
 
       case 'new-game':
+        // 통합 판에서는 계층 하나만 새로 깔 수 없다 — 항공사가 굴러가는 채로 남으면
+        // 두 달력이 갈라지고, 새 제조사의 0분기 세이브가 판을 반쪽으로 만든다.
+        if (root.AirlinerShell && root.AirlinerShell.shell.mode === 'group') {
+          root.AirlinerShell.newGroup();
+          break;
+        }
         openCompanyPicker();
         break;
 

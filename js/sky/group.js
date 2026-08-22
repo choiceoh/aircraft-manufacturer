@@ -429,7 +429,11 @@
    * 세는 것보다는 참에 가깝다. 한 번만 돌도록 표식을 남긴다.
    */
   function migrateInHouseCounters(mfg, sky, airlineId) {
-    if (!mfg || !sky || mfg.inHouseMigrated) return;
+    if (!mfg || !sky) return;
+    // 어느 회사가 계열인지는 표식과 무관하게 매번 맞춘다 — 옛 세이브에는 이 값이 없고,
+    // 없으면 계열 선단의 정비 수익이 그대로 그룹 자본에 들어간다.
+    mfg.inHouseAirlineId = airlineId;
+    if (mfg.inHouseMigrated) return;
     mfg.inHouseMigrated = true;
     if (mfg.stats && typeof mfg.stats.inHouseDelivered === 'number') return;
     const own = new Set((mfg.programs || []).map((p) => p.id));
