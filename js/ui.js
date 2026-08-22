@@ -361,6 +361,39 @@
         break;
       }
 
+      case 'start-local-engine': {
+        // 대체 엔진까지 넘긴다 — PS-90A 는 협동체·광동체를 모두 돌리는데 2세대는
+        // 급마다 갈린다(PD-14 · PD-35). 엔진만으로는 어느 쪽인지 정해지지 않는다.
+        const r = E.startLocalEngine(s, btn.dataset.engine, btn.dataset.to);
+        if (act(r)) toast('국산 엔진 개발에 착수했다. 자금과 기간을 채워야 나온다.', 'good');
+        break;
+      }
+
+      case 'fund-local-engine': {
+        const r = E.fundLocalEngine(s, Number(btn.dataset.amount));
+        if (act(r)) toast(`개발비 ${P.money(r.put)} 투입 — ${P.money(r.funded)} / ${P.money(r.cost)}.`, 'good');
+        break;
+      }
+
+      case 'cancel-local-engine': {
+        const proj = s.localEngineProject;
+        if (!proj) break;
+        askConfirm(
+          {
+            title: '국산 엔진 개발 중단',
+            body: `<p>이미 넣은 <b>${money(proj.funded)}</b>는 회수되지 않는다.</p>
+              <p class="muted">기간은 ${proj.quarters}분기 지났다. 다시 시작하면 처음부터다.</p>`,
+            ok: '개발 중단',
+            danger: true,
+          },
+          () => {
+            const r = E.cancelLocalEngine(s);
+            if (act(r)) toast('국산 엔진 개발을 접었다.', 'bad');
+          },
+        );
+        break;
+      }
+
       case 'foreign-cert': {
         const r = E.startForeignCert(s, btn.dataset.id);
         if (act(r)) toast(`서방 형식증명 심사에 착수했다. 비용 ${P.money(r.cost)}.`, 'good');

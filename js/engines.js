@@ -53,6 +53,39 @@
     { id: 'genx', maker: 'GE', name: 'GEnx', segments: ['wide'], eis: 2011, end: null, eff: 10, costMult: 1.12, riskMult: 1.2, devMult: 1.12, timeMult: 1.07, comfort: 3 },
     { id: 'trent1000', maker: '롤스로이스', name: 'Trent 1000', segments: ['wide'], eis: 2011, end: null, eff: 10, costMult: 1.11, riskMult: 1.35, devMult: 1.13, timeMult: 1.08, comfort: 3 },
     { id: 'trentxwb', maker: '롤스로이스', name: 'Trent XWB', segments: ['wide'], eis: 2015, end: null, eff: 12, costMult: 1.14, riskMult: 1.15, devMult: 1.14, timeMult: 1.08, comfort: 3 },
+
+    // ── 국산 엔진 (domestic) ──
+    //
+    // 카탈로그에 있지만 **아무나 못 산다**. `domestic` 이 붙은 엔진은 그 코드를
+    // 해금한 회사에게만 보인다(available/resolve 의 domesticIds). 보잉이 PS-90A 로
+    // 737을 설계하는 일이 없어야 하고, 무엇보다 이 엔진들을 공용 풀에 그냥 풀면
+    // defaultFor 와 문턱 계산이 통째로 흔들린다.
+    //
+    // 값의 성격은 서방 엔진의 거울상이다: 싸고 공급이 안전한 대신 연비가 처지고
+    // 초기 신뢰성이 나쁘다. PS-90A 가 실제로 CFM56 대비 그랬고, 그래서 Tu-204 는
+    // 국내선에서 버티고 수출에서는 밀렸다.
+    { id: 'ps90a', maker: 'UEC', name: 'PS-90A', segments: ['narrow', 'wide'], eis: 1992, end: null, eff: -2, costMult: 0.84, riskMult: 1.12, devMult: 0.98, timeMult: 1.0, comfort: -1, domestic: 'uec' },
+    { id: 'd436', maker: 'UEC', name: 'D-436', segments: ['regional'], eis: 1999, end: null, eff: -1, costMult: 0.86, riskMult: 1.1, devMult: 0.98, timeMult: 1.0, comfort: -1, domestic: 'uec' },
+
+    // ── 국산 2세대 (PD) ──
+    //
+    // 1세대가 "싼 대신 처지는" 거울상이라면, 2세대는 그 거래를 **되사 오는** 쪽이다.
+    // 연비가 서방 동시대와 겨룰 수준으로 올라오고, 대신 1세대의 깊은 원가 우위를
+    // 거의 다 반납한다(0.84 → 0.96). 새 코어라 초기 신뢰성도 다시 나빠진다.
+    //
+    // 원가를 서방 가까이 올려 둔 것은 밸런스이기도 하다. 싸면서 연비까지 좋으면
+    // 해금한 회사에게 **다른 선택지가 없어진다**(CFM56-7B 는 1.01 에 연비 3이다).
+    // 지금은 조금 싸고 조금 낫되 초기 신뢰성이 나쁘고 선호 공급사 감점을 상시로
+    // 문다 — 여전히 양방향이다.
+    //
+    // **연대는 역사가 아니다.** 실제 PD-14 는 2024년 취항이고 PD-35 는 아직도
+    // 개발 중이다. 게임 창(1998~2017) 안에서 닿을 수 있는 목표로 만들려고 앞당겼다 —
+    // 러시아 엔진 개발이 10여 년 빨랐다면 어땠을까 하는 대체 역사다. 그 대신
+    // **1세대를 지나온 회사만** 이 사업을 열 수 있고, 착수 가능 시점도 취항에서
+    // 개발 기간만큼 거슬러 올라간 해로 막아 둔다.
+    { id: 'pd14', maker: 'UEC', name: 'PD-14', segments: ['narrow'], eis: 2012, end: null, eff: 4, costMult: 0.96, riskMult: 1.18, devMult: 1.06, timeMult: 1.03, comfort: 1, domestic: 'uec' },
+    { id: 'pd8', maker: 'UEC', name: 'PD-8', segments: ['regional'], eis: 2013, end: null, eff: 4, costMult: 0.95, riskMult: 1.16, devMult: 1.04, timeMult: 1.02, comfort: 1, domestic: 'uec' },
+    { id: 'pd35', maker: 'UEC', name: 'PD-35', segments: ['wide'], eis: 2014, end: null, eff: 5, costMult: 0.98, riskMult: 1.2, devMult: 1.08, timeMult: 1.05, comfort: 1, domestic: 'uec' },
   ];
 
   const BY_ID = Object.fromEntries(ENGINES.map((e) => [e.id, e]));
@@ -78,14 +111,25 @@
    */
   const EARLY_ACCESS_YEARS = 2;
 
-  function inService(eng, year, earlyIds) {
+  /**
+   * 국산 엔진은 해금한 회사만 쓴다. 공용 풀에 그냥 두면 보잉이 PS-90A 로 737을
+   * 설계하고, defaultFor 가 그걸 집어 기준 밸런스가 통째로 움직인다.
+   */
+  function unlocked(eng, domesticIds) {
+    return !eng.domestic || !!(domesticIds && domesticIds.includes(eng.id));
+  }
+
+  function inService(eng, year, earlyIds, domesticIds) {
+    if (!unlocked(eng, domesticIds)) return false;
     const early = earlyIds && earlyIds.includes(eng.id) ? EARLY_ACCESS_YEARS : 0;
     return year >= eng.eis - early && (eng.end === null || year < eng.end);
   }
 
   /** 그 시점 그 세그먼트에서 채택 가능한 엔진들. */
-  function available(segment, year, earlyIds) {
-    return ENGINES.filter((e) => e.segments.includes(segment) && (!year || inService(e, year, earlyIds)));
+  function available(segment, year, earlyIds, domesticIds) {
+    return ENGINES.filter(
+      (e) => e.segments.includes(segment) && unlocked(e, domesticIds) && (!year || inService(e, year, earlyIds, domesticIds)),
+    );
   }
 
   /**
@@ -93,8 +137,10 @@
    * 세이브에 엔진이 없던 옛 프로그램과 승계 기종이 이 경로를 탄다.
    */
   function defaultFor(segment, year) {
+    // 기본값은 **국산 엔진을 절대 집지 않는다**. 여기서 집히면 엔진을 지정하지 않은
+    // 옛 세이브·승계 기종이 해금도 없이 국산 엔진을 달게 된다.
     const pool = available(segment, year);
-    if (!pool.length) return ENGINES.find((e) => e.segments.includes(segment)) || null;
+    if (!pool.length) return ENGINES.find((e) => e.segments.includes(segment) && !e.domestic) || null;
     const mature = pool.filter((e) => maturityRisk(e, year) === 1);
     const from = mature.length ? mature : pool;
     return from.reduce((a, b) => (b.eff > a.eff ? b : a));
@@ -105,9 +151,14 @@
   }
 
   /** 설계안이 실제로 쓸 엔진을 정한다. 지정이 없거나 그 시점에 못 사면 기본값으로. */
-  function resolve(segment, engineId, year, earlyIds) {
+  function resolve(segment, engineId, year, earlyIds, domesticIds) {
     const e = get(engineId);
-    if (e && e.segments.includes(segment) && (!year || inService(e, year, earlyIds))) return e;
+    // 해금 검사는 **날짜와 별개**다. `!year` 로 날짜를 건너뛰는 경로(연도 없이 부르는
+    // 순수 평가)가 해금까지 함께 건너뛰면, 아무나 evaluate({engine:'ps90a'}) 로
+    // 국산 엔진을 달 수 있게 된다.
+    if (e && e.segments.includes(segment) && unlocked(e, domesticIds) && (!year || inService(e, year, earlyIds, domesticIds))) {
+      return e;
+    }
     return defaultFor(segment, year);
   }
 
@@ -121,5 +172,6 @@
     resolve,
     inService,
     maturityRisk,
+    unlocked,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

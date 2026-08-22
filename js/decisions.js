@@ -135,7 +135,11 @@
 
   /** 인도 실적이 가장 두터운 엔진 공급사 — 독점 계약 제안의 주체. */
   function topEngineMaker(s) {
-    const entries = Object.entries(s.engineRelations || {});
+    // 우리 자회사(국산 엔진 공급사)는 거래처가 아니다. 빼지 않으면 국산화한
+    // 회사가 자기 자회사와 "독점 공급 계약"을 맺고, 자기 돈으로 자기에게
+    // 리베이트를 주면서 다른 공급사 설계에 8% 할증을 무는 계약을 사게 된다.
+    const domestic = new Set(Engines.ENGINES.filter((e) => e.domestic).map((e) => e.maker));
+    const entries = Object.entries(s.engineRelations || {}).filter(([maker]) => !domestic.has(maker));
     if (!entries.length) return null;
     const [maker, units] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
     return { maker, units };
@@ -150,6 +154,12 @@
     return (
       Engines.ENGINES.filter(
         (e) =>
+          // 국산 엔진은 런칭 파트너의 대상이 아니다. 독점 공급 계약과 같은 이유로
+          // 우리 자회사는 제3자 공급사가 아니고, 무엇보다 **분담금으로는 안 열린다**:
+          // 조기 접근은 `engineEarlyAccess` 만 채우는데 국산 엔진의 문은 `localEngines`
+          // 가 잡는다. 그대로 두면 $403M 을 내고 아무것도 못 쓰는 계약이 되고, 열리게
+          // 만들면 $2.9B·14분기짜리 2세대 사업에 옆문이 생긴다.
+          !e.domestic &&
           e.eis > year &&
           e.eis - year <= 3 &&
           !(s.engineEarlyAccess || {})[e.id] &&
@@ -1247,14 +1257,23 @@
         const spec = s.trait.stateOrders;
         const p = stateOrderPick(s);
         const qty = h.rng.int(spec.qty[0], spec.qty[1]);
-        const unitPrice = Math.round(p.listPrice * spec.priceMult);
+        // 국산 엔진을 단 기체는 정부가 더 쳐 준다 — 발주의 명분이 "자국 산업"이라
+        // 국산화율이 곧 값이다. 두 사업(UEC 국산화 · 국가 발주)이 만나는 지점이고,
+        // 국산 엔진이 연비로 치르는 값을 여기서 일부 돌려받는다.
+        const domestic = !!(Engines.get(p.engine) || {}).domestic;
+        const bonus = domestic ? ((s.trait.localEngine || {}).stateBonus || 0) : 0;
+        const rate = spec.priceMult + bonus;
+        const unitPrice = Math.round(p.listPrice * rate);
         h.remember('program', p.id);
         h.remember('qty', qty);
         h.remember('unitPrice', unitPrice);
         h.remember('customer', spec.customer);
         return (
           `산업부가 ${spec.customer}를 통해 <b>${p.name}</b> ${qty}기를 입찰 없이 사겠다고 한다. ` +
-          `대당 ${money(unitPrice)} — 정가의 ${Math.round(spec.priceMult * 100)}%다. ` +
+          `대당 ${money(unitPrice)} — 정가의 ${Math.round(rate * 100)}%다. ` +
+          (domestic
+            ? `국산 엔진을 단 기체라 단가를 ${Math.round(bonus * 100)}%p 더 쳐 줬다. `
+            : '') +
           `"자국 라인을 놀릴 수는 없지 않느냐"는 것이 명분이고, 실제로 라인은 놀고 있다.`
         );
       },
