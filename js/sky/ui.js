@@ -144,6 +144,26 @@
   function isOver(s) {
     if (!s) return true;
     const me = St.airline(s, ui.meId);
+    if (s.turn >= s.totalTurns || !me || !me.alive) return true;
+    // 통합 판에서는 제조사가 무너져도 끝이다 — 그룹 성적이 이미 F 로 정해졌는데
+    // 여기만 계속 굴리면 두 달력이 갈라진다.
+    //
+    // **다만 이미 시작한 넘김은 막지 않는다.** 껍데기는 제조사 → 항공사 순으로 돌리는데,
+    // 제조사 정산이 마지막 분기나 파산에 닿으면 그 자리에서 `groupOver()` 가 참이 된다 —
+    // 여기서 막으면 아직 오지 않은 우리 정산이 통째로 건너뛰어져, 끝난 판마다 자회사의
+    // 마지막 분기가 빠지고 두 세이브가 80 대 79 로 갈라진 채 저장된다. 다시 열면 결과
+    // 화면 대신 달력 불일치 화면이 뜬다. 막아야 하는 것은 **다음** 넘김이다.
+    const Shell = root.AirlinerShell;
+    if (!Shell || Shell.shell.mode !== 'group') return false;
+    if (typeof Shell.isTurning === 'function' && Shell.isTurning()) return false;
+    return !!Shell.groupOver();
+  }
+
+  /** 껍데기가 묻는 종료 여부 — 자기 계층 기준만 답한다(그룹 판정은 껍데기가 모은다). */
+  function ownIsOver() {
+    const s = ui.state;
+    if (!s) return false;
+    const me = St.airline(s, ui.meId);
     return s.turn >= s.totalTurns || !me || !me.alive;
   }
 
@@ -256,6 +276,12 @@
         break;
       }
       case 'new-game':
+        // 통합 판에서는 계층 하나만 새로 깔 수 없다. 제조사가 끝난 채로 남으면 갓 고른
+        // 회사가 그 자리에서 얼리고, 그 0분기 세이브가 먼저 있던 자회사 기록을 덮는다.
+        if (root.AirlinerShell && root.AirlinerShell.shell.mode === 'group') {
+          root.AirlinerShell.newGroup();
+          break;
+        }
         // 회사 선택으로 돌아간다. 그냥 `newGame()` 을 부르면 `airlines[0]`(대한항공)이
         // 잠자코 배정되어, 다른 회사를 고른 플레이어가 다음 판을 남의 회사로 시작한다.
         chooseCompany();
@@ -391,6 +417,9 @@
       const d = JSON.parse(raw);
       if (!d || !d.state || !d.state.airlines) return false;
       St.restoreTypes(d.state, d.keepTypes);
+      // 카탈로그에서 이름이 바뀐 회사를 맞춘다 — 세이브는 회사 기록을 통째로 들고 오므로
+      // 안 맞추면 같은 회사를 두 계층이 다른 이름으로 부른다.
+      St.migrateNames(d.state);
       ui.state = d.state;
       ui.meId = d.meId;
       ui.tab = d.tab || 'overview';
@@ -469,7 +498,7 @@
 
   // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
   if (root.AirlinerShell) {
-    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, save, clearSave, state: () => ui.state, meId: () => ui.meId });
+    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, save, clearSave, isOver: ownIsOver, state: () => ui.state, meId: () => ui.meId });
   } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();

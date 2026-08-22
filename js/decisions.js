@@ -57,8 +57,23 @@
     return ok ? { needEtops } : null;
   }
 
+  /**
+   * 제조사가 **손님으로 대할** 항공사들 — 계열 항공사는 뺀다.
+   *
+   * 통합 모드에서 자회사는 최대 고객이 되기 쉽다(물려받은 선단이 우리 기체다).
+   * 그런데 사건이 만드는 주문은 `inHouse` 표식이 없어 자회사 장부를 지나지 않는다 —
+   * 제조사만 대금을 받고 시장 인도로 세는데 자회사는 내지도 받지도 않는다. 없던 돈과
+   * 없던 기체가 생긴다. 자회사에게 파는 유일한 길은 두 장부를 함께 여는 자체 발주다.
+   *
+   * 공고(`generateRfps`)에서 자회사를 걷어내는 `dropAirlineRfps` 와 같은 규칙이다.
+   */
+  function outsideAirlines(s) {
+    const inHouse = s && s.inHouseAirlineId;
+    return inHouse ? AIRLINES.filter((a) => a.id !== inHouse) : AIRLINES;
+  }
+
   function pickLoyalDeal(s) {
-    for (const a of AIRLINES) {
+    for (const a of outsideAirlines(s)) {
       const fleet = (s.fleets && s.fleets[a.id]) || {};
       const units = Object.values(fleet).reduce((x, y) => x + y, 0);
       if (units < 60) continue;
@@ -97,7 +112,8 @@
     // 발주('state'). 그 계정이 최다가 되면 `AIRLINES.find` 가 빗나가 조용히
     // AIRLINES[0](대한항공)로 떨어지고, 런치 커스터머·에어쇼가 실제 최대 고객이
     // 아니라 명단 첫 줄을 집는다. 순위를 매기기 전에 **실존 항공사만** 남긴다.
-    const isAirline = (id) => AIRLINES.some((a) => a.id === id);
+    const pool = outsideAirlines(s);
+    const isAirline = (id) => pool.some((a) => a.id === id);
     const byUnits = Object.entries(s.fleets || {})
       .filter(([id]) => isAirline(id))
       .map(([id, byProgram]) => ({ id, units: Object.values(byProgram).reduce((a, n) => a + n, 0) }))
@@ -108,7 +124,7 @@
       : Object.entries(s.relations || {})
           .filter(([aid]) => isAirline(aid))
           .sort((a, b) => b[1] - a[1])[0]?.[0];
-    return AIRLINES.find((a) => a.id === id) || AIRLINES[0];
+    return pool.find((a) => a.id === id) || pool[0];
   }
 
   function biggestProgram(s) {
@@ -135,8 +151,9 @@
         return rank(b) - rank(a);
       })[0];
     if (!shown) return null;
-    const guests = AIRLINES.filter((a) => a.bias === shown.segment);
-    const pool = guests.length ? guests : AIRLINES;
+    const outside = outsideAirlines(s);
+    const guests = outside.filter((a) => a.bias === shown.segment);
+    const pool = guests.length ? guests : outside;
     const airline = pool.reduce((a, b) => ((s.relations[b.id] || 0) > (s.relations[a.id] || 0) ? b : a));
     return { program: shown, airline };
   }

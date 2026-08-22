@@ -6109,8 +6109,8 @@ test('이중화 인도는 항공사가 선호하는 공급사의 실적이 된�
       });
       return st;
     };
-    // 에어아스타나(IAE 선호) — 대안 쪽을 달아 나간다. (승계 시딩분이 있으므로 증가분으로 잰다.)
-    const a = mk('kosmo', '에어아스타나');
+    // 아에로플로트(IAE 선호) — 대안 쪽을 달아 나간다. (승계 시딩분이 있으므로 증가분으로 잰다.)
+    const a = mk('kosmo', '아에로플로트');
     const aIae = a.engineRelations.IAE || 0;
     E.endTurn(a);
     assert.strictEqual((a.engineRelations.IAE || 0) - aIae, 4, 'IAE 실적으로 쌓여야 한다');
@@ -9161,3 +9161,176 @@ test('설계 동결은 초도 비행 성공으로 기록된다', () => {
   }
 });
 
+
+test('통합: 자회사에 넘긴 대수는 점유율에도 이사회 목표에도 안 들어간다', () => {
+  // 성적에서만 빼고 이사회 목표는 원값을 읽으면, 자기한테 팔아 목표를 채우고 증자와
+  // 평판을 받아 그 평판으로 다시 성적을 올릴 수 있다. 한 자로 재야 한다.
+  const s = E.newGame(20260822);
+  s.stats.delivered = 100;
+  s.stats.rivalDelivered = 900;
+  const share = E.marketShare(s);
+  assert.ok(Math.abs(share - 0.1) < 1e-9, '이 판의 기준 점유율이 달라졌다');
+
+  s.mandate = {
+    id: 'delivery', name: '인도 확대',
+    target: E.mandateStatus(s).target, text: '인도 목표',
+    issuedTurn: s.turn, dueTurn: s.turn + 20,
+  };
+  const before = E.mandateStatus(s);
+
+  // 자회사에 20기를 넘긴다 — 시장에서 이긴 것이 아니다.
+  s.stats.delivered += 20;
+  s.stats.inHouseDelivered = 20;
+
+  assert.ok(Math.abs(E.marketShare(s) - share) < 1e-9, `자체 인도로 점유율이 ${E.marketShare(s)} 가 됐다`);
+  const after = E.mandateStatus(s);
+  assert.strictEqual(after.now, before.now, `자체 인도로 이사회 목표가 ${before.now} → ${after.now} 로 나아갔다`);
+
+  // 바깥에 판 20기는 그대로 센다 — 규칙이 자체 발주만 걷어내는지 확인한다.
+  s.stats.delivered += 20;
+  assert.ok(E.marketShare(s) > share, '외부 인도가 점유율에 안 실렸다');
+  assert.strictEqual(E.mandateStatus(s).now, before.now + 20, '외부 인도가 목표 진도에 안 실렸다');
+});
+
+test('통합: 점유율 목표도 자체 인도로는 못 채운다', () => {
+  const s = E.newGame(20260823);
+  s.stats.delivered = 100;
+  s.stats.rivalDelivered = 900;
+  s.mandate = null;
+  const def = { id: 'share' };
+  s.mandate = { ...def, name: '점유율 확보', target: 0.15, text: '점유율 15%', issuedTurn: s.turn, dueTurn: s.turn + 20 };
+  const before = E.mandateStatus(s).now;
+
+  s.stats.delivered += 200;
+  s.stats.inHouseDelivered = 200;
+  assert.strictEqual(E.mandateStatus(s).now, before, '자기한테 판 200기로 점유율 목표가 나아갔다');
+});
+
+test('통합: 자체 인도가 이정표 문턱을 삼키지 않는다', () => {
+  // 계수는 올려 놓고 이정표 호출만 건너뛰면 문턱이 조용히 넘어간다 — 자회사에 넘긴
+  // 100호기 뒤에 오는 진짜 첫 외부 인도가 그 순간을 영영 되찾지 못한다.
+  const s = E.newGame(20260824);
+  const p = s.programs.find((x) => !x.legacy && x.phase === 'production') || s.programs[0];
+  p.legacy = false;
+  p.delivered = 96;
+  p.inHouseDelivered = 0;
+  s.stats.delivered = 96;
+  s.stats.inHouseDelivered = 0;
+  s.backlog = [];
+  s.milestones = [];
+  s.lines = [];
+  p.stock = 20;
+  delete s.effects.grounded[p.id];
+
+  const order = (airlineId, qty, inHouse) => ({
+    id: 'ord-t' + s.nextId++, airlineId, airlineName: airlineId, programId: p.id, programName: p.name,
+    qty, remaining: qty, unitPrice: p.listPrice, wonTurn: s.turn, reqEtops: false, gov: false,
+    ...(inHouse ? { inHouse: true } : {}),
+  });
+  const deliver = (o) => {
+    s.backlog = [o];
+    p.stock = 20;
+    E.endTurn(s);
+  };
+
+  // 자회사에 8기 — 100호기 문턱을 지나지만 이정표는 없어야 한다.
+  deliver(order('kosmo', 8, true));
+  assert.strictEqual(p.delivered, 104, '자체 인도가 안 됐다면 이 검사는 아무것도 안 잰다');
+  assert.strictEqual(p.inHouseDelivered, 8);
+  assert.strictEqual(s.milestones.length, 0, `자체 인도로 이정표가 ${s.milestones.length}개 생겼다`);
+
+  // 이제 바깥에 8기 — 바깥 기준으로 96 → 104 라 100호기는 **여기서** 나와야 한다.
+  const rep = s.reputation;
+  deliver(order('hanul', 8, false));
+  const hit = s.milestones.filter((m) => /100호기/.test(m.text));
+  assert.strictEqual(hit.length, 1, `외부 인도가 100호기 이정표를 못 받았다 (${JSON.stringify(s.milestones.map((m) => m.text))})`);
+  assert.ok(s.reputation > rep, '이정표 평판이 안 올랐다');
+});
+
+test('통합: 계열 선단은 정비·화물·개조 키트 수익을 만들지 않는다', () => {
+  // 우리가 우리 기체를 손보고 우리에게 청구한다 — 밖에서 아무 일도 없었는데 그룹
+  // 자본이 매 분기 늘면, 자회사에 넘길수록 성적이 오르는 길이 열린다.
+  const base = E.newGame(20260825);
+  const mine = E.newGame(20260825);
+  const bp = base.programs[0];
+  const mp = mine.programs[0];
+  bp.freighter = true;
+  mp.freighter = true;
+
+  // 같은 대수인데 한쪽은 그 전부가 자회사 몫이다.
+  const extra = 60;
+  for (const [s, p, inHouse] of [[base, bp, 0], [mine, mp, extra]]) {
+    p.delivered += extra;
+    s.stats.delivered += extra;
+    if (inHouse) {
+      p.inHouseDelivered = inHouse;
+      s.stats.inHouseDelivered = inHouse;
+    }
+  }
+
+  const svc = (s) => E.serviceIncome(s).total;
+  const before = svc(base);
+  const after = svc(mine);
+  assert.ok(before > 0, '기준 판의 서비스 수익이 0 이면 이 검사는 아무것도 안 잰다');
+  assert.ok(after < before, `계열 ${extra}기가 서비스 수익을 그대로 벌었다 (${after} vs ${before})`);
+
+  // 자회사 몫을 뺀 판과, 애초에 그만큼 덜 판 판이 같아야 한다.
+  const none = E.newGame(20260825);
+  none.programs[0].freighter = true;
+  assert.ok(Math.abs(svc(none) - after) < 1e-6, `계열분을 뺀 값이 안 판 값과 다르다 (${after} vs ${svc(none)})`);
+});
+
+test('통합: 경력 순위표의 우리 인도 대수가 점유율과 같은 자를 쓴다', () => {
+  const s = E.newGame(20260826);
+  s.stats.delivered = 200;
+  s.stats.rivalDelivered = 800;
+  s.stats.inHouseDelivered = 50;
+  const us = E.makerStandings(s).find((r) => r.us);
+  assert.strictEqual(us.delivered, 150, `순위표가 자체 인도 50기를 시장 실적으로 셌다 (${us.delivered})`);
+  assert.ok(
+    Math.abs(us.share - E.marketShare(s)) < 1e-6,
+    `순위표 점유율 ${us.share} 과 점유율 카드 ${E.marketShare(s)} 가 어긋난다`,
+  );
+});
+
+test('통합: 사건이 계열 항공사를 손님으로 고르지 않는다', () => {
+  // 사건이 만드는 주문에는 `inHouse` 표식이 없어 자회사 장부를 지나지 않는다 — 제조사만
+  // 대금을 받고 시장 인도로 세는데 자회사는 내지도 받지도 않는다. 없던 돈과 없던 기체다.
+  const target = Data.AIRLINES[3];
+  const setup = () => {
+    const s = E.newGame(20260827);
+    // 이 회사를 압도적 최대 고객으로 만든다 — `topCustomer` 가 여기로 떨어지게.
+    const p = s.programs.find((x) => x.phase === 'production' && x.segment === target.bias) || s.programs[0];
+    s.fleets = { [target.id]: { [p.id]: 400 } };
+    s.relations = {};
+    for (const a of Data.AIRLINES) s.relations[a.id] = 40;
+    s.relations[target.id] = 95;
+    return s;
+  };
+  // 에어쇼의 '주요 고객만 따로 만난다' — `topCustomer` 를 그대로 쓰는 자리다.
+  const dec = Dec.DECISIONS.find((d) => d.id === 'airshow');
+  const opt = dec.options.find((o) => o.id === 'targeted');
+  const run = (s) => {
+    const seen = [];
+    opt.apply(s, {
+      expense: () => {},
+      relation: (id) => seen.push(id),
+      order: (o) => {
+        seen.push(o.airlineId);
+        return o;
+      },
+    });
+    return seen;
+  };
+
+  assert.ok(run(setup()).includes(target.id), `${target.name} 이 안 골리면 이 검사는 아무것도 안 잰다`);
+
+  const s2 = setup();
+  s2.inHouseAirlineId = target.id;
+  const after = run(s2);
+  assert.ok(!after.includes(target.id), `계열 항공사(${target.name})를 손님으로 골랐다`);
+  assert.ok(
+    after.every((id) => Data.AIRLINES.some((a) => a.id === id)),
+    `실존 항공사가 아닌 것을 골랐다 — ${JSON.stringify(after)}`,
+  );
+});

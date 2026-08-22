@@ -589,13 +589,17 @@
   }
 
   /**
-   * 실명 교체(2026) 이전 세이브가 쓰던 가상 표기 — 열려 있는 결정 사건의 본문은
-   * memo 에 이름을 안 남기는 사건도 있어, id 로 못 찾고 이 사전으로 훑는다.
+   * 옛 세이브가 쓰던 표기 — 열려 있는 결정 사건의 본문은 memo 에 이름을 안 남기는
+   * 사건도 있어, id 로 못 찾고 이 사전으로 훑는다.
+   *
+   * **한 회사에 옛 이름이 여럿일 수 있다.** `kosmo` 는 가상 표기(코스모항공) → 에어아스타나
+   * → 아에로플로트로 두 번 바뀌었다. 하나만 두면 바로 직전 이름으로 저장된 판이
+   * 제목엔 옛 이름, memo 엔 새 이름으로 열려 서로 다른 회사를 말한다.
    */
   const LEGACY_AIRLINE_NAMES = {
-    hanul: '한울항공', carta: '카르타 에어', nordic: '노르딕윙스', panamer: '판아메르 항공',
-    asialink: '아시아링크', albion: '알비온 항공', meridian: '메리디안 항공', sahara: '사하라 에어',
-    oceanic: '오세아닉', kosmo: '코스모항공', lumen: '루멘 에어라인', vertex: '버텍스 제트',
+    hanul: ['한울항공'], carta: ['카르타 에어'], nordic: ['노르딕윙스'], panamer: ['판아메르 항공'],
+    asialink: ['아시아링크'], albion: ['알비온 항공'], meridian: ['메리디안 항공'], sahara: ['사하라 에어'],
+    oceanic: ['오세아닉'], kosmo: ['코스모항공', '에어아스타나'], lumen: ['루멘 에어라인'], vertex: ['버텍스 제트'],
   };
 
   function ensureShape(s) {
@@ -697,12 +701,12 @@
     const d = s.decision;
     if (d && d.memo && d.memo.airline) {
       const a = AIRLINES.find((x) => x.id === d.memo.airline);
-      const old = LEGACY_AIRLINE_NAMES[d.memo.airline];
-      // 어느 기체의 이름이 그 옛 표기를 품고 있으면 본문 치환을 통째로 건너뛴다 —
-      // 문자열만으로는 항공사와 기체를 구분할 수 없고, 플레이어가 지은 이름을
-      // 덮어쓰는 쪽이 옛 항공사 이름이 카드에 한 번 더 보이는 쪽보다 나쁘다.
-      const collides = s.programs.some((p) => typeof p.name === 'string' && old && p.name.includes(old));
-      if (a && old && a.name !== old && !collides) {
+      for (const old of LEGACY_AIRLINE_NAMES[d.memo.airline] || []) {
+        if (!a || !old || a.name === old) continue;
+        // 어느 기체의 이름이 그 옛 표기를 품고 있으면 본문 치환을 통째로 건너뛴다 —
+        // 문자열만으로는 항공사와 기체를 구분할 수 없고, 플레이어가 지은 이름을
+        // 덮어쓰는 쪽이 옛 항공사 이름이 카드에 한 번 더 보이는 쪽보다 나쁘다.
+        if (s.programs.some((p) => typeof p.name === 'string' && p.name.includes(old))) continue;
         if (typeof d.text === 'string' && d.text.includes(old)) d.text = d.text.split(old).join(a.name);
         if (typeof d.name === 'string' && d.name.includes(old)) d.name = d.name.split(old).join(a.name);
       }
@@ -1051,19 +1055,32 @@
    * 값을 매기는 자리가 여기 하나여야 한다 — 부르는 쪽이 착수금 비율을 따로 알고
    * 있으면, 엔진의 상수를 바꾼 날 화면의 견적과 실제 청구액이 갈린다.
    */
+  /**
+   * 자체 발주 단가 — **원가다. 정가가 아니다.**
+   *
+   * 처음에는 정가로 넘겼다. "깎아도 한 주머니에서 다른 주머니로 옮길 뿐"이라고 생각했는데
+   * 틀렸다. 정가로 넘기면 제조사가 마진을 이익으로 잡고 항공사는 그 값을 자산으로
+   * 자본화한다 — 그룹 밖에서는 아무 일도 없었는데 대당 32.6M 이 생긴다. 자회사에
+   * 계속 대주는 것만으로 그룹 자기자본이 불어났다.
+   *
+   * 원가로 넘기면 만들 자리도 없다. 연결 회계가 내부거래 이익을 지우는 것과 같은 뜻이고,
+   * 규칙도 단순해진다 — **자회사에 대주는 값은 만드는 값이지 파는 값이 아니다.**
+   */
+  const inHouseUnitPrice = (p) => p.unitCostBase;
+
   function inHouseQuote(s, opts) {
     const o = opts || {};
     const qty = o.qty;
     const p = s.programs.find((x) => x.id === o.programId);
     if (!p) return null;
     const n = Number.isInteger(qty) && qty > 0 ? qty : 1;
-    const total = n * p.listPrice;
+    const total = n * inHouseUnitPrice(p);
     const deposit = Math.round(total * CONFIG.depositRate);
     return {
       programId: p.id,
       name: p.name,
       qty: n,
-      unitPrice: p.listPrice,
+      unitPrice: inHouseUnitPrice(p),
       total,
       deposit,
       balance: total - deposit,
@@ -1108,6 +1125,58 @@
     return qty;
   }
 
+  /**
+   * 아직 안 나간 자체 발주를 **원가 이전**으로 되맞춘다 — 옛 세이브 한 번만.
+   *
+   * 자체 발주를 정가로 넘기던 시절에 넣은 주문은 수주 장부에 그 정가가 박혀 있다.
+   * 그대로 두면 인도 때 재고는 `unitCostBase` 로 빠지는데 자회사는 정가로 자본화해,
+   * 이전 한 번마다 마진만큼의 그룹 자본이 생긴다 — 지금 규칙이 막으려는 바로 그것이다.
+   *
+   * **이미 나간 대수는 되돌리지 않는다.** 그건 지난 일이고 잔금도 그 값으로 치렀다.
+   * 남은 대수만 원가로 되맞추고, 그만큼 더 받아 둔 착수금을 돌려줄 몫으로 적어 둔다
+   * (`inHouseRefund`) — 실제로 자회사에 넘기는 것은 글루의 몫이다. 여기서 두 장부를
+   * 다 만지면 엔진이 항공사 계층을 알게 된다.
+   *
+   * `unitCostBase` 는 사건과 개량으로 판 중에 움직인다. 그래서 **한 번만** 돈다 —
+   * 매번 돌면 이미 합의된 값이 원가를 따라 조용히 다시 매겨진다.
+   *
+   * @returns 되돌려 줄 착수금 합계($M).
+   */
+  function rebaseInHouseOrders(s) {
+    if (!s || s.inHousePriceRebased) return 0;
+    s.inHousePriceRebased = true;
+    let back = 0;
+    for (const o of s.backlog || []) {
+      if (!o.inHouse || o.remaining <= 0) continue;
+      const p = s.programs.find((x) => x.id === o.programId);
+      if (!p) continue;
+      const base = inHouseUnitPrice(p);
+      if (!(o.unitPrice > base)) continue;
+      const rate = typeof o.depositRate === 'number' ? o.depositRate : CONFIG.depositRate;
+      back += o.remaining * (o.unitPrice - base) * rate;
+      o.unitPrice = base;
+    }
+    if (back > 0) {
+      s.cash -= back;
+      s.inHouseRefund = (s.inHouseRefund || 0) + back;
+    }
+    return back;
+  }
+
+  /**
+   * 자체 인도 계수를 세기 시작하면서 **이미 발령된 이사회 목표**가 어려워진다.
+   *
+   * 목표값은 옛 계수(자체 인도 포함)로 잡혔는데 진도는 이제 그것을 뺀다 — 45기 중
+   * 20기가 계열이던 판이 목표 100기를 받았다면, 남은 몫이 55기에서 75기로 늘어난다.
+   * 세이브를 열었다는 이유만으로 계약이 바뀌면 안 된다. 진도가 내려간 만큼 목표도 내린다.
+   */
+  function rebaseMandate(s, deliveredDrop, shareDrop) {
+    const m = s && s.mandate;
+    if (!m) return;
+    if (m.id === 'delivery' && deliveredDrop > 0) m.target = Math.max(0, Math.round(m.target - deliveredDrop));
+    if (m.id === 'share' && shareDrop > 0) m.target = Math.max(0, Math.round((m.target - shareDrop) * 1000) / 1000);
+  }
+
   function placeInHouseOrder(s, opts) {
     const o = opts || {};
     const qty = o.qty;
@@ -1118,7 +1187,10 @@
     const airline = AIRLINES.find((a) => a.id === o.airlineId);
     if (!airline) return { ok: false, error: '없는 항공사입니다.' };
 
-    const unitPrice = p.listPrice;
+    // 어느 회사가 우리 자회사인지 새겨 둔다 — 계열 선단의 정비 수익을 걷어내려면
+    // 엔진도 그 id 를 알아야 한다(선단은 항공사별로만 쌓인다).
+    s.inHouseAirlineId = airline.id;
+    const unitPrice = inHouseUnitPrice(p);
     const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
     s.cash += deposit;
     s.pending.revenue += deposit;
@@ -1512,7 +1584,12 @@
     if (!dead.length) return;
     let refund = 0;
     for (const o of dead) {
-      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+      const one = o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+      refund += one;
+      // 계열 항공사에 물어 주는 돈은 그룹 밖으로 나가지 않는다 — 받는 쪽이 우리
+      // 자회사다. 여기서 적어 두지 않으면 제조사에서는 나갔는데 항공사에는 안 들어와
+      // 연결 장부에서 그만큼이 증발한다(`AirlinerSkyGroup` 이 이 값을 걷어 간다).
+      if (o.inHouse) s.inHouseRefund = (s.inHouseRefund || 0) + one;
       s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - ORDER_BREACH_RELATION_PENALTY, 0, 100);
     }
     refund = Math.round(refund);
@@ -1553,6 +1630,7 @@
       const lastMoved = Math.max(won, moved);
       if (!Number.isFinite(lastMoved) || s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
       const refund = Math.round(o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT);
+      if (o.inHouse) s.inHouseRefund = (s.inHouseRefund || 0) + refund;
       s.cash -= refund;
       // 이 분기 리포트에 직접 적는다(chargeLatePenalties 와 같은 이유). endTurn 은
       // 리포트를 만들며 pending 을 이미 비웠으므로, pending 에 넣으면 현금은 지금
@@ -1720,8 +1798,8 @@
     }
     const n = Math.min(qty, p.stock);
     const revenue = Math.round(n * p.listPrice * 0.68);
-    const progBefore = p.delivered;
-    const companyBefore = s.stats.delivered;
+    const progBefore = externalDelivered(p);
+    const companyBefore = marketDelivered(s);
     p.stock -= n;
     p.delivered += n;
     // 처분도 delivered 를 올리므로 마일스톤 문턱을 지난다. 여기서 안 세면
@@ -3011,12 +3089,22 @@
     }
   }
 
-  function runDeliveries(s, report) {
-    // 약속한 주문을 먼저 인도한다. 같은 우선순위면 오래된 수주부터.
-    // 우선 인도는 공짜가 아니다 — 다른 주문을 뒤로 밀어 그쪽 약속을 깨뜨린다.
-    const orders = s.backlog
+  /**
+   * 인도 차례 — 약속한 주문을 먼저, 같은 우선순위면 오래된 수주부터.
+   * 우선 인도는 공짜가 아니다 — 다른 주문을 뒤로 밀어 그쪽 약속을 깨뜨린다.
+   *
+   * 함수로 빼 둔 이유는 **화면도 같은 차례를 봐야 하기 때문**이다. 통합 모드의 모회사
+   * 카드는 자체 발주가 재고로 덮이는지 알려 주는데, 그러려면 앞에 몇 대가 서 있는지를
+   * 인도가 쓰는 것과 같은 순서로 세어야 한다. 정렬을 두 군데 적어 두면 한쪽만 바뀐다.
+   */
+  function deliveryQueue(s) {
+    return s.backlog
       .filter((o) => o.remaining > 0)
       .sort((a, b) => pledgeOf(b).priority - pledgeOf(a).priority || a.wonTurn - b.wonTurn);
+  }
+
+  function runDeliveries(s, report) {
+    const orders = deliveryQueue(s);
     for (const o of orders) {
       const p = s.programs.find((x) => x.id === o.programId);
       if (!p || p.stock <= 0) continue;
@@ -3055,8 +3143,11 @@
         if (home === '북미' || home === '서유럽') duty = Math.round(n * o.unitPrice * TRADE_TARIFF_RATE);
       }
       const revenue = now - royalty - duty;
-      const progBefore = p.delivered;
-      const companyBefore = s.stats.delivered;
+      // **바깥에 판 대수로 센다.** 자체 인도는 이정표가 아닌데, 계수는 올려 놓고
+      // 호출만 건너뛰면 문턱이 조용히 넘어간다 — 자회사에 넘긴 100호기 뒤에 오는
+      // 진짜 첫 외부 인도가 그 순간을 영영 되찾지 못한다.
+      const progBefore = externalDelivered(p);
+      const companyBefore = marketDelivered(s);
       o.remaining -= n;
       p.stock -= n;
       p.delivered += n;
@@ -3064,6 +3155,14 @@
       // 자체 항공사로 나간 기체는 리포트에 따로 적는다. 껍데기가 이 목록을 보고
       // 항공사 계층에 실제 기재를 세운다 — 엔진은 항공사 계층을 알지 못한다.
       if (o.inHouse) {
+        // 자기 자회사에 넘긴 대수는 시장에서 이긴 것이 아니다. 세면 자기한테 팔아
+        // 점유율과 인도 점수를 만들 수 있다(통합 모드의 `operatingScore` 가 뺀다).
+        //
+        // **프로그램별로도 센다.** 인도 점수는 급별 가중(리저널 0.7 · 협동체 1.2 ·
+        // 광동체 3.2)이라, 총계만 두고 협동체로 가정해 빼면 광동체를 자회사에 넘길수록
+        // 덜 빼진다 — 가중이 큰 급일수록 자기한테 파는 값이 커진다.
+        s.stats.inHouseDelivered = (s.stats.inHouseDelivered || 0) + n;
+        p.inHouseDelivered = (p.inHouseDelivered || 0) + n;
         if (!report.inHouse) report.inHouse = [];
         // 항공사가 낼 잔금은 **총액 기준**이다 — 금융 조건·로열티·관세는 제조사 쪽
         // 사정이지 계열 항공사가 치르는 값이 아니다. 착수금과 합해 정가가 된다.
@@ -3076,6 +3175,9 @@
           balance: n * o.unitPrice * (1 - rate),
         });
       }
+      // **자체 인도는 이정표도 아니다.** 첫 인도·100/300/500기 문턱이 평판을 올린다.
+      // 따로 막지 않는다 — 바깥 인도 대수로 세므로 자체 인도의 증분이 0 이고,
+      // 이정표 함수가 스스로 돌아 나간다. 규칙이 조건문이 아니라 눈금에 들어 있다.
       recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
       // 엔진 공급사 관계 — 그 공급사 엔진을 단 인도가 쌓일수록 협상 테이블이 생긴다.
       // 이중화 기체는 항공사가 선호하는 쪽 엔진을 달아 나간다 — A330 이 그랬다.
@@ -3110,7 +3212,9 @@
       }
 
       if (o.remaining === 0) {
-        adjustReputation(s, 1);
+        // **자기 자회사 주문을 다 채운 것은 평판이 아니다.** 주면 같은 매입을 1기짜리
+        // 주문 여러 건으로 쪼개는 것만으로 대당 평판 1점(그룹 점수 12점)이 나온다.
+        if (!o.inHouse) adjustReputation(s, 1);
         // 취소분을 빼야 실제 인도량이다. o.qty 를 쓰면 10기 중 5기가 취소되고 5기만
         // 인도돼도 "10기 인도 완료"로 기록돼 경영 기록이 실적과 어긋난다.
         const shipped = o.qty - (o.cancelled || 0);
@@ -3146,7 +3250,9 @@
   }
 
   function recordDeliveryMilestones(s, p, o, progBefore, companyBefore) {
-    const n = p.delivered - progBefore;
+    // 인자로 받는 두 값도, 여기서 재는 값도 **바깥에 판 대수**다(`externalDelivered`).
+    const progAfter = externalDelivered(p);
+    const n = progAfter - progBefore;
     if (n <= 0) return;
     if (!p.legacy) {
       if (progBefore === 0) {
@@ -3167,7 +3273,7 @@
         addMilestone(s, `회사 역사상 첫 광동체 인도 — ${p.name}이 대양 노선에 선다.`, 2);
       }
       for (const m of PROGRAM_MILESTONES) {
-        if (progBefore < m.at && p.delivered >= m.at) {
+        if (progBefore < m.at && progAfter >= m.at) {
           addMilestone(s, `${p.name} ${m.at}호기 라인오프 — 공장 앞마당에서 기념식이 열렸다.`, m.rep);
         }
       }
@@ -3527,9 +3633,10 @@
     // 차이를 '기타'로 남겨 순위표 합계가 점유율 계산과 어긋나지 않게 한다.
     const allocated = rows.reduce((a, r) => a + r.delivered, 0);
     const unattributed = Math.max(0, s.stats.rivalDelivered - allocated);
-    // 군용 인도는 민항 순위 밖이다 — 점유율 계산(marketShare)과 같은 차감을
-    // 여기도 해야 순위표의 점유율이 점유율 카드와 어긋나지 않는다.
-    rows.push({ id: 'us', name: s.company, delivered: Math.max(0, s.stats.delivered - govDelivered(s)), us: true });
+    // 군용 인도도 자회사 인도도 민항 순위 밖이다 — 점유율 계산(marketShare)과 **같은
+    // 분자**를 써야 순위표가 점유율 카드·그룹 성적과 다른 말을 하지 않는다. 여기만
+    // 원값을 쓰면 자기한테 판 기체가 경력 순위에서는 시장에서 이긴 것으로 남는다.
+    rows.push({ id: 'us', name: s.company, delivered: Math.max(0, marketDelivered(s) - govDelivered(s)), us: true });
     if (unattributed > 0) rows.push({ id: 'other', name: '집계 이전 인도분', delivered: unattributed, us: false });
 
     const total = rows.reduce((a, r) => a + r.delivered, 0) || 1;
@@ -3810,7 +3917,8 @@
 
         // 이미 하늘에 있는 기체에 키트를 판다. endTurn 안에서 완성되므로
         // pending 이 아니라 이번 분기 리포트에 직접 적는다.
-        const kits = Math.round((p.delivered || 0) * p.listPrice * RETROFIT_KIT_RATE);
+        // 계열 선단에 파는 개조 키트는 왼손이 오른손에 파는 것이다.
+        const kits = Math.round(externalDelivered(p) * p.listPrice * RETROFIT_KIT_RATE);
         if (kits > 0) {
           s.cash += kits;
           report.revenue += kits;
@@ -3827,7 +3935,7 @@
           s,
           'good',
           `${p.name} ${spec.name} 완성 — ${spec.desc.split(' — ')[1] || spec.desc}.` +
-            (kits > 0 ? ` 기존 선단 ${num(p.delivered)}기 개조 키트로 ${fmtMoney(kits)}을 벌었고, 운용사 ${operators.length}곳의 신뢰가 올랐다.` : ''),
+            (kits > 0 ? ` 기존 선단 ${num(externalDelivered(p))}기 개조 키트로 ${fmtMoney(kits)}을 벌었고, 운용사 ${operators.length}곳의 신뢰가 올랐다.` : ''),
         );
       }
     }
@@ -3851,7 +3959,8 @@
         pushLog(s, 'good', `${p.name} 화물형 개조 사업이 문을 열었다.`);
       }
       // 군용 특수기는 화물기로 개조된 것이 아니다 — 그 인도분은 지원 수익이 맡는다.
-      if (p.freighter) freight += Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit;
+      // 계열 기체의 화물 개조도 같다 — 그룹 안에서 오간 돈은 그룹 자본을 못 늘린다.
+      if (p.freighter) freight += Math.max(0, externalDelivered(p) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit;
     }
     // 여객이 얼어붙어도 화물은 돈다. 침체기의 버팀목이 화물 사업의 존재 이유다.
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
@@ -3908,8 +4017,12 @@
 
   function aftermarketBase(s) {
     // 4발은 엔진 정비 계약이 두 벌 더다 — 항공사에는 짐이지만 제조사에는 수익이다.
+    // 자회사에 넘긴 기체의 정비는 그룹 안에서 도는 일이다 — 우리가 우리 기체를
+    // 손보고 우리에게 청구한다. 여기서 받으면 밖에서 아무 일도 없었는데 그룹 자본이
+    // 매 분기 늘어난다(광동체 60기면 10년에 1,656M). 통합 모드가 아니면 이 계수가
+    // 0 이라 아무것도 달라지지 않는다.
     let base = s.programs.reduce(
-      (a, p) => a + (p.delivered || 0) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1),
+      (a, p) => a + externalDelivered(p) * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1),
       0,
     );
     // 핵심 고객은 정비를 우리에게 전속으로 맡긴다 — 단골의 보상은 입찰 점수가
@@ -3917,7 +4030,9 @@
     for (const [airlineId, byProgram] of Object.entries(s.fleets || {})) {
       // 군 선단은 항공사 단골이 아니다 — 군의 정비 계약 경제는 지원 수익 단가에
       // 이미 들어 있어, 여기서 또 받으면 이중 계상이다.
-      if (airlineId === 'gov' || loyaltyTier(s, airlineId) < 2) continue;
+      // 자회사는 단골이 아니라 우리다 — 계열 선단의 전속 정비는 그룹 밖에서 오는 돈이
+      // 아니다. 군 선단은 지원 수익 단가에 이미 들어 있어 여기서 또 받으면 이중 계상이다.
+      if (airlineId === 'gov' || airlineId === s.inHouseAirlineId || loyaltyTier(s, airlineId) < 2) continue;
       for (const [pid, n] of Object.entries(byProgram)) {
         const p = s.programs.find((x) => x.id === pid);
         if (p) base += n * (AFTERMARKET_PER_UNIT_BY_SEG[p.segment] ?? AFTERMARKET_PER_UNIT) * (p.engines === 4 ? 1.25 : 1) * LOYAL_SERVICE_BONUS;
@@ -3929,11 +4044,13 @@
   /** 화면이 읽는 서비스 수익 내역. */
   function serviceIncome(s) {
     const tier = AFTERMARKET_TIERS[s.aftermarket] || AFTERMARKET_TIERS.none;
-    const fleet = s.programs.reduce((a, p) => a + (p.delivered || 0), 0);
+    // 카드가 설명하는 것은 **이 수익**이다 — 수익에서 뺀 계열 선단을 대수에만 남겨 두면
+    // "선단 300기인데 정비 수익은 240기어치"라는 설명 없는 숫자가 된다.
+    const fleet = s.programs.reduce((a, p) => a + externalDelivered(p), 0);
     const after = aftermarketBase(s) * tier.mult;
     let freight = s.programs
       .filter((p) => p.freighter)
-      .reduce((a, p) => a + Math.max(0, (p.delivered || 0) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit, 0);
+      .reduce((a, p) => a + Math.max(0, externalDelivered(p) - govUnitsOf(s, p.id)) * FREIGHTER.perUnit, 0);
     if (s.effects.demandSlumpQuarters > 0) freight *= FREIGHTER.slumpMult;
     const gov = govSustainment(s);
     return { fleet, aftermarket: after, freight, gov, total: after + freight + gov, tier };
@@ -4030,8 +4147,10 @@
     {
       id: 'delivery',
       name: '인도 확대',
-      target: (s) => Math.round(s.stats.delivered + 55 + s.turn * 0.8),
-      progress: (s) => s.stats.delivered,
+      // 자회사에 넘긴 대수는 목표에도 진도에도 안 들어간다 — 자기한테 팔아 이사회
+      // 목표를 채우면 증자와 평판이 공짜로 나온다. 기준선과 진도를 같은 자로 잰다.
+      target: (s) => Math.round(marketDelivered(s) + 55 + s.turn * 0.8),
+      progress: (s) => marketDelivered(s),
       describe: (t) => `20년 누적 인도 ${t}기 달성`,
       unit: '기',
     },
@@ -4787,12 +4906,31 @@
     return Object.values((s.fleets || {}).gov || {}).reduce((a, b) => a + b, 0);
   }
 
+  /**
+   * 시장에서 이긴 몫만 센다.
+   *
+   * 군용 인도는 민항 시장 밖이다 — 경쟁사 물량이 민항 카탈로그에서만 나오므로,
+   * 특수기까지 세면 점유율·순위·이사회 목표가 군 계약만으로 공짜로 오른다.
+   *
+   * **자회사에 넘긴 대수도 같은 이유로 뺀다.** 시장에서 이긴 것이 아니라 왼손이 오른손에
+   * 준 것이다. 한 군데서 빼야 한다 — 성적에서만 빼고 이사회 목표는 원값을 읽으면,
+   * 자기한테 팔아 목표를 채우고 증자와 평판을 받아 그 평판으로 성적을 올릴 수 있다.
+   * 통합 모드가 아니면 이 계수가 0 이라 아무것도 달라지지 않는다.
+   */
   function marketShare(s) {
-    // 군용 인도는 민항 시장 밖이다 — 경쟁사 물량이 민항 카탈로그에서만 나오므로,
-    // 특수기까지 세면 점유율·순위·이사회 목표가 군 계약만으로 공짜로 오른다.
-    const mine = Math.max(0, s.stats.delivered - govDelivered(s));
-    const total = mine + s.stats.rivalDelivered;
-    return total > 0 ? mine / total : 0;
+    const mine = marketDelivered(s) - govDelivered(s);
+    const total = Math.max(0, mine) + s.stats.rivalDelivered;
+    return total > 0 ? Math.max(0, mine) / total : 0;
+  }
+
+  /** 누적 인도 중 시장에서 이긴 몫 — 자회사에 넘긴 대수를 뺀다. */
+  function marketDelivered(s) {
+    return Math.max(0, s.stats.delivered - ((s.stats && s.stats.inHouseDelivered) || 0));
+  }
+
+  /** 이 기종을 **그룹 밖에** 인도한 대수. 점유율·이정표·정비 수익이 다 이 눈금을 쓴다. */
+  function externalDelivered(p) {
+    return Math.max(0, (p.delivered || 0) - (p.inHouseDelivered || 0));
   }
 
   /**
@@ -4910,6 +5048,29 @@
 
   function deliveredScore(s) {
     return s.programs.reduce((a, p) => a + (p.delivered || 0) * (DELIVERED_SCORE_WEIGHT[p.segment] ?? 1.2), 0);
+  }
+
+  /**
+   * 순자산 항목을 뺀 제조사 점수 — 통합 모드 전용.
+   *
+   * 그룹 성적은 자본을 **연결 기준으로 한 번만** 센다. 제조사 점수의 순자산 항목과
+   * 항공사 점수의 자본 성장 항목을 그대로 더하면 같은 돈이 두 번 세어지고, 게다가
+   * 계열 간 값을 어떻게 매기느냐로 두 항목의 비중이 갈린다 — 이전가격으로 성적을
+   * 만들 길이 열린다. 여기 남는 것은 계열 간 거래가 닿지 않는 항목뿐이다.
+   */
+  function operatingScore(s) {
+    const ownership = 1 - (s.equityDilution || 0);
+    // 자회사에 넘긴 대수는 `marketShare` 가 이미 뺀다 — 왼손이 오른손에 준 것이지
+    // 시장에서 이긴 것이 아니다.
+    const share = marketShare(s);
+    // 급별 가중이 다르므로 프로그램마다 그 프로그램의 가중으로 뺀다.
+    const delivered = s.programs.reduce(
+      (acc, p) =>
+        acc +
+        Math.max(0, (p.delivered || 0) - (p.inHouseDelivered || 0)) * (DELIVERED_SCORE_WEIGHT[p.segment] ?? 1.2),
+      0,
+    );
+    return Math.round((delivered + share * 4000 + s.reputation * 12) * ownership * (s.scoreMult || 1));
   }
 
   function finalScore(s, bankrupt) {
@@ -5096,8 +5257,12 @@
 
   root.AirlinerEngine = {
     newGame,
+    deliveryQueue,
+    rebaseInHouseOrders,
+    rebaseMandate,
     placeInHouseOrder,
     inHouseQuote,
+    operatingScore,
     dropAirlineRfps,
     cancelInHouseOrders,
     PLAYABLE_COMPANIES,

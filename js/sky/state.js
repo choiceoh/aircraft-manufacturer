@@ -766,6 +766,28 @@
     return s;
   }
 
+  /**
+   * 불러온 판의 회사 이름을 카탈로그에 맞춘다.
+   *
+   * 세이브는 `airlines` 를 통째로 들고 오므로, 카탈로그에서 이름이 바뀌어도 옛 판은 옛
+   * 이름을 계속 쓴다. 통합 모드에서는 이게 그냥 낡은 표기가 아니라 **한 회사가 두 이름을
+   * 갖는 일**이다 — 제조사 계층은 `Data.AIRLINES` 를 매번 새로 읽으므로 같은 id 를
+   * 아에로플로트라 부르는데 항공사 화면은 에어아스타나라 부른다. 발주도 결정도 그 id 로
+   * 오간다.
+   *
+   * **거점(`home`)은 일부러 안 건드린다.** 그건 표기가 아니라 판의 상태다 — 슬롯도
+   * 노선도 홈 할인도 전부 그 도시에 걸려 있어서, 지금 옮기면 굴러가던 노선망이 남의
+   * 공항에 남는다. 옛 판의 아에로플로트가 타슈켄트에서 뜨는 것이 이상하긴 해도, 돌아가던
+   * 회사를 부수는 것보다는 낫다. 새로 시작하는 판은 처음부터 모스크바다.
+   */
+  function migrateNames(s) {
+    for (const a of s.airlines || []) {
+      const seed = Data.AIRLINES.find((x) => x.id === a.id);
+      if (seed && seed.name && a.name !== seed.name) a.name = seed.name;
+    }
+    return s;
+  }
+
   /** 갓 나온 기체를 기단에 세운다. 타이머 인도와 제조사 인도가 이 한 곳을 쓴다. */
   function pushNewPlanes(s, airlineId, typeId, count, unitPaid) {
     for (let i = 0; i < count; i++) {
@@ -927,6 +949,30 @@
     ['C', 1700],
   ];
 
+  /**
+   * 자본 성장 항목을 뺀 항공사 점수 — 통합 모드 전용.
+   *
+   * 그룹 성적은 자본을 연결 기준으로 한 번만 센다(`AirlinerSkyGroup.groupScore`).
+   * 여기 남는 것은 계열 간 거래가 닿지 않는 항목뿐이다 — 몇 명을 실어 날랐고 세계를
+   * 얼마나 이었는가. 이전가격을 어떻게 매겨도 이 값은 안 움직인다.
+   */
+  function operatingScore(s, airlineId) {
+    const a = airline(s, airlineId);
+    if (!a || !a.alive) return { score: 0, rows: [] };
+    const pax = lifetimePaxOf(a);
+    const routes = routesOf(s, airlineId).filter((r) => r.active);
+    const cities = new Set();
+    for (const r of routes) {
+      cities.add(r.from);
+      cities.add(r.to);
+    }
+    const rows = [
+      { label: '누적 승객', detail: `${Math.round(pax / 1e6)}백만 명`, points: Math.round(pax / SCORE.PAX_PER_POINT) },
+      { label: '노선망', detail: `${cities.size}개 도시 · ${routes.length}개 노선`, points: cities.size * SCORE.PER_CITY },
+    ];
+    return { score: rows.reduce((x, r) => x + r.points, 0), rows };
+  }
+
   function finalScore(s, airlineId) {
     const a = airline(s, airlineId);
     if (!a) return null;
@@ -1026,6 +1072,7 @@
     receiveAircraft,
     referencedTypes,
     restoreTypes,
+    migrateNames,
     lifetimePaxOf,
     fleetValue,
     depreciation,
@@ -1040,6 +1087,7 @@
     checkCost,
     scheduleChecks,
     finalScore,
+    operatingScore,
     SCORE,
     GRADE_CUTS,
     newGame,

@@ -1854,3 +1854,18 @@ details.fold > table:first-of-type {
   display: block;
   font-size: 13px;
 }
+
+/* 발주 경고 한 줄. `.warn-box` 는 카드만 한 덩어리라 목록 항목 안에서는 너무 크다.
+   **`.warn` 을 쓰지 않는다** — 그 이름은 이미 제조사 패널의 인라인 배지(`<b class="warn">`)가
+   쓰고 있어서, 블록 레이아웃을 걸면 표 칸과 라벨이 통째로 줄바꿈된다. 한 번 그렇게
+   덮었다가 되돌렸다. `.stat` 도 같은 이유로 별칭을 두지 않는다. */
+.order-warn {
+  display: block;
+  color: var(--warn);
+  font-size: 12px;
+  margin-top: 2px;
+}
+p.order-warn {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}

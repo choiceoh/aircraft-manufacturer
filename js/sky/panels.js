@@ -79,9 +79,22 @@
     // 접힌 회사는 이 목록에 없다 — `findIndex` 가 -1 을 내 "0위"가 뜬다.
     const rank = me.alive ? ranked.findIndex((x) => x.a.id === meId) + 1 : 0;
 
+    // 통합 모드에서는 **제조사가 무너져도 판이 끝난 것**이다. 항공사만 보고 판단하면,
+    // 파산 모달이 "그룹 성적은 항공사 화면에 있다"고 안내한 바로 그 화면에 성적표가
+    // 없다 — 그룹 결과는 이미 F 로 정해졌는데.
+    const groupOver = (() => {
+      const Shell = root.AirlinerShell;
+      if (!Shell || Shell.shell.mode !== 'group') return false;
+      const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
+      return !!(mfg && mfg.gameOver);
+    })();
+    // **항공사 성적표는 항공사 자신의 끝에만 뜬다.** `finalCard` 는 "20년 경영을
+    // 마쳤다"고 적고 지금 순위를 최종 순위로 내놓는다 — 제조사만 무너진 시점에 띄우면
+    // 아직 굴러가는 회사를 다 끝난 것처럼 말한다. 그룹 성적표만 앞당긴다.
     const over = s.turn >= s.totalTurns || !me.alive;
     return `
     <section class="cards">
+      ${over || groupOver ? groupFinalCard(s, meId) : ''}
       ${over ? finalCard(s, meId) : ''}
       <div class="card">
         <h3>${esc(me.name)}</h3>
@@ -137,8 +150,25 @@
     // 거기에 대수를 곱하면 실제 청구액과 어긋난다(84.8M 기종 2기는 실제 25M 인데 곱하면
     // 26M, 5기는 64M 인데 65M). 그 차이만큼, 낼 수 있는 돈으로도 단추가 잠긴다.
     const QTYS = [1, 2, 5];
+    // **만들 수 있는 기종인지 함께 본다.** 조립 라인이 없으면 재고가 안 나오고, 재고가
+    // 없으면 인도가 영영 안 된다 — 발주는 받아 주면서 아무 말도 안 하면 플레이어는
+    // 몇 해를 기다리다 "인도가 안 된다"고 읽는다. 실제로 그렇게 됐다.
+    // **이미 만들어 둔 재고는 라인 없이도 나간다.** `runDeliveries` 는 재고를 그냥
+    // 꺼내 쓴다 — 라인이 없다고 "영영 안 온다"고 말하면, 다음 분기면 올 기체 때문에
+    // 비싼 라인을 새로 세우게 만든다. 재고로 못 덮는 몫만 경고한다.
+    //
+    // **줄에서 몇 번째인지까지 본다.** 규칙은 `G.coveredByStock` 에 있다 — 인도가 쓰는
+    // 그 줄을 그대로 걸어 보고, 내 주문 차례에 남는 재고만 덮인 것으로 센다.
+    const stockOf = (id) => G.coveredByStock(mfg, id);
+    const lineState = (id) => {
+      const ls = (mfg.lines || []).filter((l) => l.programId === id);
+      if (!ls.length) return { ok: false, idle: false, why: '조립 라인 없음 — 재고를 다 쓰면 더 못 만든다' };
+      // 멈춰 있는 것과 아예 없는 것은 값이 다르다 — 재가동은 신설의 몇 분의 일이다.
+      if (ls.every((l) => l.idle)) return { ok: false, idle: true, why: '조립 라인이 모두 가동 중지 — 재가동하면 된다' };
+      return { ok: true, why: '' };
+    };
     const progs = G.orderablePrograms(mfg)
-      .map((p) => ({ base: G.quote(mfg, p.id, 1), lots: QTYS.map((n) => G.quote(mfg, p.id, n)) }))
+      .map((p) => ({ base: G.quote(mfg, p.id, 1), lots: QTYS.map((n) => G.quote(mfg, p.id, n)), line: lineState(p.id) }))
       .filter((x) => x.base);
     const me = St.airline(s, meId);
     const pending = (s.orders || []).filter((o) => o.external && o.airlineId === meId);
@@ -170,13 +200,14 @@
       ${
         progs.length
           ? `<ul class="lines">${progs
-              .map(({ base, lots }) => {
+              .map(({ base, lots, line }) => {
                 const dep = base.deposit * G.MUSD;
                 return `<li>
                   <b>${esc(base.name)}</b>
                   <span class="muted">대당 ${money(base.unitPrice * G.MUSD)} · 1기 착수금 ${money(dep)}${
                     me.cash >= dep ? '' : ' — 현금 부족'
                   }</span>
+                  ${line.ok ? '' : `<span class="order-warn">⚠ ${esc(line.why)}</span>`}
                   <span class="row">
                     ${lots
                       .map((q) =>
@@ -195,9 +226,36 @@
       }
       ${
         pending.length
-          ? `<p class="muted">인도 대기 ${pending.reduce((x, o) => x + o.count, 0)}기 · 선급금 ${money(
-              pending.reduce((x, o) => x + o.paid, 0),
-            )}</p>`
+          ? (() => {
+              const n = pending.reduce((x, o) => x + o.count, 0);
+              // 기종마다 "재고로 못 덮고 만들 라인도 없는" 대수를, **막힌 이유별로** 센다.
+              // 놀고 있는 라인은 다시 돌리면 되고 그건 새로 세우는 값의 몇 분의 일이다 —
+              // 두 경우를 한 문장으로 묶으면 재가동만 하면 될 판에 비싼 라인을 세우게 만든다.
+              const byType = {};
+              for (const o of pending) byType[o.typeId] = (byType[o.typeId] || 0) + o.count;
+              let stuckNew = 0;
+              let stuckIdle = 0;
+              for (const id of Object.keys(byType)) {
+                const ls = lineState(id);
+                if (ls.ok) continue;
+                const short = Math.max(0, byType[id] - stockOf(id));
+                if (ls.idle) stuckIdle += short;
+                else stuckNew += short;
+              }
+              return `<p class="muted">인도 대기 ${n}기 · 선급금 ${money(pending.reduce((x, o) => x + o.paid, 0))}</p>
+                ${
+                  stuckIdle
+                    ? `<p class="order-warn">그중 <b>${stuckIdle}기</b>는 재고로도 못 덮는데 그 기종 라인이 모두 멈춰 있다.
+                       제조사 화면 <b>생산</b> 탭에서 <b>재가동</b>하면 된다 — 새로 세울 필요는 없다.</p>`
+                    : ''
+                }
+                ${
+                  stuckNew
+                    ? `<p class="order-warn">그중 <b>${stuckNew}기</b>는 재고로도 못 덮고 만들 라인도 없어 오지 않는다.
+                       제조사 화면 <b>생산</b> 탭에서 라인을 세워야 한다.</p>`
+                    : ''
+                }`;
+            })()
           : ''
       }
 
@@ -325,6 +383,54 @@
    * 등급만 던지면 무엇을 잘하고 못했는지가 남지 않는다 — 항목별 점수를 함께 편다
    * (제조사 쪽 `scoreBreakdown` 과 같은 규칙).
    */
+  /**
+   * 통합 모드의 최종 성적표 — 그룹으로 읽는 20년.
+   *
+   * 두 계층의 성적표를 따로 두면 정작 이 모드가 내건 규칙("성적은 합산 자기자본이다")을
+   * 결말이 안 지킨다. 이것이 머리에 오고, 항공사 성적표는 그 아래 세부로 남는다.
+   */
+  function groupFinalCard(s, meId) {
+    const G = root.AirlinerSkyGroup;
+    const Shell = root.AirlinerShell;
+    if (!G || !Shell || Shell.shell.mode !== 'group') return '';
+    const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
+    if (!mfg) return '';
+    const g = G.groupScore(mfg, s, meId);
+    if (!g) return '';
+
+    const a = St.airline(s, meId);
+    const dead = [];
+    if (!a.alive) dead.push('항공사');
+    if (mfg.gameOver && mfg.gameOver.reason === 'bankrupt') dead.push('제조사');
+    const why = dead.length
+      ? `${dead.join('·')}가 무너졌다 — 통합 경영은 둘을 함께 지고 가는 판이다`
+      : `${s.startYear + Math.floor((s.totalTurns - 1) / 4)}년 · 제조사와 자체 항공사를 함께 20년`;
+
+    return `<div class="card full sky-final">
+      <div class="sky-grade ${g.grade === 'F' ? 'bad' : 'good'}">${g.grade}</div>
+      <h3>그룹 — ${num(g.score)}점</h3>
+      <p class="muted">${esc(why)}</p>
+      <div class="sky-stats">
+        ${stat('그룹 자본', money(g.equity.total))}
+        ${stat('제조사', money(g.equity.maker))}
+        ${stat('항공사', money(g.equity.airline))}
+        ${g.equity.internal ? stat('계열 상계', '−' + money(g.equity.internal), '중복 계상분') : ''}
+      </div>
+      <table class="tbl"><tbody>
+        ${g.rows
+          .map(
+            (r) => `<tr><td><b>${esc(r.label)}</b><br><span class="muted">${esc(r.detail)}</span></td>
+              <td class="r">${g.alive ? num(r.points) : '—'}</td></tr>`,
+          )
+          .join('')}
+        <tr class="sum"><td><b>합계</b></td><td class="r"><b>${num(g.score)}</b></td></tr>
+      </tbody></table>
+      <p class="muted">S 7,000 · A 4,600 · B 3,000 · C 1,700 — 두 게임과 같은 눈금이다.
+        <b>자본은 연결 기준으로 한 번만 센다</b> — 그래서 계열 간 값을 어떻게 매기든 이 점수는 안 움직인다.
+        ${g.alive ? '' : '한쪽이라도 무너지면 F 다.'}</p>
+    </div>`;
+  }
+
   function finalCard(s, meId) {
     const f = St.finalScore(s, meId);
     if (!f) return '';
@@ -763,6 +869,7 @@
     money,
     renderOverview,
     groupCard,
+    groupFinalCard,
     finalCard,
     renderRoutes,
     renderFleet,

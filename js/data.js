@@ -248,11 +248,19 @@
       doctrine: '얇은 장거리', doctrineNote: '못 채울 좌석은 짐이다 — 편당 원가로 기종을 고른다',
       hub: 'auckland', startFleet: { 'b767-300er': 3, 'a320': 3 },
       startSlots: { auckland: 18, sydney: 10, losangeles: 5, singapore: 4, tokyo: 4 }, },
-    { id: 'kosmo', enginePref: 'IAE', name: '에어아스타나', home: '중앙아시아', bias: 'narrow', priceSensitivity: 1.35, prestige: 0.5,
-      seatBand: [140, 175], rangeBand: [3400, 5200], field: 'hot', route: '고지 공항 간선',
+    // 구소련권 국영 항공사. `id` 가 `kosmo` 이고 UAC 의 본국 고객(`trait.home`)으로
+    // 지정돼 있으며 Tu-204 를 물고 시작하는데, 이름만 에어아스타나(카자흐스탄)에 허브는
+    // 타슈켄트(우즈베키스탄)로 어긋나 있었다 — 세 나라가 한 회사에 섞여 있었고,
+    // 에어아스타나는 2002년 설립이라 1998년에는 있지도 않았다. 이 자리의 회사는
+    // 아에로플로트다.
+    //
+    // 카탈로그에 Tu-154·Il-96 이 없어 시작 기재는 Tu-204 로 둔다 — 러시아 협동체
+    // 자리를 대신 채우는 값이다.
+    { id: 'kosmo', enginePref: 'IAE', name: '아에로플로트', home: '러시아', bias: 'narrow', priceSensitivity: 1.35, prestige: 0.5,
+      seatBand: [140, 175], rangeBand: [3400, 5200], field: 'normal', route: '광대한 국내선 간선',
       doctrine: '최저가 입찰', doctrineNote: '가격이 8할이다 — 할인 없는 제안은 읽지 않는다',
-      hub: 'tashkent', startFleet: { 'tu204': 4, 'a320': 3 },
-      startSlots: { tashkent: 16, moscow: 8, novosibirsk: 5, delhi: 4, istanbul: 4 }, },
+      hub: 'moscow', startFleet: { 'tu204': 4, 'a320': 3 },
+      startSlots: { moscow: 16, novosibirsk: 8, tashkent: 5, delhi: 4, istanbul: 4 }, },
     { id: 'lumen', enginePref: 'GE', name: 'KLM 시티호퍼', home: '서유럽', bias: 'regional', priceSensitivity: 1.1, prestige: 0.75,
       seatBand: [100, 128], rangeBand: [1800, 3400], field: 'normal', route: '지선 피더 (대형 리저널)',
       doctrine: '피더 효율', doctrineNote: '연결편 정시성 — 큰 리저널로 굵게 잇는다',
@@ -696,9 +704,13 @@
       weight: 7,
       // 정부 계약(gov)은 항공사 사정과 무관하다 — 공군 발주가 경기 때문에 날아가면
       // 개조비를 이미 낸 플레이어가 이유 없이 당한다.
-      condition: (s) => s.backlog.some((o) => o.remaining > 0 && !o.gov),
+      //
+      // 자체 발주(inHouse)도 마찬가지다. 계열 항공사는 **내가 굴리는 회사**라, 무를지
+      // 말지는 내 결정이지 사건이 대신 내릴 판단이 아니다. 경기 충격은 그 회사의
+      // 노선과 수요를 통해 이미 그대로 온다 — 여기서 한 번 더 때리면 이중이다.
+      condition: (s) => s.backlog.some((o) => o.remaining > 0 && !o.gov && !o.inHouse),
       apply: (s, h) => {
-        const live = s.backlog.filter((o) => o.remaining > 0 && !o.gov);
+        const live = s.backlog.filter((o) => o.remaining > 0 && !o.gov && !o.inHouse);
         const order = h.rng.pick(live);
         const cut = Math.max(1, Math.round(order.remaining * h.rng.range(0.2, 0.5)));
         order.remaining -= cut;
@@ -981,8 +993,9 @@
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.66);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 7);
         // 발주 취소가 실제로 쏟아졌다. 정부 계약은 예외 — 국방 예산은 여객 수요를 안 탄다.
+        // 계열 항공사도 예외다(위 `order_cancel` 참조 — 무를지는 내 결정이다).
         let cancelled = 0;
-        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov && !x.inHouse)) {
           const cut = Math.round(o.remaining * h.rng.range(0.15, 0.4));
           if (cut > 0) {
             o.remaining -= cut;
@@ -1058,8 +1071,8 @@
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.72);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 5);
         let lost = 0;
-        // 항공사 파산의 충격이다 — 정부 계약은 비켜 간다.
-        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
+        // 항공사 파산의 충격이다 — 정부 계약과 계열 항공사는 비켜 간다.
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov && !x.inHouse)) {
           if (!h.rng.chance(0.45)) continue;
           const cut = Math.round(o.remaining * h.rng.range(0.2, 0.5));
           if (cut > 0) {

@@ -2563,3 +2563,795 @@ test('통합: 화면이 묻는 착수금과 실제 청구액이 같다', () => {
   const mismatched = [2, 5].filter((n) => E.inHouseQuote(mfg, { programId: prog.id, qty: n }).deposit !== one.deposit * n);
   assert.ok(mismatched.length > 0, '반올림 차이가 없으면 이 검사는 아무것도 지키지 않는다');
 });
+
+test('통합: 그룹 성적은 이전가격으로 만들 수 없다', () => {
+  // 이 모드의 규칙이다. 제조사 순자산과 항공사 자본 성장을 그대로 더하면 같은 돈이
+  // 두 번 세어지고, 계열 간 값을 어떻게 매기느냐로 두 항목의 비중이 갈린다.
+  const { mfg, sky, meId, prog } = groupGame();
+  for (let i = 0; i < 4; i++) St.advance(sky, { programs: mfg.programs });
+  // **현금은 재기 전에 넣는다.** 뒤에 넣으면 자본 성장이 뛰는데 그건 발주 탓이 아니다 —
+  // 처음 이 검사가 그렇게 쓰여 있어서, 없는 누출을 잡았다고 잘못 읽었다.
+  St.airline(sky, meId).cash = 9e9;
+  const before = G.groupScore(mfg, sky, meId);
+  assert.ok(before && before.score > 0, '점수가 나와야 검사가 산다');
+
+  // 계열 간 거래를 잔뜩 한다.
+  for (let i = 0; i < 6; i++) assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 2).ok, true);
+  const after = G.groupScore(mfg, sky, meId);
+
+  assert.strictEqual(after.score, before.score, `발주 여섯 번에 그룹 점수가 ${after.score - before.score} 움직였다`);
+  assert.strictEqual(after.grade, before.grade);
+  // 운영 항목은 계열 간 거래가 닿지 않는 것들이다.
+  const label = (r) => r.label;
+  assert.deepStrictEqual(after.rows.map(label), before.rows.map(label));
+});
+
+test('통합: 그룹 자본은 두 장부를 한 번씩만 센다', () => {
+  // 항공사 자본과 제조사 순자산을 그냥 더하면 계열 선급금이 두 번 잡힌다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  const eq0 = G.combinedEquity(mfg, sky, meId);
+  assert.strictEqual(eq0.internal, 0);
+
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+  const eq1 = G.combinedEquity(mfg, sky, meId);
+  assert.ok(eq1.internal > 0, '상계할 계열 선급금이 잡혀야 한다');
+  assert.ok(Math.abs(eq1.total - eq0.total) < 1, `합산이 ${Math.round((eq1.total - eq0.total) / 1e6)}M 움직였다`);
+  // 상계를 빼면 딱 그만큼 부푼다 — 그게 두 번 세어지던 값이다.
+  assert.ok(Math.abs(eq1.maker + eq1.airline - (eq1.total + eq1.internal)) < 1);
+});
+
+test('통합: 한쪽이 무너지면 그룹도 실패다', () => {
+  // 제조사가 무너진 채 항공사만 굴러가는 판을 "잘한 경영"으로 부를 수는 없다.
+  const { mfg, sky, meId } = groupGame();
+  for (let i = 0; i < 4; i++) St.advance(sky, { programs: mfg.programs });
+  assert.notStrictEqual(G.groupScore(mfg, sky, meId).grade, 'F', '멀쩡한 판이 F 면 검사가 죽는다');
+
+  // 제조사 파산.
+  const broke = { ...mfg, gameOver: { reason: 'bankrupt' } };
+  const g1 = G.groupScore(broke, sky, meId);
+  assert.strictEqual(g1.grade, 'F', '제조사가 파산했는데 F 가 아니다');
+  assert.strictEqual(g1.score, 0);
+
+  // 항공사 파산.
+  St.airline(sky, meId).alive = false;
+  const g2 = G.groupScore(mfg, sky, meId);
+  assert.strictEqual(g2.grade, 'F', '항공사가 파산했는데 F 가 아니다');
+
+  // 제조사가 20년을 마친 것(complete)은 파산이 아니다.
+  St.airline(sky, meId).alive = true;
+  const done = { ...mfg, gameOver: { reason: 'complete' } };
+  assert.notStrictEqual(G.groupScore(done, sky, meId).grade, 'F', '완주를 실패로 읽었다');
+});
+
+test('통합: 그룹 자본은 창업 기준선을 나누지 않는다', () => {
+  // 성장 배수로 재던 때, UAC 는 창업 순자산이 −1,016M 이라 자회사를 누구로 고르느냐로
+  // 기준선이 85M 도 되고 음수도 됐다 — 성적을 가르는 것이 경영이 아니라 자회사 선택이
+  // 되고, 옛 세이브는 항공사 몫만 기준선이라 없는 성장이 잡혔다.
+  const mfg = E.newGame(1234, 'uac');
+  const sky = St.newGame(1234, { programs: mfg.programs });
+  const meId = sky.airlines[0].id;
+  const g = G.groupScore(mfg, sky, meId);
+  assert.ok(g, '성적이 나와야 한다');
+  assert.ok(Number.isFinite(g.score), `점수가 ${g.score} 다`);
+  assert.ok(g.rows.some((r) => r.label === '그룹 자본'), '자본 항목이 있어야 한다');
+  assert.ok(!g.rows.some((r) => /성장/.test(r.label)), '아직 성장 배수로 재고 있다');
+
+  // 어느 자회사를 골라도 점수가 폭발하지 않는다.
+  for (const a of sky.airlines) {
+    const x = G.groupScore(mfg, sky, a.id);
+    assert.ok(Number.isFinite(x.score) && x.score >= 0 && x.score < 1e6, `${a.id}: ${x.score}`);
+  }
+});
+
+test('통합: 증자로 불린 자본은 그룹 점수에서 우리 몫만 센다', () => {
+  // 안 걸면 "성적을 깎는다"고 안내된 증자가 그룹 점수를 되레 올린다.
+  const { mfg, sky, meId } = groupGame();
+  const before = G.groupScore(mfg, sky, meId);
+  const cap = before.rows.find((r) => r.label === '그룹 자본');
+  assert.ok(cap && cap.points > 0, '자본 점수가 있어야 검사가 산다');
+
+  mfg.equityDilution = 0.5;
+  const cap2 = G.groupScore(mfg, sky, meId).rows.find((r) => r.label === '그룹 자본');
+  assert.ok(Math.abs(cap2.points - cap.points / 2) <= 1, `희석 50% 인데 ${cap2.points} (원래 ${cap.points})`);
+});
+
+test('통합: 자회사에 대주는 값은 만드는 값이지 파는 값이 아니다', () => {
+  // 정가로 넘기면 제조사가 마진을 이익으로 잡고 항공사는 그 값을 자산으로 자본화한다 —
+  // 그룹 밖에서는 아무 일도 없었는데 대당 32.6M 이 생긴다.
+  const { mfg, prog } = groupGame();
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 1 });
+  assert.strictEqual(q.unitPrice, prog.unitCostBase, '자체 발주가 원가로 안 넘어간다');
+  assert.ok(prog.listPrice > prog.unitCostBase, '마진이 있어야 이 검사가 뜻이 있다');
+});
+
+test('통합: 인도까지 마쳐도 그룹 자본이 안 불어난다', () => {
+  // 앞선 검사는 **발주만** 봤다 — 인도 뒤에 선급금이 사라지면서 마진이 남는 것을
+  // 놓쳤다. 여기서는 실제로 받아 세운다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  const before = G.combinedEquity(mfg, sky, meId).total;
+
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 4 });
+  // **제조사 쪽도 함께 움직여야 잰 값이 뜻이 있다.** 재고를 내주고 잔금을 받는다 —
+  // 처음엔 항공사 쪽만 흉내내서, 착수금만큼(31M) 어긋난 것을 누출로 잘못 읽었다.
+  prog.stock = (prog.stock || 0) + 4;
+  const beforeReal = G.combinedEquity(mfg, sky, meId).total;
+  prog.stock -= 4;
+  mfg.cash += q.balance;
+  const report = { inHouse: [{ airlineId: meId, programId: prog.id, qty: 4, unitPrice: q.unitPrice, balance: q.balance }] };
+  G.receiveDeliveries(mfg, sky, report, meId);
+
+  assert.strictEqual(St.planesOf(sky, meId).filter((p) => p.typeId === prog.id).length, 4, '기체가 안 섰다');
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(
+    Math.abs(after - beforeReal) < 1,
+    `인도 뒤 그룹 자본이 ${Math.round((after - beforeReal) / 1e6)}M 움직였다 — 계열 거래가 값을 만들었다`,
+  );
+  assert.ok(before > 0, '발주 전 자본도 재 둔다');
+});
+
+test('통합: 자회사에 넘긴 대수는 시장 성과로 안 센다', () => {
+  // 안 빼면 자기한테 팔아 점유율과 인도 점수를 만들 수 있다.
+  const { mfg, prog } = groupGame();
+  const before = E.operatingScore(mfg);
+
+  // 남에게 판 50기 — 점유율도 인도 점수도 오른다.
+  mfg.stats.delivered += 50;
+  prog.delivered += 50;
+  const outside = E.operatingScore(mfg);
+  assert.ok(outside > before, '남에게 판 인도는 점수가 올라야 한다');
+
+  // 자회사에 넘긴 50기 — 아무것도 안 올라야 한다.
+  mfg.stats.delivered += 50;
+  prog.delivered += 50;
+  mfg.stats.inHouseDelivered = (mfg.stats.inHouseDelivered || 0) + 50;
+  prog.inHouseDelivered = (prog.inHouseDelivered || 0) + 50;
+  assert.strictEqual(E.operatingScore(mfg), outside, '자회사에 넘긴 대수가 시장 성과로 세어졌다');
+
+  // 급별 가중을 총계로 뭉개면 광동체에서 어긋난다 — 프로그램별로 빼는지 본다.
+  const wide = { ...prog, id: 'w1', segment: 'wide', delivered: 10, inHouseDelivered: 10 };
+  mfg.programs.push(wide);
+  mfg.stats.delivered += 10;
+  mfg.stats.inHouseDelivered += 10;
+  assert.strictEqual(E.operatingScore(mfg), outside, '광동체를 자회사에 넘긴 몫이 점수로 남았다');
+});
+
+test('통합: 자체 발주는 항공사발 취소 충격을 비켜 간다', () => {
+  // 계열 항공사는 내가 굴리는 회사다 — 무를지는 내 결정이지 사건이 대신 내릴 판단이
+  // 아니다. 실제로 취소 사건이 자체 발주를 물어, 오지 않을 기체의 선급금만 남았다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 5).ok, true);
+
+  const mineBefore = mfg.backlog.filter((o) => o.inHouse).reduce((x, o) => x + o.remaining, 0);
+  assert.strictEqual(mineBefore, 5);
+
+  // **사건을 실제로 돌린다.** 조건식을 검사에서 다시 적으면 프로덕션 코드를 베낀
+  // 항진명제가 된다 — 처음에 그렇게 썼다가 되돌려도 통과하는 검사를 만들었다.
+  const ev = Data.EVENTS.find((e) => e.id === 'order_cancel');
+  assert.ok(ev, '취소 사건이 있어야 한다');
+  const rng = globalThis.AirlinerRng.createRng(7);
+  const helpers = { rng, reputation: () => {}, fmt: String };
+
+  // 남의 주문을 다 지우고 자체 발주만 남기면, 사건이 아예 안 걸려야 한다.
+  const onlyMine = { ...mfg, backlog: mfg.backlog.filter((o) => o.inHouse) };
+  assert.strictEqual(ev.condition(onlyMine), false, '자체 발주만 남았는데 취소 사건이 걸린다');
+
+  // 남의 주문이 섞여 있으면 사건은 걸리되, 자체 발주는 한 기도 안 줄어야 한다.
+  assert.strictEqual(ev.condition(mfg), true, '남의 주문까지 비켜 가면 사건이 죽는다');
+  for (let i = 0; i < 40; i++) {
+    if (!ev.condition(mfg)) break;
+    ev.apply(mfg, helpers);
+  }
+  const mineAfter = mfg.backlog.filter((o) => o.inHouse).reduce((x, o) => x + o.remaining, 0);
+  assert.strictEqual(mineAfter, mineBefore, `자체 발주가 ${mineBefore - mineAfter}기 취소됐다`);
+});
+
+test('통합: 제조사 장부에서 사라진 자체 발주는 항공사 선급금도 지운다', () => {
+  // 취소 경로를 하나씩 막는 것으로는 다음에 생길 경로를 못 막는다. 왜 줄었는지 묻지
+  // 않고 결과만 맞춘다 — 안 그러면 오지 않을 기체의 값이 자산으로 남는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+  const paidBefore = (sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.paid, 0);
+  assert.ok(paidBefore > 0);
+
+  // 어떤 경로로든 제조사 장부에서 절반이 사라졌다고 하자.
+  for (const o of mfg.backlog) if (o.inHouse) o.remaining -= 2;
+
+  const lost = G.reconcileOrders(mfg, sky, meId);
+  assert.deepStrictEqual(lost, [{ typeId: prog.id, count: 2 }]);
+  const left = (sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.count, 0);
+  assert.strictEqual(left, 2, '항공사 선급금이 제조사 잔고와 안 맞는다');
+  const paidAfter = (sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.paid, 0);
+  assert.ok(Math.abs(paidAfter - paidBefore / 2) < 1, '선급금 금액이 대수만큼 안 줄었다');
+
+  // 통째로 사라져도 기록이 남지 않는다.
+  mfg.backlog = mfg.backlog.filter((o) => !o.inHouse);
+  G.reconcileOrders(mfg, sky, meId);
+  assert.ok(!(sky.orders || []).some((o) => o.external), '오지 않을 기체의 선급금이 남았다');
+  // 그룹 합산은 그대로다 — 착수금은 한 주머니에서 다른 주머니로 옮긴 것이다.
+  assert.strictEqual(G.combinedEquity(mfg, sky, meId).internal, 0);
+});
+
+test('통합: 인도된 만큼만 맞추고 멀쩡한 발주는 건드리지 않는다', () => {
+  // 대조를 안 하면 정상 인도 중인 발주까지 지워 버릴 수 있다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  const before = (sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.count, 0);
+  assert.strictEqual(G.reconcileOrders(mfg, sky, meId).length, 0, '멀쩡한데 맞췄다고 답했다');
+  assert.strictEqual((sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.count, 0), before);
+});
+
+test('통합: 제조사가 계약을 깨면 그 돈이 자회사에 들어온다', () => {
+  // 물어 주는 돈의 상대가 우리 자회사다. 안 받으면 제조사에서는 나갔는데 항공사에는
+  // 안 들어와 연결 장부에서 통째로 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  const before = G.combinedEquity(mfg, sky, meId).total;
+  const cash = a.cash;
+
+  // 어떤 파기 경로가 제조사에 위약금을 물렸다고 하자.
+  const refundM = 40;
+  mfg.cash -= refundM;
+  mfg.inHouseRefund = refundM;
+  mfg.backlog = mfg.backlog.filter((o) => !o.inHouse);
+
+  G.reconcileOrders(mfg, sky, meId);
+
+  assert.strictEqual(mfg.inHouseRefund, 0, '받은 돈을 지우지 않으면 매 분기 또 들어온다');
+  assert.ok(Math.abs(a.cash - cash - refundM * G.MUSD) < 1, '자회사가 위약금을 못 받았다');
+  assert.ok(!(sky.orders || []).some((o) => o.external), '파기된 발주의 선급금이 남았다');
+  // 그룹 밖으로 나간 돈이 없으니 합산은 그대로다.
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(
+    Math.abs(after - before) < 1,
+    `파기로 그룹 자본이 ${Math.round((after - before) / 1e6)}M 움직였다 — 계열 안에서 오간 돈이다`,
+  );
+});
+
+test('통합: 위약금은 자회사가 정산하기 전에 들어온다', () => {
+  // 뒤늦게 들어오면 자회사는 그 돈 없이 한 분기를 난다 — 멀쩡한 기재를 급매로 팔거나
+  // 자본잠식 문턱을 넘어 문을 닫는다. 닫고 나면 줄 상대가 없어져 영영 전달되지 않는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  // 제조사가 계약을 깼다 — 위약금이 잡혔다.
+  const refundM = 60;
+  mfg.cash -= refundM;
+  mfg.inHouseRefund = refundM;
+  mfg.backlog = mfg.backlog.filter((o) => !o.inHouse);
+
+  const cash = a.cash;
+  // `betweenTurns` 는 항공사 정산 **전에** 도는 자리다.
+  G.betweenTurns(mfg, sky, meId, null);
+  assert.ok(Math.abs(a.cash - cash - refundM * G.MUSD) < 1, '항공사가 정산 전에 못 받았다');
+  assert.strictEqual(mfg.inHouseRefund, 0);
+});
+
+test('통합: 살아 있는데 못 준 위약금은 기록을 지우지 않는다', () => {
+  // 지우면 돈이 조용히 사라진다. 문 닫은 회사일 때만 지운다 — 그때는 제조사에 남고,
+  // 파산한 회사는 그룹 자본에서 0 으로 세므로 합산도 어긋나지 않는다.
+  const { mfg, sky, meId } = groupGame();
+  mfg.inHouseRefund = 50;
+  // 없는 회사를 가리키면 줄 수 없다 — 기록은 남아야 한다.
+  G.reconcileOrders(mfg, sky, 'no-such-airline');
+  assert.strictEqual(mfg.inHouseRefund, 50, '줄 상대를 못 찾았는데 기록을 지웠다');
+
+  // 문 닫은 자회사에는 못 준다. 그때는 지운다.
+  St.airline(sky, meId).alive = false;
+  G.reconcileOrders(mfg, sky, meId);
+  assert.strictEqual(mfg.inHouseRefund, 0, '파산한 자회사인데 기록이 남았다');
+});
+
+test('통합: 옛 세이브의 자체 인도 이력을 옮긴다', () => {
+  // 계수가 없으면 이미 자회사에 넘긴 기체가 전부 시장 성과로 세어져 점유율과 인도
+  // 점수를 그냥 가져간다.
+  const { mfg, sky, meId, prog } = groupGame();
+  // 계수를 세기 전에 만든 판을 흉내낸다 — 자회사가 자사 기체 3대를 굴리고 있다.
+  delete mfg.stats.inHouseDelivered;
+  delete prog.inHouseDelivered;
+  prog.delivered = 200;
+  for (let i = 0; i < 3; i++) {
+    sky.planes.push({ id: sky.nextId++, typeId: prog.id, airlineId: meId, paid: 50e6, ageQuarters: 4, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+
+  G.migrateInHouseCounters(mfg, sky, meId);
+  assert.strictEqual(mfg.stats.inHouseDelivered, 3, '굴리고 있는 자사 기체만큼 옮겨야 한다');
+  assert.strictEqual(prog.inHouseDelivered, 3);
+
+  // 두 번 돌아도 두 배가 되지 않는다.
+  G.migrateInHouseCounters(mfg, sky, meId);
+  assert.strictEqual(mfg.stats.inHouseDelivered, 3, '옮긴 값이 또 더해졌다');
+
+  // 실제 인도보다 많이 빼지 않는다.
+  const m2 = E.newGame(1234);
+  const s2 = St.newGame(1234, { programs: m2.programs });
+  const p2 = m2.programs[0];
+  p2.delivered = 1;
+  delete m2.stats.inHouseDelivered;
+  for (let i = 0; i < 5; i++) {
+    s2.planes.push({ id: s2.nextId++, typeId: p2.id, airlineId: s2.airlines[0].id, paid: 1, ageQuarters: 1, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+  G.migrateInHouseCounters(m2, s2, s2.airlines[0].id);
+  assert.strictEqual(m2.stats.inHouseDelivered, 1, '인도한 적 없는 대수까지 뺐다');
+});
+
+test('통합: 자체 인도는 평판 이정표도 만들지 않는다', () => {
+  // 첫 인도·100/300/500기 문턱이 평판을 올린다. 주문 완납 평판만 막아 두면 이 길로
+  // 여전히 자기한테 팔아 점수를 만들 수 있다.
+  //
+  // 같은 상태를 둘 만들어 **한쪽만 `inHouse`** 로 두고 실제로 인도시킨다 — 소스를
+  // 읽어 확인하는 검사는 구현이 바뀌면 그대로 통과해 버린다.
+  //
+  // **주문을 일부러 다 못 채운다.** 완납하면 주문 완납 평판(+1)이 따로 붙어서, 그
+  // 차이가 이정표를 가린다 — 처음에 그렇게 썼다가 되돌려도 통과하는 검사를 만들었다.
+  // 재고를 모자라게 두면 남는 것은 이정표뿐이다.
+  const build = (inHouse) => {
+    const s = E.newGame(1234);
+    const p = s.programs[0];
+    p.legacy = false;
+    p.delivered = 0;
+    p.stock = 2;
+    // 라인을 빼야 이번 분기에 재고가 더 생기지 않는다 — 안 그러면 생산이 5기를 채워
+    // 주문이 완납되고, 완납 평판이 다시 이정표를 가린다.
+    s.lines = s.lines.filter((l) => l.programId !== p.id);
+    s.milestones = [];
+    s.backlog = [
+      {
+        id: 'o1', airlineId: 'hanul', airlineName: '대한항공', programId: p.id, programName: p.name,
+        qty: 5, remaining: 5, unitPrice: 80, wonTurn: s.turn, depositRate: 0.15, inHouse,
+      },
+    ];
+    return s;
+  };
+  const outside = build(false);
+  const inside = build(true);
+  E.endTurn(outside);
+  E.endTurn(inside);
+
+  assert.ok(outside.programs[0].delivered > 0, '인도가 실제로 일어나야 검사가 산다');
+  assert.strictEqual(inside.programs[0].delivered, outside.programs[0].delivered, '인도 대수 자체는 같아야 한다');
+  assert.ok(outside.backlog.some((o) => o.remaining > 0), '완납되면 주문 완납 평판이 섞인다');
+
+  const mark = (s) => (s.milestones || []).filter((m) => /첫 인도|기 인도/.test(m.text)).length;
+  assert.ok(mark(outside) > 0, '남에게 판 인도는 이정표를 남겨야 한다');
+  assert.strictEqual(mark(inside), 0, `자체 인도가 이정표 ${mark(inside)}건을 남겼다`);
+});
+
+test('통합: 재고가 있으면 라인이 없어도 온다고 읽는다', () => {
+  // `runDeliveries` 는 재고를 그냥 꺼내 쓴다. 라인이 없다고 "영영 안 온다"고 말하면
+  // 다음 분기면 올 기체 때문에 비싼 라인을 세우게 만든다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  mfg.lines = mfg.lines.filter((l) => l.programId !== prog.id);
+
+  // 모회사 카드는 껍데기가 있어야 그린다 — 없으면 빈 문자열이라 검사가 죽는다.
+  const savedShell = globalThis.AirlinerShell;
+  const savedUi = globalThis.AirlinerUI;
+  globalThis.AirlinerShell = { shell: { mode: 'group' } };
+  globalThis.AirlinerUI = { ui: { state: mfg } };
+  try {
+    // 남의 주문이 재고를 선점하지 않는 상태에서 먼저 본다.
+    const others = mfg.backlog.filter((o) => !o.inHouse);
+    mfg.backlog = mfg.backlog.filter((o) => o.inHouse);
+
+    prog.stock = 5;
+    const plenty = SP.groupCard(sky, meId);
+    assert.ok(plenty, '카드가 그려져야 검사가 산다');
+    assert.ok(!/오지 않는다/.test(plenty), '재고 5기인데 경고가 떴다');
+
+    prog.stock = 1;
+    const short = SP.groupCard(sky, meId);
+    assert.ok(/오지 않는다/.test(short), '재고로 못 덮는데 경고가 없다');
+    assert.ok(/<b>2기<\/b>/.test(short), `재고로 못 덮는 2기를 안 세었다`);
+
+    prog.stock = 0;
+    assert.ok(/<b>3기<\/b>/.test(SP.groupCard(sky, meId)), '재고 0 이면 3기 전부여야 한다');
+
+    // **남의 주문이 앞에 서 있으면 그만큼은 내 몫이 아니다.** `runDeliveries` 가 수주
+    // 장부를 우선순위·수주 시점으로 훑으므로 앞선 외부 주문이 재고를 먼저 가져간다.
+    prog.stock = 5;
+    mfg.backlog = mfg.backlog.concat(others.slice(0, 1).map((o) => ({ ...o, programId: prog.id, remaining: 5 })));
+    const blocked = SP.groupCard(sky, meId);
+    assert.ok(/오지 않는다/.test(blocked), '남의 주문이 재고를 다 가져가는데 안심시켰다');
+    assert.ok(/<b>3기<\/b>/.test(blocked), '선점당한 재고를 내 몫으로 셌다');
+  } finally {
+    globalThis.AirlinerShell = savedShell;
+    globalThis.AirlinerUI = savedUi;
+  }
+});
+
+test('통합: 자체 이전은 그룹 자본을 움직이지 않는다 — 원가가 곧 장부가다', () => {
+  // 제조사 순자산은 재고를 `unitCostBase` 로 센다. 그 값 그대로 넘기면 나가는 값과
+  // 항공사가 잡는 값이 같아 합산이 0 이다. 실제 생산원가와 base 의 차이는 **생산 시점**에
+  // 흡수되고, 그건 자회사든 외부 고객이든 똑같이 겪는 기존 관행이다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  G.beforeTurns(mfg, sky, meId);
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 4 });
+  assert.strictEqual(q.unitPrice, prog.unitCostBase, '이전 단가가 장부가와 달라졌다');
+
+  // 이미 만들어 둔 재고로 인도시킨다 — 생산 단계를 섞지 않아야 이전만 잰다.
+  prog.stock = 10;
+  const before = G.combinedEquity(mfg, sky, meId).total;
+  prog.stock -= 4;
+  mfg.cash += q.balance;
+  G.receiveDeliveries(
+    mfg, sky,
+    { inHouse: [{ airlineId: meId, programId: prog.id, qty: 4, unitPrice: q.unitPrice, balance: q.balance }] },
+    meId,
+  );
+
+  assert.strictEqual(St.planesOf(sky, meId).filter((p) => p.typeId === prog.id).length, 4, '기체가 안 섰다');
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(
+    Math.abs(after - before) < 1,
+    `이전만으로 그룹 자본이 ${Math.round((after - before) / 1e6)}M 움직였다`,
+  );
+});
+
+test('통합: 그룹 자본에도 회사 환산 배수가 걸린다', () => {
+  // 운영 항목에만 걸고 정작 더 큰 자본 항목을 빼 두면, 거인을 고르는 것만으로 보정 없는
+  // 수백 점을 얻는다 — 등급이 난이도표가 아니라 회사 선택표가 된다.
+  const { mfg, sky, meId } = groupGame();
+  const base = G.groupScore(mfg, sky, meId).rows.find((r) => r.label === '그룹 자본');
+  assert.ok(base && base.points > 0, '자본 점수가 있어야 검사가 산다');
+
+  mfg.scoreMult = 0.45; // 보잉 눈금
+  const scaled = G.groupScore(mfg, sky, meId).rows.find((r) => r.label === '그룹 자본');
+  assert.ok(Math.abs(scaled.points - base.points * 0.45) <= 1, `×0.45 인데 ${scaled.points} (원래 ${base.points})`);
+  assert.ok(/회사 환산/.test(scaled.detail), '무엇이 걸렸는지 화면에 안 적혔다');
+});
+
+test('통합: 끝난 판도 옛 자체 인도 이력을 옮긴다', () => {
+  // 이관은 `beforeTurns` 에서 도는데 끝난 판은 분기를 더 안 넘긴다 — 그 자리가 영영
+  // 안 오면 성적표에 옛 자체 인도분이 시장 성과로 남는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  delete mfg.stats.inHouseDelivered;
+  delete prog.inHouseDelivered;
+  delete mfg.inHouseMigrated;
+  prog.delivered = 200;
+  for (let i = 0; i < 3; i++) {
+    sky.planes.push({ id: sky.nextId++, typeId: prog.id, airlineId: meId, paid: 50e6, ageQuarters: 4, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+  // 판이 끝났다 — `beforeTurns` 는 다시 돌지 않는다.
+  sky.turn = sky.totalTurns;
+
+  G.groupScore(mfg, sky, meId);
+  assert.strictEqual(mfg.stats.inHouseDelivered, 3, '성적을 낼 때도 이력을 옮겨야 한다');
+  assert.strictEqual(prog.inHouseDelivered, 3);
+});
+
+test('통합: 바로 직전 이름으로 저장된 판도 결정 본문이 맞춰진다', () => {
+  // `kosmo` 는 두 번 개명됐다(코스모항공 → 에어아스타나 → 아에로플로트). 옛 이름을
+  // 하나만 두면 직전 이름으로 저장된 판이 제목엔 옛 이름, memo 엔 새 이름으로 열린다.
+  for (const old of ['코스모항공', '에어아스타나']) {
+    const s = E.newGame(1234);
+    s.decision = {
+      id: 'test', name: `${old}의 제안`, text: `${old}이(가) 대량 발주를 제안했다.`,
+      memo: { airline: 'kosmo', airlineName: old }, options: [],
+    };
+    E.ensureShape(s);
+    assert.ok(!s.decision.name.includes(old), `제목에 '${old}' 가 남았다: ${s.decision.name}`);
+    assert.ok(!s.decision.text.includes(old), `본문에 '${old}' 가 남았다`);
+    assert.ok(s.decision.name.includes('아에로플로트'), '새 이름으로 안 바뀌었다');
+    assert.strictEqual(s.decision.memo.airlineName, '아에로플로트');
+  }
+});
+
+test('통합: 끝나는 분기에도 자회사가 자기 분기를 마친다', () => {
+  // 껍데기는 제조사 → 항공사 순으로 돌린다. 제조사 정산이 마지막 분기나 파산에 닿는
+  // 순간 그룹 종료 판정이 참이 되는데, 항공사가 그걸 보고 자기 차례를 건너뛰면 끝난
+  // 판마다 자회사의 마지막 분기가 빠지고 두 세이브의 달력이 갈라진다.
+  const path = require('node:path');
+  const JSDIR = path.join(__dirname, '..', 'js');
+  require(path.join(JSDIR, 'shell.js'));
+  require(path.join(JSDIR, 'sky', 'ui.js'));
+  const Shell = globalThis.AirlinerShell;
+  const SkyUi = globalThis.AirlinerSkyUi;
+
+  // 화면은 없어도 된다 — 넘김 경로만 돌린다.
+  const el = () => ({
+    innerHTML: '', className: '', textContent: '', dataset: {}, style: {},
+    addEventListener() {}, appendChild() {}, scrollIntoView() {},
+    querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+    setAttribute() {}, getAttribute: () => null,
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+  });
+  const cache = {};
+  const savedDoc = globalThis.document;
+  const savedLs = globalThis.localStorage;
+  globalThis.document = {
+    readyState: 'complete', body: el(), addEventListener() {},
+    getElementById: (id) => (cache[id] || (cache[id] = el())),
+    querySelector: () => null, querySelectorAll: () => [], createElement: () => el(),
+  };
+  const store = {};
+  globalThis.localStorage = {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: (k) => { delete store[k]; },
+  };
+
+  const savedMaker = Shell.shell.layer;
+  const savedMode = Shell.shell.mode;
+  try {
+    const { mfg, sky, meId } = groupGame();
+    // 두 계층을 같은 마지막 분기에 세운다.
+    const LAST = Data.CONFIG.totalTurns - 1;
+    mfg.turn = LAST;
+    sky.turn = sky.totalTurns - 1;
+    SkyUi.ui.state = sky;
+    SkyUi.ui.meId = meId;
+
+    // 제조사 자리는 흉내낸다 — 여기서 재는 것은 껍데기의 순서와 항공사의 응답이다.
+    let makerTurns = 0;
+    Shell.register('maker', {
+      boot() {}, render() {},
+      turn() { makerTurns++; mfg.turn++; mfg.gameOver = { reason: 'end' }; return null; },
+      save() {}, clearSave() {},
+      isOver: () => !!mfg.gameOver,
+      state: () => mfg,
+    });
+    Shell.shell.mode = 'group';
+    Shell.shell.layer = 'maker';
+
+    Shell.turn();
+
+    assert.strictEqual(makerTurns, 1, '제조사가 안 돌았다면 이 검사는 아무것도 안 잰다');
+    assert.strictEqual(sky.turn, sky.totalTurns, `자회사가 마지막 분기를 건너뛰었다 (${sky.turn})`);
+    assert.strictEqual(mfg.turn, sky.turn, `달력이 ${mfg.turn} 대 ${sky.turn} 로 갈라졌다`);
+    assert.strictEqual(sky.turn, LAST + 1, '두 계층이 같은 자리에서 끝나야 한다');
+
+    // 그리고 **다음** 넘김은 막혀야 한다 — 끝난 판을 더 굴리면 안 된다.
+    Shell.turn();
+    assert.strictEqual(makerTurns, 1, '끝난 판에서 한 분기 더 돌았다');
+    assert.strictEqual(sky.turn, sky.totalTurns);
+  } finally {
+    Shell.shell.mode = savedMode;
+    Shell.shell.layer = savedMaker;
+    SkyUi.ui.state = null;
+    if (savedDoc === undefined) delete globalThis.document;
+    else globalThis.document = savedDoc;
+    if (savedLs === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = savedLs;
+  }
+});
+
+test('통합: 재고가 앞줄에 얼마나 남는지로 센다 — 순서까지 본다', () => {
+  // `runDeliveries` 는 우선순위·수주 시점으로 한 줄을 세우고 앞에서부터 재고를 준다.
+  // 남의 주문을 무조건 다 빼면 내가 앞줄일 때도 "영영 안 온다"고 겁을 주고, 아예 안
+  // 빼면 남이 다 가져갈 때도 "막힌 기체 0" 이라 안심시킨다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  // 창업 수주가 이미 이 기종에 걸려 있다 — 줄 세우기만 재려면 비우고 시작한다.
+  mfg.backlog = mfg.backlog.filter((o) => o.programId !== prog.id);
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  const mine = mfg.backlog.find((o) => o.inHouse && o.programId === prog.id);
+  assert.ok(mine, '자체 주문이 장부에 없다');
+
+  const other = {
+    ...mine, inHouse: false, id: 'outside-1', airlineId: 'someone-else',
+    remaining: 4, wonTurn: mine.wonTurn + 1, pledge: 'standard',
+  };
+  mfg.backlog.push(other);
+  prog.stock = 5;
+
+  // 내가 먼저 수주했다 — 5기 중 3기는 내 몫이다.
+  assert.strictEqual(G.coveredByStock(mfg, prog.id), 3, '앞줄인데 남의 주문에 재고를 다 내줬다');
+
+  // 남이 먼저 수주했다면 4기를 가져가고 나에게는 1기만 남는다.
+  other.wonTurn = mine.wonTurn - 1;
+  assert.strictEqual(G.coveredByStock(mfg, prog.id), 1, '뒷줄인데 재고를 통째로 내 몫으로 셌다');
+
+  // 우선 인도 약속은 수주 시점을 앞선다.
+  other.wonTurn = mine.wonTurn + 1;
+  other.pledge = 'early';
+  assert.strictEqual(G.coveredByStock(mfg, prog.id), 1, '우선 인도 약속이 줄을 앞서지 못했다');
+});
+
+test('통합: 자회사 운영 점수에도 증자 희석이 걸린다', () => {
+  // 자본 항목과 제조사 운영에만 걸고 여기만 원값으로 두면, 승객과 노선망에 점수를 몰아
+  // "성적을 깎는다"고 안내된 증자를 피해 갈 수 있다.
+  const { mfg, sky, meId } = groupGame();
+  const a = St.airline(sky, meId);
+  a.lifetimePax = 40e6;
+  const rowsOf = (s) => s.rows.filter((r) => r.label.startsWith('항공사'));
+  const base = rowsOf(G.groupScore(mfg, sky, meId));
+  assert.ok(base.length && base.some((r) => r.points > 0), '항공사 항목이 있어야 검사가 산다');
+
+  mfg.equityDilution = 0.4;
+  const diluted = rowsOf(G.groupScore(mfg, sky, meId));
+  for (let i = 0; i < base.length; i++) {
+    assert.ok(
+      Math.abs(diluted[i].points - base[i].points * 0.6) <= 1,
+      `${base[i].label}: ${diluted[i].points} (원래 ${base[i].points}, 60% 여야 한다)`,
+    );
+  }
+  assert.ok(diluted.some((r) => /우리 몫/.test(r.detail)), '무엇이 걸렸는지 화면에 안 적혔다');
+});
+
+test('통합: 불러온 판의 회사 이름이 카탈로그를 따라간다', () => {
+  // 세이브는 회사 기록을 통째로 들고 온다 — 안 맞추면 제조사 계층은 아에로플로트라
+  // 부르는 회사를 항공사 화면이 옛 이름으로 부른다. 같은 id 인데 두 이름이 된다.
+  const sky = St.newGame(4242);
+  const a = sky.airlines.find((x) => x.id === 'kosmo');
+  assert.ok(a, 'kosmo 자리가 없으면 이 검사는 아무것도 안 잰다');
+  const home = a.home;
+  a.name = '에어아스타나';
+
+  St.migrateNames(sky);
+  const seed = Data.AIRLINES.find((x) => x.id === 'kosmo');
+  assert.strictEqual(a.name, seed.name, '옛 이름이 그대로 남았다');
+  // 거점은 판의 상태다 — 슬롯도 노선도 거기 걸려 있어 지금 옮기면 노선망이 부서진다.
+  assert.strictEqual(a.home, home, '거점까지 옮겨 굴러가던 노선망을 부쉈다');
+});
+
+test('통합: 멈춘 라인은 재가동하라고, 없는 라인은 세우라고 말한다', () => {
+  // 두 경우를 한 문장으로 묶으면, 재가동만 하면 될 판에 비싼 라인을 새로 세우게 만든다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  // 재고와 남의 주문을 치워 이 기종이 오로지 라인 사정으로만 막히게 한다.
+  mfg.backlog = mfg.backlog.filter((o) => o.inHouse);
+  prog.stock = 0;
+
+  const savedShell = globalThis.AirlinerShell;
+  const savedUi = globalThis.AirlinerUI;
+  globalThis.AirlinerShell = { shell: { mode: 'group' } };
+  globalThis.AirlinerUI = { ui: { state: mfg } };
+  try {
+    // 라인이 있는데 전부 멈춰 있다 — 다시 돌리면 된다.
+    const lines = mfg.lines.filter((l) => l.programId === prog.id);
+    assert.ok(lines.length, '이 기종에 라인이 있어야 검사가 산다');
+    for (const l of lines) l.idle = true;
+    const idle = SP.groupCard(sky, meId);
+    assert.ok(/재가동/.test(idle), `멈춘 라인인데 재가동을 안 알려 준다: ${/오지 않는다/.test(idle)}`);
+    assert.ok(!/라인을 세워야 한다/.test(idle), '재가동하면 되는데 새로 세우라고 했다');
+    assert.ok(/<b>3기<\/b>/.test(idle), '막힌 3기를 안 세었다');
+
+    // 라인이 아예 없다 — 세우는 수밖에 없다.
+    mfg.lines = mfg.lines.filter((l) => l.programId !== prog.id);
+    const none = SP.groupCard(sky, meId);
+    assert.ok(/라인을 세워야 한다/.test(none), '라인이 없는데 세우라고 안 한다');
+    assert.ok(!/재가동/.test(none), '없는 라인을 재가동하라고 했다');
+  } finally {
+    globalThis.AirlinerShell = savedShell;
+    globalThis.AirlinerUI = savedUi;
+  }
+});
+
+test('통합: 옛 정가 자체 발주도 원가로 되맞춰 인도가 자본을 안 만든다', () => {
+  // 정가로 넘기던 시절의 주문이 장부에 남아 있으면, 인도 때 재고는 원가로 빠지는데
+  // 자회사는 정가로 자본화해 이전 한 번마다 마진만큼의 그룹 자본이 생긴다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  // 이 주문을 "옛 세이브"로 되돌린다 — 정가로 박힌 단가와 그만큼 더 낸 착수금.
+  const o = mfg.backlog.find((x) => x.inHouse && x.programId === prog.id);
+  const rate = Data.CONFIG.depositRate;
+  const extra = o.remaining * (prog.listPrice - o.unitPrice) * rate;
+  assert.ok(extra > 0, '정가와 원가가 같으면 이 검사는 아무것도 안 잰다');
+  o.unitPrice = prog.listPrice;
+  mfg.cash += extra;
+  a.cash -= extra * G.MUSD;
+  const so = sky.orders.find((x) => x.external && x.typeId === prog.id);
+  so.paid += extra * G.MUSD;
+  delete mfg.inHousePriceRebased;
+  delete mfg.inHouseMigrated;
+
+  const before = G.combinedEquity(mfg, sky, meId).total;
+  G.beforeTurns(mfg, sky, meId);
+  G.reconcileOrders(mfg, sky, meId); // 되돌려 준 착수금이 자회사에 실제로 들어간다
+  assert.ok(Math.abs(o.unitPrice - prog.unitCostBase) < 1e-9, `단가가 원가로 안 왔다 (${o.unitPrice})`);
+  // **두 장부가 같은 값을 말해야 한다.** 제조사가 돌려준 만큼 자회사의 선급금도 줄어야
+  // 한다 — 한쪽만 고치면 상계가 어긋나 그룹 자본이 그 차이만큼 틀어진다.
+  // 눈금은 1M 이다 — 착수금은 발주 때 백만 단위로 반올림해 받았고 되돌려 준 값은
+  // 안 반올림했으니 그만큼은 어긋난다. 안 줄이면 20M 가까이 벌어지므로 충분히 갈린다.
+  assert.ok(
+    Math.abs(so.paid - 4 * prog.unitCostBase * rate * G.MUSD) < 1e6,
+    `선급금이 안 줄었다 — ${(so.paid / 1e6).toFixed(1)}M (원가 기준 ${(4 * prog.unitCostBase * rate).toFixed(1)}M)`,
+  );
+  assert.ok(
+    Math.abs(G.combinedEquity(mfg, sky, meId).total - before) < 1,
+    '되맞추는 것만으로 그룹 자본이 움직였다',
+  );
+
+  // 이제 인도한다 — 원가 이전이므로 자본이 그대로여야 한다.
+  prog.stock = 10;
+  const q = { unitPrice: o.unitPrice, balance: 4 * o.unitPrice * (1 - rate) };
+  const mid = G.combinedEquity(mfg, sky, meId).total;
+  prog.stock -= 4;
+  mfg.cash += q.balance;
+  G.receiveDeliveries(
+    mfg, sky,
+    { inHouse: [{ airlineId: meId, programId: prog.id, qty: 4, unitPrice: q.unitPrice, balance: q.balance }] },
+    meId,
+  );
+  assert.strictEqual(St.planesOf(sky, meId).filter((x) => x.typeId === prog.id).length, 4, '기체가 안 섰다');
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(Math.abs(after - mid) < 1, `옛 주문 인도로 그룹 자본이 ${Math.round((after - mid) / 1e6)}M 움직였다`);
+});
+
+test('통합: 이력을 옮겨도 이사회 목표의 남은 몫은 그대로다', () => {
+  // 목표값은 옛 계수로 잡혔는데 진도만 자체 인도를 뺀다 — 세이브를 열었다는 이유만으로
+  // 남은 몫이 늘어나면, 이미 맺은 계약이 조용히 어려워진다.
+  const { mfg, sky, meId, prog } = groupGame();
+  delete mfg.stats.inHouseDelivered;
+  delete prog.inHouseDelivered;
+  delete mfg.inHouseMigrated;
+  prog.delivered = 200;
+  mfg.stats.delivered = 200;
+  mfg.stats.rivalDelivered = 800;
+  for (let i = 0; i < 20; i++) {
+    sky.planes.push({ id: sky.nextId++, typeId: prog.id, airlineId: meId, paid: 50e6, ageQuarters: 4, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+
+  for (const id of ['delivery', 'share']) {
+    const s = JSON.parse(JSON.stringify(mfg));
+    const sk = JSON.parse(JSON.stringify(sky));
+    // 옛 규칙으로 발령된 목표 — 그때는 자체 인도를 빼지 않은 값에서 잡았다.
+    //   인도 확대: 지금 누적 + 55   ·   점유율: 지금 점유율 + 0.05
+    const target = id === 'delivery' ? s.stats.delivered + 55 : Math.round((E.marketShare(s) + 0.05) * 1000) / 1000;
+    s.mandate = { id, name: 'x', target, text: 'x', issuedTurn: s.turn, dueTurn: s.turn + 20 };
+    const remainBefore = s.mandate.target - E.mandateStatus(s).now;
+
+    G.migrateInHouseCounters(s, sk, meId);
+    assert.strictEqual(s.stats.inHouseDelivered, 20, '이관이 안 돌았다면 이 검사는 아무것도 안 잰다');
+    const remainAfter = s.mandate.target - E.mandateStatus(s).now;
+    assert.ok(
+      Math.abs(remainAfter - remainBefore) < (id === 'share' ? 0.002 : 1),
+      `${id}: 남은 몫이 ${remainBefore} → ${remainAfter} 로 바뀌었다`,
+    );
+  }
+});
+
+test('통합: 끝난 판도 되돌려 줄 돈을 자회사에 넘기고 성적을 낸다', () => {
+  // 이관이 되돌려 줄 착수금을 적어 두는데 끝난 판은 분기를 더 안 넘긴다 — 제조사에서는
+  // 나갔는데 항공사에는 안 들어와 성적표의 그룹 자본이 그만큼 낮아진다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  // 옛 정가 주문으로 되돌린다.
+  const o = mfg.backlog.find((x) => x.inHouse && x.programId === prog.id);
+  const rate = Data.CONFIG.depositRate;
+  const extra = o.remaining * (prog.listPrice - o.unitPrice) * rate;
+  assert.ok(extra > 0, '정가와 원가가 같으면 이 검사는 아무것도 안 잰다');
+  o.unitPrice = prog.listPrice;
+  mfg.cash += extra;
+  a.cash -= extra * G.MUSD;
+  sky.orders.find((x) => x.external && x.typeId === prog.id).paid += extra * G.MUSD;
+  delete mfg.inHousePriceRebased;
+  delete mfg.inHouseMigrated;
+
+  // 판이 끝났다 — `betweenTurns` 는 다시 돌지 않는다.
+  sky.turn = sky.totalTurns;
+  const cashBefore = a.cash;
+  const score = G.groupScore(mfg, sky, meId);
+
+  assert.ok(score, '성적이 안 나왔다');
+  assert.strictEqual(mfg.inHouseRefund || 0, 0, '되돌려 줄 돈이 제조사에 남았다');
+  assert.ok(
+    Math.abs(a.cash - cashBefore - extra * G.MUSD) < 1,
+    `자회사가 못 받았다 — ${Math.round((a.cash - cashBefore) / 1e6)}M (${Math.round(extra)}M 이어야 한다)`,
+  );
+});

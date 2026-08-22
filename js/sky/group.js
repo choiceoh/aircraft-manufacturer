@@ -166,6 +166,69 @@
     sky.orders = sky.orders.filter((o) => !o.external || o.count > 0);
   }
 
+  /**
+   * 두 장부의 자체 발주 대수를 맞춘다.
+   *
+   * 제조사 쪽에서 자체 발주가 줄어드는 길은 인도만이 아니다 — 프로그램 취소, 사건,
+   * 그 밖에 앞으로 생길 무엇이든 장부를 건드릴 수 있다. 그때 항공사 쪽 선급금을
+   * 안 지우면, **오지 않을 기체의 값이 자산으로 남는다.** 실제로 그랬다: 취소 사건이
+   * 계열 발주를 물어 제조사 잔고는 줄었는데 항공사는 선급금 3기를 그대로 들고 있었고,
+   * 화면에는 영영 오지 않을 "인도 예정"이 떴다.
+   *
+   * 그래서 **왜 줄었는지 묻지 않고 결과만 맞춘다.** 취소 경로를 하나씩 막는 것으로는
+   * 다음에 생길 경로를 못 막는다.
+   *
+   * 착수금은 돌려주지 않는다 — 제조사 장부에 위약금으로 남는다는 것이 이 게임의 규칙이고,
+   * 그룹 합산으로는 한 주머니에서 다른 주머니로 옮긴 것이라 성적도 움직이지 않는다.
+   */
+  /**
+   * 제조사가 자회사에 물어 줄 돈을 실제로 넘긴다.
+   *
+   * 계약을 깨서 무는 위약금과, 옛 정가 주문을 원가로 되맞추며 돌려주는 착수금이 여기로
+   * 온다. 안 넘기면 제조사에서는 나갔는데 항공사에는 안 들어와 연결 장부에서 통째로
+   * 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
+   *
+   * 문 닫은 자회사에는 줄 수 없다 — 그 돈은 제조사에 남는다(파산한 회사는 그룹 자본에서
+   * 0 으로 세므로 합산이 어긋나지도 않는다). **다만 기록은 그때만 지운다** — 살아 있는데
+   * 못 준 경우까지 지우면 돈이 조용히 사라진다.
+   */
+  function settleRefund(mfg, sky, airlineId) {
+    const refund = mfg.inHouseRefund || 0;
+    if (refund <= 0) return;
+    const a = St.airline(sky, airlineId);
+    if (!a) return;
+    if (a.alive) a.cash += refund * MUSD;
+    mfg.inHouseRefund = 0;
+  }
+
+  function reconcileOrders(mfg, sky, airlineId) {
+    if (!mfg || !sky) return [];
+    // **먼저 물어 준 돈을 받는다.** 제조사가 계약을 깨면 선수금과 위약금을 물어 주는데,
+    // 그 돈의 상대가 우리 자회사다. 안 받으면 제조사에서는 나갔는데 항공사에는 안
+    // 들어와 연결 장부에서 통째로 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
+    settleRefund(mfg, sky, airlineId);
+    if (!sky.orders || !sky.orders.length) return [];
+    const live = {};
+    for (const o of mfg.backlog || []) {
+      if (o.inHouse && o.airlineId === airlineId && o.remaining > 0) {
+        live[o.programId] = (live[o.programId] || 0) + o.remaining;
+      }
+    }
+    const lost = [];
+    const mine = {};
+    for (const o of sky.orders) {
+      if (o.external && o.airlineId === airlineId) mine[o.typeId] = (mine[o.typeId] || 0) + o.count;
+    }
+    for (const typeId of Object.keys(mine)) {
+      const gap = mine[typeId] - (live[typeId] || 0);
+      if (gap > 0) {
+        consumeOrder(sky, airlineId, typeId, gap);
+        lost.push({ typeId, count: gap });
+      }
+    }
+    return lost;
+  }
+
   // ── 불신 ──────────────────────────────────────────────────────────
 
   /**
@@ -223,6 +286,131 @@
     return { maker, airline: air, internal, total: maker + air - internal };
   }
 
+  /**
+   * 그룹 자본 배점 — **창업 대비 배수가 아니라 절대값이다.**
+   *
+   * 처음에는 항공사 쪽처럼 성장 배수로 쟀다. 두 가지가 무너졌다.
+   *
+   * 하나, **기준선이 0 을 지날 수 있다.** UAC 는 창업 순자산이 −1,016M 이라 자회사를
+   * 누구로 고르느냐에 따라 합산 기준선이 85M 이 되기도 하고 음수가 되기도 한다 — 앞은
+   * 85M 오를 때마다 2,000점이고 뒤는 성장 항목이 통째로 사라진다. 성적을 가르는 것이
+   * 경영이 아니라 자회사 선택이 된다.
+   *
+   * 둘, 옛 세이브는 제조사 창업 순자산을 모르는데 항공사 것만 알고 있어서, 둘을 합친
+   * 기준선이 항공사 몫만 남는다 — 있지도 않은 성장이 잡힌다.
+   *
+   * 그래서 제조사 게임이 이미 쓰는 방식을 그대로 쓴다: 순자산 × 0.08. 기준선을 나누지
+   * 않으니 0 근처에서 터질 일이 없고, 두 게임과 같은 자로 읽힌다.
+   */
+  const GROUP_EQUITY_RATE = 0.08;
+  /** 등급 문턱은 두 게임과 같다. 세 성적표를 나란히 읽을 수 있어야 한다. */
+  const GROUP_CUTS = [['S', 7000], ['A', 4600], ['B', 3000], ['C', 1700]];
+
+  /**
+   * 통합 모드의 최종 성적.
+   *
+   * **자본은 연결 기준으로 한 번만 센다.** 제조사 점수의 순자산 항목과 항공사 점수의
+   * 자본 성장 항목을 그대로 더하면 같은 돈이 두 번 세어지고, 계열 간 값을 어떻게
+   * 매기느냐로 두 항목의 비중이 갈린다 — 이전가격으로 성적을 만들 길이 열린다.
+   * 그래서 각 계층에서는 **계열 간 거래가 닿지 않는 항목만** 가져오고(`operatingScore`),
+   * 자본은 상계까지 마친 그룹 자기자본 하나로 잰다.
+   *
+   * 어느 한쪽이 문을 닫으면 그룹도 실패다(F). 제조사가 무너진 채 항공사만 굴러가는
+   * 판을 "잘한 경영"으로 부를 수는 없다 — 통합 모드는 둘을 함께 지고 가는 판이다.
+   *
+   * **배점은 두 게임에서 그대로 물려받은 것이지 새로 잰 값이 아니다.** 제조사 쪽에는
+   * 자동조종이 없어 이 모드의 점수 분포를 시뮬레이션으로 확인하지 못했다. 각 항목은
+   * 제 게임에서 이미 보정된 눈금이고 문턱도 공유하지만, 합쳐 놓은 분포는 미측정이다.
+   */
+  function groupScore(mfg, sky, airlineId) {
+    if (!mfg || !sky || !airlineId) return null;
+    const a = St.airline(sky, airlineId);
+    if (!a) return null;
+
+    // **여기서도 이력을 옮긴다.** 이관은 `beforeTurns` 에서 도는데, 이미 끝난 판(마지막
+    // 분기이거나 한쪽이 파산한 판)은 분기를 더 넘기지 않으므로 그 자리가 영영 안 온다 —
+    // 옛 세이브의 자체 인도분이 성적표에 그대로 시장 성과로 남는다. 표식이 있어 두 번
+    // 돌지는 않는다.
+    migrateInHouseCounters(mfg, sky, airlineId);
+    // **여기서 미납분도 정산한다.** 이관이 되돌려 줄 착수금을 `inHouseRefund` 에 적어
+    // 두는데, 끝난 판은 `betweenTurns` 를 더 돌지 않아 그 돈이 자회사에 영영 안 들어간다 —
+    // 제조사에서는 나갔는데 항공사에는 안 들어와 성적표의 그룹 자본이 그만큼 낮아진다.
+    settleRefund(mfg, sky, airlineId);
+    const eq = combinedEquity(mfg, sky, airlineId);
+    const alive = !!a.alive && !(mfg.gameOver && mfg.gameOver.reason === 'bankrupt');
+    // 증자로 불린 자본은 그만큼 우리 몫이 아니다 — 제조사 점수가 이미 쓰는 규칙이다.
+    // 안 걸면 "성적을 깎는다"고 안내된 증자가 그룹 점수를 되레 올린다.
+    const ownership = 1 - (mfg.equityDilution || 0);
+    // **회사 환산 배수도 건다.** 제조사 게임이 순자산 항목에 거는 그 배수다(보잉 0.45 ·
+    // 엠브라에르 1.5) — 물려받은 대차대조표가 회사마다 판이하니 그대로 재면 등급이
+    // 난이도표가 아니라 회사 선택표가 된다. 운영 항목에만 걸고 정작 더 큰 자본 항목을
+    // 빼 두면, 거인을 고르는 것만으로 보정 없는 수백 점을 얻는다.
+    const mult = mfg.scoreMult || 1;
+
+    const rows = [
+      {
+        label: '그룹 자본',
+        detail: `${Math.round(eq.total / MUSD)}M × ${GROUP_EQUITY_RATE}${
+          ownership < 1 ? ` · 우리 몫 ${(ownership * 100).toFixed(0)}%` : ''
+        }${mult !== 1 ? ` · 회사 환산 ×${mult}` : ''}${eq.internal ? ' · 계열 상계 후' : ''}`,
+        points: Math.round((Math.max(0, eq.total) / MUSD) * GROUP_EQUITY_RATE * ownership * mult),
+      },
+    ];
+    rows.push({
+      label: '제조사 운영',
+      detail: '누적 인도 · 시장 점유율 · 평판 (순자산은 그룹 자본에서 센다)',
+      points: E.operatingScore(mfg),
+    });
+    // **자회사 운영 항목에도 같은 희석을 건다.** 증자는 모회사의 지분을 파는 일이고,
+    // 자회사는 그 모회사가 통째로 가진 회사다 — 여기만 원값으로 두면 승객과 노선망에
+    // 점수를 몰아 "성적을 깎는다"고 안내된 증자를 피해 갈 수 있다.
+    const air = St.operatingScore(sky, airlineId);
+    for (const r of air.rows) {
+      rows.push({
+        label: `항공사 ${r.label}`,
+        detail: r.detail + (ownership < 1 ? ` · 우리 몫 ${(ownership * 100).toFixed(0)}%` : ''),
+        points: Math.round(r.points * ownership),
+      });
+    }
+
+    const score = alive ? rows.reduce((x, r) => x + r.points, 0) : 0;
+    let grade = 'F';
+    if (alive) {
+      grade = 'D';
+      for (const [g, cut] of GROUP_CUTS) {
+        if (score >= cut) {
+          grade = g;
+          break;
+        }
+      }
+    }
+    return { score, grade, alive, rows, equity: eq };
+  }
+
+  /**
+   * 이 기종의 자체 발주 중 **이미 만들어 둔 재고로 덮이는 대수**.
+   *
+   * `runDeliveries` 는 수주 장부를 우선순위와 수주 시점으로 한 줄로 세우고 앞에서부터
+   * 재고를 꺼내 준다. 그러니 재고를 통째로 내 몫으로 치면 앞선 외부 주문이 다 가져갈
+   * 때도 "막힌 기체 0" 이라 안심시키고, 거꾸로 남의 주문을 전부 빼면 내 주문이 더
+   * 앞줄일 때도 "영영 안 온다"고 겁을 준다 — 둘 다 비싼 라인을 잘못 세우게 만든다.
+   * 그래서 세는 대신 **인도가 쓰는 그 줄을 그대로 걸어 본다**(`E.deliveryQueue`).
+   */
+  function coveredByStock(mfg, programId) {
+    const p = (mfg.programs || []).find((x) => x.id === programId);
+    if (!p) return 0;
+    let stock = p.stock || 0;
+    let mine = 0;
+    for (const o of E.deliveryQueue(mfg)) {
+      if (stock <= 0) break;
+      if (o.programId !== programId) continue;
+      const n = Math.min(o.remaining, stock);
+      stock -= n;
+      if (o.inHouse) mine += n;
+    }
+    return mine;
+  }
+
   /** 아직 인도되지 않은 자체 발주의 선급금 — 그룹 안에서만 오간 돈이다. */
   function internalPrepaid(sky, airlineId) {
     if (!sky || !sky.orders) return 0;
@@ -241,8 +429,73 @@
    * 지수로 결산한다 — 둘 다 0분기에서 시작했는데 항공사의 첫 결산만 1분기 유가를
    * 쓴다. 두 계층의 같은 분기 리포트는 같은 조건에서 나와야 한다.
    */
+  /**
+   * 옛 세이브의 자체 인도 이력을 옮긴다.
+   *
+   * 자체 인도 대수를 세기 시작한 것은 나중이라, 그전에 만든 통합 판에는 계수가 없다.
+   * 그대로 두면 이미 자회사에 넘긴 기체가 전부 **시장에서 이긴 것**으로 세어져 점유율과
+   * 인도 점수를 그냥 가져간다.
+   *
+   * 지금 남은 자료로 셀 수 있는 것은 자회사가 **아직 굴리고 있는** 자사 기체뿐이다 —
+   * 팔았거나 잃은 기체는 되짚을 수 없으니 이 값은 하한이다. 그래도 전부 시장 성과로
+   * 세는 것보다는 참에 가깝다. 한 번만 돌도록 표식을 남긴다.
+   */
+  function migrateInHouseCounters(mfg, sky, airlineId) {
+    if (!mfg || !sky) return;
+    // 어느 회사가 계열인지는 표식과 무관하게 매번 맞춘다 — 옛 세이브에는 이 값이 없고,
+    // 없으면 계열 선단의 정비 수익이 그대로 그룹 자본에 들어간다.
+    mfg.inHouseAirlineId = airlineId;
+    // **아직 안 나간 자체 발주를 원가로 되맞춘다.** 정가로 넘기던 시절의 주문이 장부에
+    // 남아 있으면, 인도 때 재고는 원가로 빠지고 자회사는 정가로 자본화해 이전 한 번마다
+    // 마진만큼의 그룹 자본이 생긴다. 엔진이 더 받아 둔 착수금을 `inHouseRefund` 에
+    // 적어 두면 `reconcileOrders` 가 자회사에 넘긴다 — 돌려받은 만큼 선급금도 줄여야
+    // 두 장부가 같은 값을 말한다. 엔진 쪽에 표식이 있어 한 번만 돈다.
+    const back = E.rebaseInHouseOrders(mfg);
+    if (back > 0) reduceExternalPrepaid(sky, airlineId, back * MUSD);
+    if (mfg.inHouseMigrated) return;
+    mfg.inHouseMigrated = true;
+    if (mfg.stats && typeof mfg.stats.inHouseDelivered === 'number') return;
+    const shareBefore = E.marketShare(mfg);
+    const own = new Set((mfg.programs || []).map((p) => p.id));
+    const byType = {};
+    for (const p of sky.planes || []) {
+      if (p.airlineId === airlineId && own.has(p.typeId)) byType[p.typeId] = (byType[p.typeId] || 0) + 1;
+    }
+    let total = 0;
+    for (const p of mfg.programs || []) {
+      const n = byType[p.id] || 0;
+      if (!n) continue;
+      // 실제로 인도된 것보다 많이 뺄 수는 없다.
+      const capped = Math.min(n, p.delivered || 0);
+      p.inHouseDelivered = (p.inHouseDelivered || 0) + capped;
+      total += capped;
+    }
+    if (!mfg.stats) mfg.stats = {};
+    mfg.stats.inHouseDelivered = (mfg.stats.inHouseDelivered || 0) + total;
+    // 이미 발령된 이사회 목표는 옛 계수로 잡힌 값이다 — 진도가 내려간 만큼 목표도
+    // 내린다. 세이브를 열었다는 이유만으로 남은 몫이 늘어나면 안 된다.
+    E.rebaseMandate(mfg, total, shareBefore - E.marketShare(mfg));
+  }
+
+  /**
+   * 되돌려 받은 착수금만큼 자회사의 선급금 기록을 줄인다.
+   *
+   * 장부를 잇는 규칙은 `reconcileOrders` 와 같다 — 기종별 총량으로 맞춘다. 자체 발주에는
+   * 두 장부를 잇는 번호가 없고, 이 계층의 다른 대조도 전부 그렇게 하고 있다.
+   */
+  function reduceExternalPrepaid(sky, airlineId, amount) {
+    if (!sky || !sky.orders || amount <= 0) return;
+    const mine = sky.orders.filter((o) => o.external && o.airlineId === airlineId && o.paid > 0);
+    const total = mine.reduce((x, o) => x + o.paid, 0);
+    if (total <= 0) return;
+    // 줄일 수 있는 것보다 더 줄이지는 않는다.
+    const cut = Math.min(amount, total);
+    for (const o of mine) o.paid -= cut * (o.paid / total);
+  }
+
   function beforeTurns(mfg, sky, airlineId) {
     if (!mfg || !sky || !airlineId) return;
+    migrateInHouseCounters(mfg, sky, airlineId);
     // 이 판이 통합 판이라는 표식. 명령 계층은 껍데기를 모르지만, 자사 기종을 일반
     // 발주로 살 수 없다는 규칙은 알아야 한다.
     sky.groupAirlineId = airlineId;
@@ -266,7 +519,13 @@
     if (!mfg || !sky || !airlineId) return [];
     // 인도된 기체가 방금 인증된 기종일 수 있다 — 표를 한 번 더 맞춘다.
     St.refreshTypes(sky, mfg.programs);
-    return receiveDeliveries(mfg, sky, report, airlineId);
+    const got = receiveDeliveries(mfg, sky, report, airlineId);
+    // **두 장부를 여기서 맞춘다 — 항공사가 정산하기 전에.** 제조사가 계약을 깨며
+    // 물어 준 돈이 뒤늦게 들어오면, 자회사는 그 돈 없이 한 분기를 나야 한다 — 멀쩡한
+    // 기재를 급매로 팔거나 자본잠식 문턱을 넘어 문을 닫는다. 닫고 나면 줄 상대가
+    // 없어져 그 돈은 영영 전달되지 않는다.
+    reconcileOrders(mfg, sky, airlineId);
+    return got;
   }
 
   /**
@@ -279,6 +538,9 @@
     if (!mfg || !sky || !airlineId) return [];
     // 이번 분기 정산 끝에 새로 뽑힌 공고에도 자회사가 섞여 있다.
     E.dropAirlineRfps(mfg, airlineId);
+    // 정산 중에 또 사라진 자체 발주가 있으면 여기서 한 번 더 맞춘다. (본 대조는
+    // 항공사 정산 **전**인 `betweenTurns` 에서 돈다 — 위 주석 참조.)
+    reconcileOrders(mfg, sky, airlineId);
     // 자회사가 문을 닫았으면 제조사 장부의 자체 발주도 지운다. 남겨 두면 몇 분기 뒤
     // 받을 상대 없이 인도되면서 잔금이 매출로 잡힌다.
     const a = St.airline(sky, airlineId);
@@ -301,8 +563,14 @@
     placeOrder,
     receiveDeliveries,
     consumeOrder,
+    reconcileOrders,
+    migrateInHouseCounters,
     applyRivalry,
     combinedEquity,
+    coveredByStock,
+    groupScore,
+    GROUP_EQUITY_RATE,
+    GROUP_CUTS,
     internalPrepaid,
     beforeTurns,
     betweenTurns,
