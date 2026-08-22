@@ -138,8 +138,17 @@
     // 거기에 대수를 곱하면 실제 청구액과 어긋난다(84.8M 기종 2기는 실제 25M 인데 곱하면
     // 26M, 5기는 64M 인데 65M). 그 차이만큼, 낼 수 있는 돈으로도 단추가 잠긴다.
     const QTYS = [1, 2, 5];
+    // **만들 수 있는 기종인지 함께 본다.** 조립 라인이 없으면 재고가 안 나오고, 재고가
+    // 없으면 인도가 영영 안 된다 — 발주는 받아 주면서 아무 말도 안 하면 플레이어는
+    // 몇 해를 기다리다 "인도가 안 된다"고 읽는다. 실제로 그렇게 됐다.
+    const lineState = (id) => {
+      const ls = (mfg.lines || []).filter((l) => l.programId === id);
+      if (!ls.length) return { ok: false, why: '조립 라인 없음 — 세우기 전에는 한 대도 못 만든다' };
+      if (ls.every((l) => l.idle)) return { ok: false, why: '조립 라인이 모두 가동 중지 상태다' };
+      return { ok: true, why: '' };
+    };
     const progs = G.orderablePrograms(mfg)
-      .map((p) => ({ base: G.quote(mfg, p.id, 1), lots: QTYS.map((n) => G.quote(mfg, p.id, n)) }))
+      .map((p) => ({ base: G.quote(mfg, p.id, 1), lots: QTYS.map((n) => G.quote(mfg, p.id, n)), line: lineState(p.id) }))
       .filter((x) => x.base);
     const me = St.airline(s, meId);
     const pending = (s.orders || []).filter((o) => o.external && o.airlineId === meId);
@@ -171,13 +180,14 @@
       ${
         progs.length
           ? `<ul class="lines">${progs
-              .map(({ base, lots }) => {
+              .map(({ base, lots, line }) => {
                 const dep = base.deposit * G.MUSD;
                 return `<li>
                   <b>${esc(base.name)}</b>
                   <span class="muted">대당 ${money(base.unitPrice * G.MUSD)} · 1기 착수금 ${money(dep)}${
                     me.cash >= dep ? '' : ' — 현금 부족'
                   }</span>
+                  ${line.ok ? '' : `<span class="warn">⚠ ${esc(line.why)}</span>`}
                   <span class="row">
                     ${lots
                       .map((q) =>
@@ -196,9 +206,17 @@
       }
       ${
         pending.length
-          ? `<p class="muted">인도 대기 ${pending.reduce((x, o) => x + o.count, 0)}기 · 선급금 ${money(
-              pending.reduce((x, o) => x + o.paid, 0),
-            )}</p>`
+          ? (() => {
+              const stuck = pending.filter((o) => !lineState(o.typeId).ok);
+              const n = pending.reduce((x, o) => x + o.count, 0);
+              return `<p class="muted">인도 대기 ${n}기 · 선급금 ${money(pending.reduce((x, o) => x + o.paid, 0))}</p>
+                ${
+                  stuck.length
+                    ? `<p class="warn">발주해 둔 ${stuck.reduce((x, o) => x + o.count, 0)}기는 <b>만들 라인이 없어 오지 않는다</b>.
+                       제조사 화면 <b>생산</b> 탭에서 라인을 세워야 한다.</p>`
+                    : ''
+                }`;
+            })()
           : ''
       }
 

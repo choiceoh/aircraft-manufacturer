@@ -696,9 +696,13 @@
       weight: 7,
       // 정부 계약(gov)은 항공사 사정과 무관하다 — 공군 발주가 경기 때문에 날아가면
       // 개조비를 이미 낸 플레이어가 이유 없이 당한다.
-      condition: (s) => s.backlog.some((o) => o.remaining > 0 && !o.gov),
+      //
+      // 자체 발주(inHouse)도 마찬가지다. 계열 항공사는 **내가 굴리는 회사**라, 무를지
+      // 말지는 내 결정이지 사건이 대신 내릴 판단이 아니다. 경기 충격은 그 회사의
+      // 노선과 수요를 통해 이미 그대로 온다 — 여기서 한 번 더 때리면 이중이다.
+      condition: (s) => s.backlog.some((o) => o.remaining > 0 && !o.gov && !o.inHouse),
       apply: (s, h) => {
-        const live = s.backlog.filter((o) => o.remaining > 0 && !o.gov);
+        const live = s.backlog.filter((o) => o.remaining > 0 && !o.gov && !o.inHouse);
         const order = h.rng.pick(live);
         const cut = Math.max(1, Math.round(order.remaining * h.rng.range(0.2, 0.5)));
         order.remaining -= cut;
@@ -981,8 +985,9 @@
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.66);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 7);
         // 발주 취소가 실제로 쏟아졌다. 정부 계약은 예외 — 국방 예산은 여객 수요를 안 탄다.
+        // 계열 항공사도 예외다(위 `order_cancel` 참조 — 무를지는 내 결정이다).
         let cancelled = 0;
-        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov && !x.inHouse)) {
           const cut = Math.round(o.remaining * h.rng.range(0.15, 0.4));
           if (cut > 0) {
             o.remaining -= cut;
@@ -1058,8 +1063,8 @@
         s.market.demandIndex = Math.max(0.45, s.market.demandIndex * 0.72);
         s.effects.demandSlumpQuarters = Math.max(s.effects.demandSlumpQuarters || 0, 5);
         let lost = 0;
-        // 항공사 파산의 충격이다 — 정부 계약은 비켜 간다.
-        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov)) {
+        // 항공사 파산의 충격이다 — 정부 계약과 계열 항공사는 비켜 간다.
+        for (const o of s.backlog.filter((x) => x.remaining > 0 && !x.gov && !x.inHouse)) {
           if (!h.rng.chance(0.45)) continue;
           const cut = Math.round(o.remaining * h.rng.range(0.2, 0.5));
           if (cut > 0) {

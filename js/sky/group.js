@@ -166,6 +166,44 @@
     sky.orders = sky.orders.filter((o) => !o.external || o.count > 0);
   }
 
+  /**
+   * 두 장부의 자체 발주 대수를 맞춘다.
+   *
+   * 제조사 쪽에서 자체 발주가 줄어드는 길은 인도만이 아니다 — 프로그램 취소, 사건,
+   * 그 밖에 앞으로 생길 무엇이든 장부를 건드릴 수 있다. 그때 항공사 쪽 선급금을
+   * 안 지우면, **오지 않을 기체의 값이 자산으로 남는다.** 실제로 그랬다: 취소 사건이
+   * 계열 발주를 물어 제조사 잔고는 줄었는데 항공사는 선급금 3기를 그대로 들고 있었고,
+   * 화면에는 영영 오지 않을 "인도 예정"이 떴다.
+   *
+   * 그래서 **왜 줄었는지 묻지 않고 결과만 맞춘다.** 취소 경로를 하나씩 막는 것으로는
+   * 다음에 생길 경로를 못 막는다.
+   *
+   * 착수금은 돌려주지 않는다 — 제조사 장부에 위약금으로 남는다는 것이 이 게임의 규칙이고,
+   * 그룹 합산으로는 한 주머니에서 다른 주머니로 옮긴 것이라 성적도 움직이지 않는다.
+   */
+  function reconcileOrders(mfg, sky, airlineId) {
+    if (!mfg || !sky || !sky.orders || !sky.orders.length) return [];
+    const live = {};
+    for (const o of mfg.backlog || []) {
+      if (o.inHouse && o.airlineId === airlineId && o.remaining > 0) {
+        live[o.programId] = (live[o.programId] || 0) + o.remaining;
+      }
+    }
+    const lost = [];
+    const mine = {};
+    for (const o of sky.orders) {
+      if (o.external && o.airlineId === airlineId) mine[o.typeId] = (mine[o.typeId] || 0) + o.count;
+    }
+    for (const typeId of Object.keys(mine)) {
+      const gap = mine[typeId] - (live[typeId] || 0);
+      if (gap > 0) {
+        consumeOrder(sky, airlineId, typeId, gap);
+        lost.push({ typeId, count: gap });
+      }
+    }
+    return lost;
+  }
+
   // ── 불신 ──────────────────────────────────────────────────────────
 
   /**
@@ -351,6 +389,8 @@
     if (!mfg || !sky || !airlineId) return [];
     // 이번 분기 정산 끝에 새로 뽑힌 공고에도 자회사가 섞여 있다.
     E.dropAirlineRfps(mfg, airlineId);
+    // 제조사 장부에서 사라진 자체 발주가 항공사 쪽에 선급금으로 남아 있지 않게 한다.
+    reconcileOrders(mfg, sky, airlineId);
     // 자회사가 문을 닫았으면 제조사 장부의 자체 발주도 지운다. 남겨 두면 몇 분기 뒤
     // 받을 상대 없이 인도되면서 잔금이 매출로 잡힌다.
     const a = St.airline(sky, airlineId);
@@ -373,6 +413,7 @@
     placeOrder,
     receiveDeliveries,
     consumeOrder,
+    reconcileOrders,
     applyRivalry,
     combinedEquity,
     foundingEquity,

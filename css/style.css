@@ -1861,3 +1861,16 @@ details.fold > table:first-of-type {
   display: block;
   font-size: 13px;
 }
+
+/* 경고 한 줄. `.warn-box` 는 카드만 한 덩어리라 목록 항목 안에서는 너무 크다 —
+   이건 "이 줄에 관한 경고"다. */
+.warn {
+  display: block;
+  color: var(--warn);
+  font-size: 12px;
+  margin-top: 2px;
+}
+p.warn {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
