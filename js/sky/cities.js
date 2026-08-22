@@ -122,6 +122,18 @@
     return d;
   }
 
+  /**
+   * 도시 **객체** 두 개 사이의 거리.
+   *
+   * 카탈로그에 있는 도시면 캐시를 타고, 아니면 그 자리에서 잰다. 수요 모델을
+   * 합성 도시로 시험할 수 있어야 거리에 따른 성질(철도 억제 등)을 실제 도시쌍의
+   * 규모 차이에 가리지 않고 볼 수 있다.
+   */
+  function between(a, b) {
+    if (BY_ID[a.id] && BY_ID[b.id]) return distance(a.id, b.id);
+    return greatCircle(a, b);
+  }
+
   /** 등장방형 투영 — 0~1 로 정규화된 지도 좌표 */
   function project(lat, lon) {
     return { x: (lon + 180) / 360, y: (90 - lat) / 180 };
@@ -148,5 +160,5 @@
     return out;
   }
 
-  root.AirlinerCities = { REGIONS, CITIES, get, name, inRegion, pairs, distance, greatCircle, pairKey, project };
+  root.AirlinerCities = { REGIONS, CITIES, get, name, inRegion, pairs, distance, between, greatCircle, pairKey, project };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

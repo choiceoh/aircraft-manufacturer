@@ -58,8 +58,10 @@
   function annualBase(a, b, devA, devB) {
     const dA = devA === undefined ? 1 : devA;
     const dB = devB === undefined ? 1 : devB;
-    const d = Cities.distance(a.id, b.id);
-    if (d < 1) return { business: 0, leisure: 0, total: 0 };
+    const d = Cities.between(a, b);
+    // 같은 도시끼리도 다른 경로와 **같은 모양**으로 돌려준다. 맨 객체를 돌려주면
+    // businessShare 가 undefined 가 되어, 부르는 쪽이 0 을 기대하다 조용히 어긋난다.
+    if (d < 1) return pair(0, 0);
 
     const econA = a.standing * dA;
     const econB = b.standing * dB;
