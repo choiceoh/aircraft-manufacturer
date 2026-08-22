@@ -385,6 +385,9 @@
         alive: true,
         negativeQuarters: 0,
         results: [],
+        // 창업 자본은 여기서 새긴다. 최종 성적이 이걸 기준으로 성장을 재는데, 나중에
+        // 다시 세면 그동안의 성장이 기준에 섞여 배수가 늘 1 에 붙는다.
+        startEquity: 0,
       });
     }
 
@@ -410,6 +413,7 @@
       types,
     };
     bootstrapRoutes(s, rng);
+    for (const a of s.airlines) a.startEquity = equity(s, a);
     // 첫 분기의 입고도 판을 열 때 이미 정해져 있어야 한다.
     scheduleChecks(s);
     s.rngState = rng.getState();
@@ -760,6 +764,109 @@
     return s;
   }
 
+  // ── 최종 성적 ──
+
+  /**
+   * 20년의 성적.
+   *
+   * **자기자본을 절대값이 아니라 창업 대비 배수로 잰다.** 에미레이트는 대한항공의 두 배로
+   * 시작하므로, 절대값으로 재면 등급이 난이도표가 아니라 회사 선택표가 된다 — 제조사 쪽
+   * `scoreMult` 가 막으려는 것과 같은 문제다.
+   *
+   * 셋을 함께 본다. 자본만 보면 노선을 안 열고 현금을 깔고 앉는 것이 정답이 되고,
+   * 수송량만 보면 적자로 태우는 것이 정답이 된다. 노선망 크기는 "세계를 얼마나 이었나" —
+   * 허브 하나에 웅크린 판과 대륙을 잇는 판을 가른다.
+   */
+  const SCORE = {
+    /** 자본이 두 배가 되면 2,000점 */
+    GROWTH: 2000,
+    /** 누적 승객 2만 5천 명당 1점 */
+    PAX_PER_POINT: 25000,
+    /** 취항 도시 하나당 */
+    PER_CITY: 48,
+  };
+
+  /**
+   * 등급 문턱은 **제조사 쪽 값을 그대로** 쓴다(S 7,000 · A 4,600 · B 3,000 · C 1,700).
+   * 그래야 두 게임의 성적표를 나란히 읽을 수 있다. 대신 위의 배점을 자동조종 120판
+   * (열두 회사 × 열 시드)의 분포에 맞춰 잡았다 — 중앙값이 B 한가운데(3,635), 상위
+   * 25%가 A(5,489), 상위 10%가 S 문턱 근처(6,742)에 오도록.
+   *
+   *   S 11 · A 32 · B 41 · C 16 · D 13 · F 7  (120판)
+   *
+   * 자동조종은 경쟁사를 굴리는 그 AI 다. 그러니 중앙값이 B 라는 것은 "기계만큼 하면 B,
+   * 더 잘해야 A" 라는 뜻이다.
+   */
+  const GRADE_CUTS = [
+    ['S', 7000],
+    ['A', 4600],
+    ['B', 3000],
+    ['C', 1700],
+  ];
+
+  function finalScore(s, airlineId) {
+    const a = airline(s, airlineId);
+    if (!a) return null;
+    const pax = a.results.reduce((x, r) => x + r.pax, 0);
+    const routes = routesOf(s, airlineId).filter((r) => r.active);
+    const cities = new Set();
+    for (const r of routes) {
+      cities.add(r.from);
+      cities.add(r.to);
+    }
+    const eq = a.alive ? equity(s, a) : 0;
+    // 창업 자본은 판을 열 때 새겨 둔다 — 지금 다시 세면 그동안의 성장이 기준에 섞인다.
+    const start = a.startEquity || 1;
+    const growth = Math.max(0, eq / start - 1);
+
+    const rows = [
+      { label: '자본 성장', detail: `${(eq / start).toFixed(2)}배 (창업 ${Math.round(start / 1e6)}M → ${Math.round(eq / 1e6)}M)`, points: Math.round(growth * SCORE.GROWTH) },
+      { label: '누적 승객', detail: `${Math.round(pax / 1e6)}백만 명`, points: Math.round(pax / SCORE.PAX_PER_POINT) },
+      { label: '노선망', detail: `${cities.size}개 도시 · ${routes.length}개 노선`, points: cities.size * SCORE.PER_CITY },
+    ];
+    const score = a.alive ? rows.reduce((x, r) => x + r.points, 0) : 0;
+
+    // 파산은 아무리 많이 실어 날랐어도 실패다 — 등급으로 성적을 덮지 않는다.
+    let grade = 'F';
+    if (a.alive) {
+      grade = 'D';
+      for (const [g, cut] of GRADE_CUTS) {
+        if (score >= cut) {
+          grade = g;
+          break;
+        }
+      }
+    }
+
+    // 순위는 같은 잣대로 매긴다 — "나만 잘했나"가 아니라 "누구보다 잘했나".
+    // 접힌 회사도 자리를 차지한다(꼴찌로) — 살아남은 것 자체가 성적이기 때문이다.
+    const ranked = s.airlines
+      .map((x) => ({ id: x.id, score: x.alive ? scoreOf(s, x) : -1 }))
+      .sort((p2, q2) => q2.score - p2.score || (p2.id < q2.id ? -1 : 1));
+
+    return {
+      score,
+      grade,
+      rows,
+      pax,
+      cities: cities.size,
+      routes: routes.length,
+      equity: eq,
+      startEquity: start,
+      rank: ranked.findIndex((x) => x.id === airlineId) + 1,
+      of: s.airlines.length,
+    };
+  }
+
+  /** 점수만 — 순위를 매길 때 서로를 부르지 않으려고 따로 둔다. */
+  function scoreOf(s, a) {
+    const pax = a.results.reduce((x, r) => x + r.pax, 0);
+    const cities = new Set();
+    for (const r of routesOf(s, a.id)) if (r.active) cities.add(r.from), cities.add(r.to);
+    const growth = Math.max(0, equity(s, a) / (a.startEquity || 1) - 1);
+    return Math.round(growth * SCORE.GROWTH + pax / SCORE.PAX_PER_POINT + cities.size * SCORE.PER_CITY);
+  }
+
   root.AirlinerSkyState = {
     BALANCE: B,
     inflationFor,
@@ -799,6 +906,9 @@
     checkSoon,
     checkCost,
     scheduleChecks,
+    finalScore,
+    SCORE,
+    GRADE_CUTS,
     newGame,
     bootstrapRoutes,
     advance,

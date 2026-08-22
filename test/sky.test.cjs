@@ -1548,3 +1548,79 @@ test('화면: 날짜변경선을 넘는 노선도 그린다', () => {
     }
   }
 });
+
+// ── 최종 성적 ──
+
+test('성적: 창업 규모가 큰 회사가 그것만으로 앞서지 않는다', () => {
+  // 에미레이트는 대한항공의 두 배로 시작한다. 자기자본을 절대값으로 재면 등급이
+  // 난이도표가 아니라 회사 선택표가 된다 — 제조사 쪽 `scoreMult` 가 막는 것과 같다.
+  const s = St.newGame(1234);
+  const big = St.airline(s, 'carta');
+  const small = St.airline(s, 'hanul');
+  assert.ok(big.startEquity > small.startEquity * 1.3, '창업 규모가 갈려야 검사가 산다');
+  // 아무것도 안 하고 곧바로 끝내면 둘 다 성장 0 점이다.
+  s.turn = s.totalTurns;
+  assert.strictEqual(St.finalScore(s, big.id).rows[0].points, 0, '큰 회사가 가만히 있어도 점수를 받았다');
+  assert.strictEqual(St.finalScore(s, small.id).rows[0].points, 0, '작은 회사도 마찬가지여야 한다');
+});
+
+test('성적: 창업 자본은 판을 열 때 새겨 둔다', () => {
+  // 나중에 다시 세면 그동안의 성장이 기준에 섞여 배수가 늘 1 에 붙는다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const at0 = a.startEquity;
+  assert.ok(at0 > 0, '창업 자본이 새겨져야 한다');
+  for (let i = 0; i < 40; i++) St.advance(s, { beforeMarket: (st, rng) => Ai.actAll(st, rng) });
+  assert.strictEqual(a.startEquity, at0, '창업 자본이 움직였다');
+});
+
+test('성적: 파산은 아무리 실어 날랐어도 F 다', () => {
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  for (let i = 0; i < 12; i++) St.advance(s, { beforeMarket: (st, rng) => Ai.actAll(st, rng) });
+  const before = St.finalScore(s, a.id);
+  assert.ok(before.pax > 0, '승객을 실어 날랐어야 한다');
+  // 자산보다 큰 빚을 지운다. 현금만 비우면 기재를 팔아 메우고 살아남는다 — 그게
+  // 정상이다(자본잠식이 이어져야 접힌다). 여기서 보려는 건 접힌 뒤의 성적이다.
+  a.debt = 20e9;
+  for (let i = 0; i <= St.BALANCE.NEGATIVE_QUARTERS_TO_FOLD; i++) {
+    St.advance(s, { beforeMarket: (st, rng) => Ai.actAll(st, rng, { playerId: a.id }) });
+    if (!a.alive) break;
+  }
+  assert.ok(!a.alive, '자본잠식이 이어졌는데 안 접혔다');
+  const f = St.finalScore(s, a.id);
+  assert.strictEqual(f.grade, 'F', '파산인데 F 가 아니다');
+  assert.strictEqual(f.score, 0, '파산에 점수가 남으면 안 된다');
+});
+
+test('성적: 자동조종 분포가 B 를 한가운데 둔다', () => {
+  // 자동조종은 경쟁사를 굴리는 그 AI 다. 중앙값이 B 라는 것은 "기계만큼 하면 B,
+  // 더 잘해야 A" 라는 뜻이다. 배점을 건드리면 이 성질이 먼저 깨진다.
+  const counts = { S: 0, A: 0, B: 0, C: 0, D: 0, F: 0 };
+  const scores = [];
+  for (const seed of [1234, 777, 20260822]) {
+    const s = playedWithAi(seed, 80);
+    for (const a of s.airlines) {
+      const f = St.finalScore(s, a.id);
+      counts[f.grade]++;
+      scores.push(f.score);
+    }
+  }
+  scores.sort((x, y) => x - y);
+  const median = scores[Math.floor(scores.length / 2)];
+  assert.ok(median >= 3000 && median < 4600, `중앙값이 B 밴드여야 한다 (${median})`);
+  assert.ok(counts.S + counts.A < scores.length / 2, `절반 넘게 A 이상이면 등급이 헐겁다 (${counts.S}+${counts.A}/${scores.length})`);
+  assert.ok(counts.B > 0 && counts.C > 0, '중간 등급이 실제로 나와야 한다');
+});
+
+test('화면: 판이 끝나면 성적표가 뜬다', () => {
+  const s = playedWithAi(1234, 80);
+  const me = s.airlines.find((a) => a.alive).id;
+  const html = SP.renderOverview(s, me, new Set());
+  assert.ok(/sky-final/.test(html), '성적표가 없다');
+  assert.ok(/자본 성장|누적 승객|노선망/.test(html), '항목별 점수가 없다 — 등급만 던지면 무엇을 잘했는지 안 남는다');
+
+  // 진행 중에는 뜨지 않는다.
+  const mid = playedWithAi(1234, 8);
+  assert.ok(!/sky-final/.test(SP.renderOverview(mid, me, new Set())), '아직 안 끝났는데 성적표가 떴다');
+});

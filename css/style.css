@@ -1738,3 +1738,21 @@ details.fold > table:first-of-type {
   opacity: 0.4;
   pointer-events: none;
 }
+
+/* 최종 성적표 */
+.sky-final {
+  position: relative;
+  border-color: var(--accent2);
+}
+.sky-grade {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  font-size: 46px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -2px;
+}
+.sky-final h3 {
+  padding-right: 60px;
+}

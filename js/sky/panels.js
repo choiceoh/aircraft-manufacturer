@@ -78,11 +78,13 @@
       .sort((x, y) => y.eq - x.eq);
     const rank = ranked.findIndex((x) => x.a.id === meId) + 1;
 
+    const over = s.turn >= s.totalTurns || !me.alive;
     return `
     <section class="cards">
+      ${over ? finalCard(s, meId) : ''}
       <div class="card">
         <h3>${esc(me.name)}</h3>
-        <p class="muted">${esc(Cities.name(me.home))} 기반 · ${St.living(s).length}사 중 <b>${rank}위</b></p>
+        <p class="muted">${esc(Cities.name(me.home))} 기반 · 자기자본 <b>${rank}위</b> / 생존 ${St.living(s).length}사</p>
         <div class="sky-stats">
           ${stat('자기자본', money(St.equity(s, me)))}
           ${stat('현금', money(me.cash))}
@@ -201,6 +203,35 @@
         )
         .join('')}
       </tbody></table>
+    </div>`;
+  }
+
+  /**
+   * 최종 성적표.
+   *
+   * 등급만 던지면 무엇을 잘하고 못했는지가 남지 않는다 — 항목별 점수를 함께 편다
+   * (제조사 쪽 `scoreBreakdown` 과 같은 규칙).
+   */
+  function finalCard(s, meId) {
+    const f = St.finalScore(s, meId);
+    if (!f) return '';
+    const a = St.airline(s, meId);
+    const why = a.alive ? `${s.startYear + Math.floor((s.totalTurns - 1) / 4)}년 · 20년 경영을 마쳤다` : '자본이 마르고 회사가 문을 닫았다';
+    return `<div class="card full sky-final">
+      <div class="sky-grade ${f.grade === 'F' ? 'bad' : 'good'}">${f.grade}</div>
+      <h3>${esc(a.name)} — ${num(f.score)}점</h3>
+      <p class="muted">${esc(why)} · 열두 회사 중 <b>${f.rank}위</b> (점수 기준)</p>
+      <table class="tbl"><tbody>
+        ${f.rows
+          .map(
+            (r) => `<tr><td><b>${esc(r.label)}</b><br><span class="muted">${esc(r.detail)}</span></td>
+              <td class="r">${a.alive ? num(r.points) : '—'}</td></tr>`,
+          )
+          .join('')}
+        <tr class="sum"><td><b>합계</b></td><td class="r"><b>${num(f.score)}</b></td></tr>
+      </tbody></table>
+      <p class="muted">S 7,000 · A 4,600 · B 3,000 · C 1,700 — 제조사 쪽과 같은 눈금이다.
+        ${a.alive ? '' : '파산은 아무리 많이 실어 날랐어도 F 다.'}</p>
     </div>`;
   }
 
@@ -571,6 +602,7 @@
   root.AirlinerSkyPanels = {
     money,
     renderOverview,
+    finalCard,
     renderRoutes,
     renderFleet,
     renderOpen,
