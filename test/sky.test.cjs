@@ -534,6 +534,180 @@ test('시장: 태평양 노선은 한 대를 넘겨 키울 수가 없다', () =>
   assert.ok(one.margin > 0 && two.margin < 0, `한 대는 흑자, 두 대는 적자여야 한다 (${(one.margin * 100).toFixed(0)}% → ${(two.margin * 100).toFixed(0)}%)`);
 });
 
+/** 노선망 하나를 통째로 굴린다 — 1단계(직항) + 2단계(허브 환승). */
+function network(legs, opts = {}) {
+  const home = opts.home || legs[0].from;
+  const airline = { id: 'me', name: 'me', home, brand: 40, serviceLevel: 3, safety: 1, alive: true, slots: {} };
+  const routes = [];
+  const planes = [];
+  let pid = 1;
+  legs.forEach((l, k) => {
+    routes.push({ id: k + 1, airlineId: 'me', from: l.from, to: l.to, freq: l.freq, fareMul: 1, active: true, serviceExtra: 0 });
+    for (let i = 0; i < l.planes; i++) planes.push({ id: pid++, typeId: l.typeId, airlineId: 'me', routeId: k + 1, ageQuarters: 8 });
+    airline.slots[l.from] = (airline.slots[l.from] || 0) + l.freq;
+    airline.slots[l.to] = (airline.slots[l.to] || 0) + l.freq;
+  });
+  const ctx = {
+    airlineOf: () => airline,
+    planesOn: (rid) => planes.filter((p) => p.routeId === rid),
+    typeOf: (t) => TYPES[t],
+    slotsAt: (_a, c) => airline.slots[c] || 0,
+    totalSlots: (c) => C.get(c).slots,
+    feedCount: () => 0,
+    demand: (a, b) => D.quarterly(a, b, { quarter: 1, travelIndex: D.travelIndex(1998) }),
+    inflation: 1,
+    oil: 1,
+  };
+  const out = M.resolveAll(routes, ctx);
+  const byLeg = {};
+  routes.forEach((r) => (byLeg[`${r.from}-${r.to}`] = out[r.id]));
+  return { out, byLeg, routes };
+}
+
+/** 도쿄 허브 하나에 스포크를 붙인 표준 배치. 스포크에 빈자리가 남도록 넉넉히 깐다. */
+const TOKYO_HUB = [
+  { from: 'tokyo', to: 'losangeles', typeId: 'b747-400', planes: 2, freq: 8 },
+  { from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 6, freq: 40 },
+  { from: 'beijing', to: 'tokyo', typeId: 'b737-800', planes: 6, freq: 40 },
+];
+
+test('환승: 허브가 로컬 수요로는 못 채우던 간선을 채운다', () => {
+  // 3b 의 존재 이유 그 자체다. 스포크 하나는 로컬만 보면 남아돌고, 간선 하나는 로컬만
+  // 보면 반도 못 찬다 — 둘을 물려야 비로소 둘 다 산다.
+  const solo = network([TOKYO_HUB[0]], { home: 'tokyo' });
+  const hub = network(TOKYO_HUB, { home: 'tokyo' });
+  const before = solo.byLeg['tokyo-losangeles'];
+  const after = hub.byLeg['tokyo-losangeles'];
+  assert.ok(!before.connectPax, '스포크가 없으면 환승도 없다');
+  assert.ok(before.loadFactor < 0.6, `단독은 못 채운다 (${(before.loadFactor * 100).toFixed(0)}%)`);
+  assert.ok(after.connectPax > 0, '환승 승객이 실려야 한다');
+  assert.ok(after.loadFactor > before.loadFactor + 0.3, `허브가 태평양 간선을 채워야 한다 (${(before.loadFactor * 100).toFixed(0)}% → ${(after.loadFactor * 100).toFixed(0)}%)`);
+});
+
+test('환승: 한 여정이 두 구간의 좌석을 함께 먹는다', () => {
+  // 여정 하나는 A→허브, 허브→C 두 구간을 동시에 쓴다. 한쪽만 깎으면 "한 승객이 두
+  // 구간을 쓴다"는 전제가 깨져 허브 수송량이 통째로 부풀려진다.
+  const hub = network(TOKYO_HUB, { home: 'tokyo' });
+  const trunk = hub.byLeg['tokyo-losangeles'].connectPax;
+  const spokes = hub.byLeg['seoul-tokyo'].connectPax + hub.byLeg['beijing-tokyo'].connectPax;
+  // 이 배치에서 성립하는 후보는 서울→LA, 베이징→LA 둘뿐이다(서울–베이징은 우회 초과).
+  assert.ok(Math.abs(trunk - spokes) < 1e-6, `간선 ${Math.round(trunk)} = 스포크 합 ${Math.round(spokes)} 이어야 한다`);
+});
+
+test('환승: 좌석을 넘겨 태우지 않는다', () => {
+  const hub = network(TOKYO_HUB, { home: 'tokyo' });
+  for (const key of Object.keys(hub.byLeg)) {
+    const o = hub.byLeg[key];
+    assert.ok(o.pax <= o.seats + 1e-6, `${key}: ${Math.round(o.pax)}명을 ${Math.round(o.seats)}석에 태웠다`);
+  }
+});
+
+test('환승: 빈자리가 없으면 환승도 없다', () => {
+  // 스포크가 로컬 수요로 이미 꽉 차 있으면 물어다 줄 자리가 없다. 이게 안 지켜지면
+  // 노선을 늘리는 것만으로 공짜 환승 수입이 생긴다.
+  const tight = network(
+    [
+      { from: 'tokyo', to: 'losangeles', typeId: 'b747-400', planes: 2, freq: 8 },
+      { from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14 },
+      { from: 'beijing', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14 },
+    ],
+    { home: 'tokyo' },
+  );
+  assert.ok(tight.byLeg['seoul-tokyo'].loadFactor > 0.99, '스포크가 꽉 차 있어야 이 검사가 산다');
+  assert.ok(!tight.byLeg['tokyo-losangeles'].connectPax, '빈자리가 없으면 환승이 없어야 한다');
+});
+
+test('환승: 우회가 심하면 잇지 않는다', () => {
+  // 서울–베이징을 도쿄로 돌리면 3.4배다. 이걸 막지 않으면 허브 하나로 온 세계를 잇는다.
+  assert.ok(
+    (C.distance('seoul', 'tokyo') + C.distance('tokyo', 'beijing')) / C.distance('seoul', 'beijing') >
+      M.BALANCE.CONNECT_MAX_DETOUR,
+    '서울–베이징이 우회 한계를 넘어야 이 검사가 산다',
+  );
+  const hub = network(TOKYO_HUB, { home: 'tokyo' });
+  // 서울–베이징이 후보였다면 스포크 두 개의 환승 합이 간선의 환승보다 커진다.
+  const trunk = hub.byLeg['tokyo-losangeles'].connectPax;
+  const spokes = hub.byLeg['seoul-tokyo'].connectPax + hub.byLeg['beijing-tokyo'].connectPax;
+  assert.ok(spokes <= trunk + 1e-6, '우회 초과 여정이 섞이면 안 된다');
+});
+
+test('환승: 노선을 적어 넣은 순서에 결과가 걸리지 않는다', () => {
+  // 도시쌍을 하나씩 끝까지 태우고 넘어가면 먼저 처리된 쌍이 공용 구간의 빈자리를 통째로
+  // 먹는다 — 정렬 순서가 곧 허브 경제가 된다. 라운드마다 희망 수요를 모아 비례로 깎는
+  // 이유이고, 그 성질이 깨졌는지는 순열로만 잡힌다.
+  const legs = TOKYO_HUB.concat([{ from: 'hongkong', to: 'tokyo', typeId: 'b767-300er', planes: 4, freq: 20 }]);
+  const base = network(legs, { home: 'tokyo' });
+  for (const perm of [
+    [3, 1, 0, 2],
+    [2, 0, 3, 1],
+    [1, 2, 3, 0],
+  ]) {
+    const other = network(perm.map((i) => legs[i]), { home: 'tokyo' });
+    for (const key of Object.keys(base.byLeg)) {
+      assert.strictEqual(
+        other.byLeg[key].connectPax,
+        base.byLeg[key].connectPax,
+        `${key}: 순서를 바꾸니 환승이 달라졌다`,
+      );
+    }
+  }
+});
+
+test('환승: 공용 구간이 모자라면 도시쌍끼리 비례로 나눈다', () => {
+  // 도시쌍을 하나씩 끝까지 태우고 넘어가면 먼저 처리된 쌍이 공용 구간의 빈자리를 통째로
+  // 먹는다 — 정렬 순서가 곧 허브 경제가 되어, 도쿄–LA 의 빈자리를 베이징발이 다 가져가고
+  // 서울발은 밀리는 식이 된다. 라운드마다 희망 수요를 모아 구간별로 비례 삭감하는 이유다.
+  const hub = network(TOKYO_HUB, { home: 'tokyo' });
+  assert.ok(hub.byLeg['tokyo-losangeles'].loadFactor > 0.99, '간선이 꽉 차야 경합이 생긴다');
+  // 서울–LA 와 베이징–LA 는 수요도 거리도 거의 같다. 둘이 같은 간선을 두고 겨루므로
+  // 비례로 깎으면 실린 인원도 비슷해야 한다 — 이름순으로 먹으면 크게 갈린다.
+  const seoul = hub.byLeg['seoul-tokyo'].connectPax;
+  const beijing = hub.byLeg['beijing-tokyo'].connectPax;
+  const gap = Math.abs(seoul - beijing) / Math.max(seoul, beijing);
+  assert.ok(gap < 0.1, `대칭인 두 도시쌍이 크게 갈렸다 (서울 ${Math.round(seoul)} vs 베이징 ${Math.round(beijing)})`);
+});
+
+test('환승: 직항이 없는 도시쌍에서도 로컬과 겨룬다', () => {
+  // 1단계를 안 거친 도시쌍은 로컬을 빼면 경유편이 "안 감"만 상대로 이겨 수요를 대부분
+  // 가져간다 — 직항 시장에는 로컬을 깔아 두고 환승 시장만 무주공산으로 두는 셈이라
+  // 허브 수송량과 수입이 부푼다.
+  //
+  // 같은 모양의 허브를 로컬이 센 구간과 약한 구간에 놓고 잰다. 좌석이 병목이 되면
+  // 로짓이 아니라 용량이 답을 정하므로, 양쪽 다 넉넉하게 깐다.
+  const shape = (a, hub, c) => [
+    { from: a, to: hub, typeId: 'b747-400', planes: 14, freq: 18 },
+    { from: hub, to: c, typeId: 'b747-400', planes: 14, freq: 18 },
+  ];
+  const capture = (a, hub, c) => {
+    const net = network(shape(a, hub, c), { home: hub });
+    const market = D.quarterly(C.get(a), C.get(c), { quarter: 1, travelIndex: D.travelIndex(1998) }).total;
+    return net.byLeg[`${a}-${hub}`].connectPax / market;
+  };
+  // 뉴욕–LA 는 로컬이 억세고(효용 1.4대), 서울–LA 는 거리 탓에 거의 없다(0 근처).
+  const strong = M.fringeUtility(C.pairKey('newyork', 'losangeles'), C.distance('newyork', 'losangeles'));
+  const weak = M.fringeUtility(C.pairKey('seoul', 'losangeles'), C.distance('seoul', 'losangeles'));
+  assert.ok(strong > weak + 1, '두 구간의 로컬 세기가 갈려야 이 검사가 산다');
+
+  const tough = capture('newyork', 'chicago', 'losangeles');
+  const easy = capture('seoul', 'tokyo', 'losangeles');
+  assert.ok(tough > 0 && easy > 0, '양쪽 다 경유편이 실려야 한다');
+  assert.ok(easy < 1, '수요 전체를 가져가면 안 된다');
+  assert.ok(tough < easy - 0.05, `로컬이 센 구간이 덜 잡혀야 한다 (${(tough * 100).toFixed(0)}% vs ${(easy * 100).toFixed(0)}%)`);
+});
+
+test('환승: 수입이 두 구간에 거리대로 나뉜다', () => {
+  // 한쪽 구간에 몰아 주면 스포크가 공짜로 실어 나르는 셈이 되어 허브 채산이 뒤틀린다.
+  const hub = network(TOKYO_HUB, { home: 'tokyo' });
+  const trunk = hub.byLeg['tokyo-losangeles'];
+  const spoke = hub.byLeg['seoul-tokyo'];
+  assert.ok(trunk.connectRevenue > 0 && spoke.connectRevenue > 0, '양쪽 다 받아야 한다');
+  // 같은 인원인데 간선이 7.6배 길다 — 수입도 간선이 훨씬 커야 한다.
+  assert.ok(
+    trunk.connectRevenue / trunk.connectPax > (spoke.connectRevenue / spoke.connectPax) * 3,
+    '긴 구간이 더 가져가야 한다',
+  );
+});
+
 test('채산: 큰 기체가 한 바퀴에 더 오래 묶인다', () => {
   const narrow = TYPES['b737-800'];
   const wide = TYPES['b747-400'];
