@@ -110,6 +110,27 @@
    * 제조사 → 항공사 순서로 고정한다(파일 첫머리 참조). 통합 모드가 아니면 도는 계층이
    * 하나뿐이라 순서는 의미가 없다.
    */
+  /**
+   * 분기 넘김의 **입구**. 어느 계층의 버튼을 눌렀든 여기로 온다.
+   *
+   * 제조사 계층은 넘기기 전에 물어볼 것이 있다(응찰 안 한 공고, 답 안 한 결정). 그
+   * 확인 절차는 모달이라 비동기다 — 확인이 끝나면 그쪽이 `turn()` 을 부른다. 항공사
+   * 화면에서 눌렀다고 이 절차를 건너뛰면, 같은 통합 판인데 어느 화면에서 눌렀느냐로
+   * 입찰을 조용히 포기하고 결정이 기본값으로 처리된다.
+   */
+  function requestTurn() {
+    if (turning) return;
+    const maker = parts.maker;
+    if (has('maker') && maker && typeof maker.askTurn === 'function') maker.askTurn();
+    else turn();
+  }
+
+  /**
+   * 분기 넘김의 **본체**. 확인이 끝난 뒤에 온다.
+   *
+   * 제조사 → 항공사 순서로 고정한다(파일 첫머리 참조). 통합 모드가 아니면 도는 계층이
+   * 하나뿐이라 순서는 의미가 없다.
+   */
   function turn() {
     if (turning) return;
     turning = true;
@@ -117,15 +138,24 @@
       const group = shell.mode === 'group' ? root.AirlinerSkyGroup : null;
       const maker = parts.maker;
       const air = parts.airline;
-      const report = has('maker') && maker && maker.turn ? maker.turn() : null;
       // 통합 모드에서만 두 계층이 서로를 본다. 규칙은 전부 `js/sky/group.js` 에 있다 —
       // 껍데기는 언제 부를지만 안다.
+      if (group && maker && air) {
+        group.beforeTurns(maker.state(), air.state(), air.meId());
+      }
+      const report = has('maker') && maker && maker.turn ? maker.turn() : null;
       if (group && maker && air) {
         group.betweenTurns(maker.state(), air.state(), air.meId(), report);
       }
       if (has('airline') && air && air.turn) air.turn();
       if (group && maker && air) {
         group.afterTurns(maker.state(), air.state(), air.meId());
+      }
+      // **두 계층을 다 저장한다.** 각 컨트롤러는 자기 `render` 에서만 저장하는데,
+      // 화면을 안 잡은 쪽의 `render` 는 그 자리에서 돌아간다. 그대로 두면 새로고침
+      // 한 번에 한쪽 계층의 분기가 통째로 사라지고 두 판의 달력이 어긋난다.
+      for (const layer of Object.keys(parts)) {
+        if (has(layer) && typeof parts[layer].save === 'function') parts[layer].save();
       }
     } finally {
       turning = false;
@@ -180,6 +210,55 @@
     else if (typeof p.render === 'function') p.render();
   }
 
+  /**
+   * 두 계층의 달력이 맞는가 — 통합 모드로 들어갈 때만 묻는다.
+   *
+   * 두 모드를 따로 굴리다 통합으로 들어오면, 10분기짜리 제조사와 갓 시작한 항공사가
+   * 한 판으로 묶인다. 그때부터 매 분기 두 해가 어긋난 채 흐르고, 2000년대 시장·프로그램이
+   * 1998년 분기로 복사된다. 조용히 그렇게 두지 않는다.
+   */
+  function turnOf(layer) {
+    const p = parts[layer];
+    if (!p || typeof p.state !== 'function') return 0;
+    const st = p.state();
+    return st && typeof st.turn === 'number' ? st.turn : 0;
+  }
+
+  function calendarsAligned() {
+    return turnOf('maker') === turnOf('airline');
+  }
+
+  /** 달력이 어긋났을 때 — 새 통합 판을 열 것인지 묻는다. 판을 임의로 지우지 않는다. */
+  function renderMismatch() {
+    const panel = document.getElementById('panel');
+    const foot = document.getElementById('foot');
+    if (foot) foot.innerHTML = '<span class="muted">통합 판을 열려면 두 판이 같은 분기에서 시작해야 한다</span>';
+    if (!panel) return;
+    panel.className = 'panel';
+    const y = (t) => 1998 + Math.floor(t / 4);
+    panel.innerHTML = `<section class="cards"><div class="card full">
+      <h3>두 판의 달력이 어긋나 있다</h3>
+      <p class="muted">제조사는 <b>${y(turnOf('maker'))}년</b>, 항공사는 <b>${y(turnOf('airline'))}년</b>에 있다.
+      통합 모드는 두 계층이 같은 분기를 함께 넘기는 판이라, 이대로 묶으면 매 분기 두 해가 어긋난 채 흐르고
+      한쪽 시장이 다른 쪽의 지난 연도로 복사된다.</p>
+      <p class="muted">새 통합 판을 열면 <b>양쪽의 저장된 경영이 지워진다.</b> 그대로 두려면 제조사나 항공사 모드로 돌아가라.</p>
+      <div class="row">
+        <button class="primary" data-shell="new-group">새 통합 판 시작</button>
+        <button class="ghost" data-shell="pick-mode">모드로 돌아가기</button>
+      </div>
+    </div></section>`;
+  }
+
+  /** 양쪽 세이브를 지우고 통합 판을 처음부터 연다. */
+  function startFreshGroup() {
+    for (const layer of ['maker', 'airline']) {
+      const p = parts[layer];
+      if (p && typeof p.clearSave === 'function') p.clearSave();
+    }
+    remember('group');
+    location.reload();
+  }
+
   /** 모드를 안 골랐을 때의 첫 화면. */
   function renderPicker() {
     const panel = document.getElementById('panel');
@@ -214,6 +293,10 @@
     remember(id);
     renderLayerBar();
     for (const layer of m.layers) bootLayer(layer);
+    if (id === 'group' && !calendarsAligned()) {
+      renderMismatch();
+      return;
+    }
     reveal(shell.layer);
   }
 
@@ -241,6 +324,9 @@
     } else if (kind === 'pick-mode') {
       e.preventDefault();
       reset();
+    } else if (kind === 'new-group') {
+      e.preventDefault();
+      startFreshGroup();
     }
   }
 
@@ -253,12 +339,14 @@
       shell.layer = m.layers[0];
       renderLayerBar();
       for (const layer of m.layers) bootLayer(layer);
+      // 저장된 통합 판을 다시 열 때도 달력을 확인한다 — 다른 탭에서 한쪽만 굴렸을 수 있다.
+      if (m.id === 'group' && !calendarsAligned()) renderMismatch();
     } else {
       renderPicker();
     }
   }
 
-  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, choose, reset, showLayer, boot };
+  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, choose, reset, showLayer, boot };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

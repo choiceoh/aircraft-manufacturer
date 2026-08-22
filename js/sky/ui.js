@@ -207,7 +207,9 @@
 
   function onClick(e) {
     // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 자기 차례일 때만 듣는다.
-    if (root.AirlinerShell && !root.AirlinerShell.isActive('airline')) return;
+    // 모달 안은 예외다 — 모달은 연 쪽의 것이고, 그 콜백은 연 쪽 핸들러가 돌린다
+    // (제조사 확인창이 항공사 화면 위에 뜨는 경우가 그렇다).
+    if (root.AirlinerShell && !e.target.closest('#modal') && !root.AirlinerShell.isActive('airline')) return;
     const summary = e.target.closest('summary[data-fold]');
     if (summary) {
       const id = summary.dataset.fold;
@@ -239,8 +241,9 @@
         break;
       case 'next-turn':
         // 통합 모드에서는 껍데기가 제조사 → 항공사 순서로 넘긴다. 여기서 바로
-        // `nextTurn` 을 부르면 누른 버튼에 따라 정산 순서가 갈린다.
-        if (root.AirlinerShell) root.AirlinerShell.turn();
+        // `nextTurn` 을 부르면 순서도 갈리고, 제조사의 확인창(응찰 안 한 공고·답 안 한
+        // 결정)도 건너뛴다 — 같은 판인데 어느 화면에서 눌렀느냐로 입찰이 조용히 포기된다.
+        if (root.AirlinerShell) root.AirlinerShell.requestTurn();
         else nextTurn();
         break;
       case 'group-order': {
@@ -372,6 +375,15 @@
     }
   }
 
+  /** 이 계층의 세이브를 지운다 — 껍데기가 통합 판을 새로 열 때 쓴다. */
+  function clearSave() {
+    try {
+      localStorage.removeItem(SAVE_KEY);
+    } catch (err) {
+      /* 지우지 못해도 게임은 굴러간다 */
+    }
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
@@ -457,7 +469,7 @@
 
   // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
   if (root.AirlinerShell) {
-    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, state: () => ui.state, meId: () => ui.meId });
+    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, save, clearSave, state: () => ui.state, meId: () => ui.meId });
   } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();

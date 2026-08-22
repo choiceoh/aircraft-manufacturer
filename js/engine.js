@@ -1072,6 +1072,42 @@
     };
   }
 
+  /**
+   * 계열 항공사의 공고를 걷어낸다 — 통합 모드에서만 쓴다.
+   *
+   * 자회사는 공고를 내지 않는다는 것이 그 모드의 규칙인데, `generateRfps` 는
+   * `AIRLINES` 를 전부 돌기 때문에 그냥 두면 자회사가 계속 공고를 내고 그 물량이
+   * 플레이어나 경쟁사에게 낙찰된다 — 자체 발주 통로와 이중으로 사는 셈이고, 낙찰·유찰
+   * 관계 변동까지 따라붙는다.
+   */
+  function dropAirlineRfps(s, airlineId) {
+    if (!airlineId || !Array.isArray(s.rfps)) return 0;
+    const gone = s.rfps.filter((r) => r.airlineId === airlineId);
+    if (!gone.length) return 0;
+    s.rfps = s.rfps.filter((r) => r.airlineId !== airlineId);
+    // 걷어낸 공고에 걸린 입찰도 함께 지운다. 남겨 두면 없는 공고를 물고 있는
+    // 입찰이 다음 정산에서 판정된다.
+    if (s.bids) for (const r of gone) delete s.bids[r.id];
+    return gone.length;
+  }
+
+  /**
+   * 계열 항공사의 자체 발주를 장부에서 지운다 — 그 항공사가 문을 닫았을 때.
+   *
+   * 남겨 두면 몇 분기 뒤 제조사가 그 기체를 인도하면서 잔금을 매출로 잡는데, 받을
+   * 상대가 없다 — 아무도 치르지 않은 돈이 제조사 장부에서 생긴다. 착수금은 돌려주지
+   * 않는다(계약을 깬 쪽이 계열 항공사다).
+   */
+  function cancelInHouseOrders(s, airlineId) {
+    if (!airlineId || !Array.isArray(s.backlog)) return 0;
+    const gone = s.backlog.filter((o) => o.inHouse && o.airlineId === airlineId && o.remaining > 0);
+    if (!gone.length) return 0;
+    const qty = gone.reduce((x, o) => x + o.remaining, 0);
+    s.backlog = s.backlog.filter((o) => !(o.inHouse && o.airlineId === airlineId));
+    pushLog(s, 'bad', `계열 항공사가 문을 닫아 자체 발주 ${qty}기가 취소됐다.`);
+    return qty;
+  }
+
   function placeInHouseOrder(s, opts) {
     const o = opts || {};
     const qty = o.qty;
@@ -5051,6 +5087,8 @@
     newGame,
     placeInHouseOrder,
     inHouseQuote,
+    dropAirlineRfps,
+    cancelInHouseOrders,
     PLAYABLE_COMPANIES,
     launchProgram,
     companyExperience,

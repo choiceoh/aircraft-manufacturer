@@ -295,7 +295,12 @@
   function onClick(ev) {
     // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 화면을 안 잡은 쪽이
     // 남의 클릭까지 처리하면 없는 판을 읽고 터진다 — 자기 차례일 때만 듣는다.
-    if (root.AirlinerShell && !root.AirlinerShell.isActive('maker')) return;
+    //
+    // **다만 모달 안은 예외다.** 모달은 연 쪽의 것이다. 항공사 화면에서 분기를
+    // 넘기면 제조사의 확인창(응찰 안 한 공고·답 안 한 결정)이 뜨는데, 그 확인 콜백은
+    // 이 핸들러가 돌린다. 여기서 막으면 "그대로 분기 종료"를 눌러도 아무 일이 없고
+    // 같은 창이 영원히 다시 뜬다 — 실제로 그랬다.
+    if (root.AirlinerShell && !ev.target.closest('#modal') && !root.AirlinerShell.isActive('maker')) return;
     // 접었다 편 자리는 기억해 둔다 — 후보를 고르면 패널을 통째로 다시 그리는데,
     // 그때마다 방금 펼쳐 읽던 공고 배경이 도로 접히면 같은 곳을 계속 다시 연다.
     const sum = ev.target.closest('summary[data-fold]');
@@ -932,6 +937,15 @@
     }
   }
 
+  /** 이 계층의 세이브를 지운다 — 껍데기가 통합 판을 새로 열 때 쓴다. */
+  function clearSave() {
+    try {
+      localStorage.removeItem(SAVE_KEY);
+    } catch (e) {
+      /* 지우지 못해도 게임은 굴러간다 */
+    }
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
@@ -1055,7 +1069,7 @@
 
   // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
   if (root.AirlinerShell) {
-    root.AirlinerShell.register('maker', { boot, render, turn: endTurnNow, state: () => ui.state });
+    root.AirlinerShell.register('maker', { boot, render, turn: endTurnNow, askTurn: nextTurn, save, clearSave, state: () => ui.state });
   } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();

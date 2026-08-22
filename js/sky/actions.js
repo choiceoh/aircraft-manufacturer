@@ -256,6 +256,17 @@
     if (!a || !a.alive) return fail('없는 항공사입니다.');
     const t = s.types[typeId];
     if (!t) return fail('알 수 없는 기종입니다.');
+    // **통합 판에서는 자사 기종을 이 통로로 못 산다.** 제조사 프로그램이 기종표에
+    // 들어오는데 여기서 받아 주면, 제조사 수주 장부에도 생산비에도 잡히지 않은 기체가
+    // 두 분기 뒤 그냥 생긴다 — 플레이어도 경쟁 항공사도 통합 경제 바깥에서 그 기체를
+    // 얻는다. 자체 발주는 `AirlinerSkyGroup.placeOrder` 를, 경쟁사는 제조사 계층의
+    // 공고·입찰을 지나야 한다.
+    //
+    // 통합 판이 아니면 막지 않는다. 항공사 단독 판에도 카탈로그로 프로그램을 깔 수
+    // 있고(`newGame(seed, { programs })`), 그때는 제조사 장부라는 것이 아예 없다.
+    if (t.own && s.groupAirlineId) {
+      return fail(`${t.name}은(는) 자사 기종입니다 — 개요의 모회사 카드에서 자체 발주하세요.`);
+    }
     const year = St.yearFracOf(s);
     if (t.eis > year) return fail(`${t.name}은(는) ${Math.floor(t.eis)}년 ${Math.floor((t.eis % 1) * 4) + 1}분기부터 인도됩니다.`);
     if (t.end && t.end <= year) return fail(`${t.name}은(는) 단종됐습니다.`);

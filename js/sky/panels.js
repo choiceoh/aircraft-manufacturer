@@ -133,7 +133,13 @@
     if (!mfg) return '';
 
     const eq = G.combinedEquity(mfg, s, meId);
-    const progs = G.orderablePrograms(mfg).map((p) => G.quote(mfg, p.id, 1)).filter(Boolean);
+    // **대수마다 따로 견적을 받는다.** 한 대 견적의 착수금은 이미 반올림된 값이라,
+    // 거기에 대수를 곱하면 실제 청구액과 어긋난다(84.8M 기종 2기는 실제 25M 인데 곱하면
+    // 26M, 5기는 64M 인데 65M). 그 차이만큼, 낼 수 있는 돈으로도 단추가 잠긴다.
+    const QTYS = [1, 2, 5];
+    const progs = G.orderablePrograms(mfg)
+      .map((p) => ({ base: G.quote(mfg, p.id, 1), lots: QTYS.map((n) => G.quote(mfg, p.id, n)) }))
+      .filter((x) => x.base);
     const me = St.airline(s, meId);
     const pending = (s.orders || []).filter((o) => o.external && o.airlineId === meId);
 
@@ -164,19 +170,21 @@
       ${
         progs.length
           ? `<ul class="lines">${progs
-              .map((q) => {
-                const dep = q.deposit * G.MUSD;
-                const canPay = me.cash >= dep;
+              .map(({ base, lots }) => {
+                const dep = base.deposit * G.MUSD;
                 return `<li>
-                  <b>${esc(q.name)}</b>
-                  <span class="muted">대당 ${money(q.unitPrice * G.MUSD)} · 착수금 ${money(dep)}${canPay ? '' : ' — 현금 부족'}</span>
+                  <b>${esc(base.name)}</b>
+                  <span class="muted">대당 ${money(base.unitPrice * G.MUSD)} · 1기 착수금 ${money(dep)}${
+                    me.cash >= dep ? '' : ' — 현금 부족'
+                  }</span>
                   <span class="row">
-                    ${[1, 2, 5]
-                      .map(
-                        (n) =>
-                          `<button class="ghost" data-action="group-order" data-prog="${esc(q.programId)}" data-qty="${n}"${
-                            me.cash >= q.deposit * G.MUSD * n ? '' : ' disabled'
-                          }>${n}기</button>`,
+                    ${lots
+                      .map((q) =>
+                        q
+                          ? `<button class="ghost" data-action="group-order" data-prog="${esc(q.programId)}" data-qty="${q.qty}"${
+                              me.cash >= q.deposit * G.MUSD ? '' : ' disabled'
+                            } title="착수금 ${money(q.deposit * G.MUSD)}">${q.qty}기</button>`
+                          : '',
                       )
                       .join('')}
                   </span>
@@ -448,7 +456,14 @@
       ${
         orders.length
           ? `<div class="card full"><h3>인도 예정</h3><ul class="lines">${orders
-              .map((o) => `<li>${esc(s.types[o.typeId].name)} ${o.count}대 — ${o.deliverTurn - s.turn}분기 뒤</li>`)
+              // 자체 발주는 `deliverTurn` 이 없다 — 제조사의 생산 대기열이 때를 정한다.
+              // 달력으로 빼면 "0분기 뒤"로 떴다가 "-5분기 뒤"까지 내려간다.
+              .map(
+                (o) =>
+                  `<li>${esc(s.types[o.typeId] ? s.types[o.typeId].name : o.typeId)} ${o.count}대 — ${
+                    o.external ? '생산 대기' : `${o.deliverTurn - s.turn}분기 뒤`
+                  }</li>`,
+              )
               .join('')}</ul></div>`
           : ''
       }

@@ -50,13 +50,23 @@
 
   // ── 자체 발주 ──────────────────────────────────────────────────────
 
+  /**
+   * 제조사가 아직 기체를 만들 수 있는가.
+   *
+   * 문을 닫은 제조사는 `endTurn` 이 늘 거절하므로 생산이 한 발짝도 안 나간다. 그런
+   * 상태로 발주를 받으면 착수금만 죽은 장부로 넘어가고, 항공사의 선급금과 발주는
+   * 영영 정리되지 않은 채 남는다.
+   */
+  const makerAlive = (mfg) => !!mfg && !mfg.gameOver;
+
   /** 자체 항공사가 지금 발주할 수 있는 자사 프로그램. */
   function orderableProgram(mfg, programId) {
-    if (!mfg) return null;
+    if (!makerAlive(mfg)) return null;
     return (mfg.programs || []).find((p) => p.id === programId && p.phase === 'production') || null;
   }
 
   function orderablePrograms(mfg) {
+    if (!makerAlive(mfg)) return [];
     return (mfg.programs || []).filter((p) => p.phase === 'production');
   }
 
@@ -73,6 +83,7 @@
   function placeOrder(mfg, sky, airlineId, programId, qty) {
     const a = St.airline(sky, airlineId);
     if (!a || !a.alive) return { ok: false, msg: '없는 항공사입니다.' };
+    if (!makerAlive(mfg)) return { ok: false, msg: '제조사가 문을 닫아 더 만들 수 없습니다.' };
     const p = orderableProgram(mfg, programId);
     if (!p) return { ok: false, msg: '양산 중인 자사 기종이 아닙니다.' };
     if (!Number.isInteger(qty) || qty < 1) return { ok: false, msg: '대수는 1 이상의 정수여야 합니다.' };
@@ -223,20 +234,39 @@
   // ── 분기 글루 ──────────────────────────────────────────────────────
 
   /**
-   * 제조사 정산과 항공사 정산 **사이**에 도는 일.
+   * 두 계층이 정산되기 **전**에 도는 일.
    *
-   * 인도가 먼저다 — 이번 분기에 받은 기체가 이번 분기 노선에 설 수 있어야, 화면에
-   * 뜬 기재와 시장이 걷어가는 좌석이 같은 목록이 된다. 세계는 그다음이다.
+   * **세계를 여기서 맞춘다.** 제조사의 `endTurn` 은 정산 끝에 `driftMarket` 으로 다음
+   * 분기 유가·수요를 굴린다. 정산 뒤에 옮기면 항공사가 **이번 분기**를 다음 분기
+   * 지수로 결산한다 — 둘 다 0분기에서 시작했는데 항공사의 첫 결산만 1분기 유가를
+   * 쓴다. 두 계층의 같은 분기 리포트는 같은 조건에서 나와야 한다.
    */
-  function betweenTurns(mfg, sky, airlineId, report) {
-    if (!mfg || !sky || !airlineId) return [];
+  function beforeTurns(mfg, sky, airlineId) {
+    if (!mfg || !sky || !airlineId) return;
+    // 이 판이 통합 판이라는 표식. 명령 계층은 껍데기를 모르지만, 자사 기종을 일반
+    // 발주로 살 수 없다는 규칙은 알아야 한다.
+    sky.groupAirlineId = airlineId;
     // 제조사가 띄운 기종을 항공사 계층이 볼 수 있게 한다. 통합 모드에서 항공사의
     // `advance` 는 프로그램을 받지 않으므로, 여기서 넘기지 않으면 자사 기종이 영영
     // 항공사 기종표에 들어오지 않는다 — 발주는 되는데 인도가 안 된다.
     St.refreshTypes(sky, mfg.programs);
-    const got = receiveDeliveries(mfg, sky, report, airlineId);
     syncWorld(mfg, sky);
-    return got;
+    // 자회사는 공고를 내지 않는다. `generateRfps` 는 `AIRLINES` 를 전부 도므로
+    // 여기서 걷어내지 않으면 자회사가 계속 공고를 내고 그 물량이 낙찰된다.
+    E.dropAirlineRfps(mfg, airlineId);
+  }
+
+  /**
+   * 제조사 정산과 항공사 정산 **사이**에 도는 일.
+   *
+   * 인도만 한다 — 이번 분기에 받은 기체가 이번 분기 노선에 설 수 있어야, 화면에 뜬
+   * 기재와 시장이 걷어가는 좌석이 같은 목록이 된다. 세계는 `beforeTurns` 에서 맞췄다.
+   */
+  function betweenTurns(mfg, sky, airlineId, report) {
+    if (!mfg || !sky || !airlineId) return [];
+    // 인도된 기체가 방금 인증된 기종일 수 있다 — 표를 한 번 더 맞춘다.
+    St.refreshTypes(sky, mfg.programs);
+    return receiveDeliveries(mfg, sky, report, airlineId);
   }
 
   /**
@@ -247,6 +277,16 @@
    */
   function afterTurns(mfg, sky, airlineId) {
     if (!mfg || !sky || !airlineId) return [];
+    // 이번 분기 정산 끝에 새로 뽑힌 공고에도 자회사가 섞여 있다.
+    E.dropAirlineRfps(mfg, airlineId);
+    // 자회사가 문을 닫았으면 제조사 장부의 자체 발주도 지운다. 남겨 두면 몇 분기 뒤
+    // 받을 상대 없이 인도되면서 잔금이 매출로 잡힌다.
+    const a = St.airline(sky, airlineId);
+    if (!a || !a.alive) {
+      E.cancelInHouseOrders(mfg, airlineId);
+      if (sky.orders) sky.orders = sky.orders.filter((o) => !(o.external && o.airlineId === airlineId));
+      return [];
+    }
     return applyRivalry(mfg, sky, airlineId);
   }
 
@@ -264,7 +304,9 @@
     applyRivalry,
     combinedEquity,
     internalPrepaid,
+    beforeTurns,
     betweenTurns,
     afterTurns,
+    makerAlive,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
