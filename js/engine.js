@@ -186,6 +186,29 @@
           // 설계를 고치라는 지적이 붙는다.
           certification: { costRate: 0.09, quarters: 6, findingChance: 0.4 },
         },
+        // 자회사 UEC — 서방 엔진을 국산으로 갈아 끼우는 사업. 시간과 돈을 **둘 다**
+        // 채워야 끝난다: 돈을 아무리 부어도 minQuarters 는 안 줄고, 분기가 아무리
+        // 지나도 자금이 안 차면 안 끝난다. 실제 엔진 개발이 그렇다.
+        localEngine: {
+          maker: 'UEC',
+          // 대체 대상 엔진의 세그먼트 → 그 자리를 메울 국산 엔진.
+          // PS-90A 는 실제로 Tu-204(협동체)와 Il-96(광동체)을 모두 돌렸다.
+          map: { regional: 'd436', narrow: 'ps90a', wide: 'ps90a' },
+          /** 개발비 = 그 세그먼트 개발비 기준 × 이 비율 */
+          costRate: 0.25,
+          /** 돈을 다 부어도 이보다 빨리는 안 끝난다 */
+          minQuarters: 10,
+          /** 국산 엔진을 단 기종에 붙는 국가 발주 단가 우대 (정가 대비 가산) */
+          stateBonus: 0.08,
+          // 2세대(PD) — 1세대를 지나온 회사만 연다. 1세대가 원가를 사고 수주
+          // 경쟁력을 판 거래였다면, 이쪽은 그것을 **되사 오는** 사업이다. 새 코어라
+          // 훨씬 비싸고 길고, 원가 우위를 상당 부분 반납한다.
+          gen2: {
+            map: { regional: 'pd8', narrow: 'pd14', wide: 'pd35' },
+            costRate: 0.45,
+            minQuarters: 14,
+          },
+        },
         // 국가 발주 — 수출이 막혀도 곳간이 완전히 마르지는 않는다. 대신 단가가 짜서
         // 여기에 기대면 살아는 남고 크지는 못한다.
         stateOrders: {
@@ -278,7 +301,11 @@
       // 상태에 복사해 둔다: 세이브만 있고 프리셋 id 는 없는 판(이름을 직접 지은
       // 데네브)도 자기 특성을 잃지 않아야 하고, 프리셋 값을 나중에 손봐도
       // 진행 중인 판의 규칙이 도중에 바뀌지 않는다.
-      trait: preset.trait || {},
+      //
+      // **얕은 복사가 필수다.** 프리셋 객체를 그대로 물리면 상태가 공용 카탈로그를
+      // 가리키게 되고, ensureShape 의 사풍 채우기가 그 카탈로그를 통째로 오염시킨다
+      // (한 판에서 UAC 를 불러오면 그 프로세스의 데네브 프리셋에 UAC 축이 붙는 식).
+      trait: { ...(preset.trait || {}) },
       turn: 0,
       nextId: 1,
       cash: preset.cash,
@@ -360,6 +387,10 @@
       engineEarlyAccess: {},
       // 정부 지원금이 쌓는 무역 긴장 — 문턱을 넘으면 관세 판정이 날아온다.
       tradeTension: 0,
+      // UEC 국산화 — 진행 중인 사업 { target, engine, cost, funded, quarters }
+      // 과 이미 해금한 국산 엔진 id 목록.
+      localEngineProject: null,
+      localEngines: [],
       // 이 회사가 남긴 순간들 — 첫 인도, 100호기, 첫 광동체. 종료 회고의 연표가 된다.
       milestones: [],
       gameOver: null,
@@ -442,6 +473,7 @@
         delivered: leg.produced,
         stock: 0,
         launchTurn: -40,
+        engineTurn: -40,
         certTurn: -8,
         derivedFrom: null,
         legacy: true,
@@ -525,6 +557,7 @@
         delivered: 0,
         stock: 0,
         launchTurn: 0,
+        engineTurn: 0,
         certTurn: null,
         derivedFrom: null,
       });
@@ -735,6 +768,51 @@
       if (p.etopsCertified === undefined) p.etopsCertified = !!p.etops && p.phase === 'production';
     }
 
+    // 연구 완료 분기를 남기기 전 세이브. 완료 목록은 있는데 **언제** 끝났는지가
+    // 없다. 두 단계로 되찾는다:
+    //
+    //   1. 로그에 완료 기록이 남아 있으면 그 분기가 정답이다(250줄 안에 있으면).
+    //   2. 없으면 **가장 이른 가능 시점**으로 둔다 — 연구는 정해진 분기를 채워야
+    //      끝나므로 그보다 이를 수는 없다. 실제로는 더 늦게 끝났을 수 있다.
+    if (s.research && s.research.done) {
+      if (!s.research.doneTurn || typeof s.research.doneTurn !== 'object') s.research.doneTurn = {};
+      for (const [id, doneFlag] of Object.entries(s.research.done)) {
+        if (!doneFlag || typeof s.research.doneTurn[id] === 'number') continue;
+        const proj = RESEARCH_PROJECTS.find((x) => x.id === id);
+        if (!proj) continue;
+        const entry = (s.log || []).find((l) => typeof l.text === 'string' && l.text.startsWith(`${proj.name} 연구 완료`));
+        s.research.doneTurn[id] = entry && typeof entry.turn === 'number' ? entry.turn : proj.quarters;
+      }
+    }
+
+    // 착수 시점의 연구 기록이 없던 세이브의 프로그램. 통째로 비워 두면 연구 뒤에
+    // 그린 기체가 자기 보정을 잃은 채로 평가돼, 엔진을 갈아 끼울 때 값이 어긋난다
+    // (연비 상한에 닿은 설계에서 1점). 위에서 되찾은 완료 분기로 가른다 —
+    // 승계 기종(launchTurn 이 음수)이 복합재 연구를 달고 있는 일은 이걸로 막힌다.
+    for (const p of s.programs) {
+      if (p.research && typeof p.research === 'object') continue;
+      const born = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
+      const filled = {};
+      for (const [id, doneFlag] of Object.entries((s.research && s.research.done) || {})) {
+        if (!doneFlag) continue;
+        const at = (s.research.doneTurn || {})[id];
+        // 같은 분기는 **못 받은 쪽**이다. 착수는 플레이어가 그 분기에 하고, 연구
+        // 정산(runResearch)은 그 분기의 endTurn 안에서 뒤늦게 돈다 — 그래서 완료
+        // 분기에 착수한 기체는 실제로 연구 없이 평가됐다(launchProgram 의 스냅숏이
+        // 그 순서를 그대로 담는다). 마이그레이션도 같은 경계를 써야 한다.
+        if (typeof at === 'number' && born <= at) continue;
+        filled[id] = true;
+      }
+      p.research = filled;
+    }
+
+    // 엔진을 **언제 달았는지**가 없던 프로그램(승계 기종과 옛 세이브). 착수 분기로
+    // 채운다 — 그 시점에는 착수와 장착이 같은 분기다. 국산화로 갈아 끼우면 그때로
+    // 옮겨 간다.
+    for (const p of s.programs) {
+      if (typeof p.engineTurn !== 'number') p.engineTurn = typeof p.launchTurn === 'number' ? p.launchTurn : 0;
+    }
+
     // 엔진 개념이 없던 세이브의 프로그램에 엔진을 채운다. 비워 두면 그 기종의
     // 파생형이 derivedFrom.engine === undefined 로 판정돼, 엔진을 갈아 끼우고도
     // 재장착 비용(58%)이 아니라 순수 동체 연장 할인(34%)을 받는다.
@@ -789,6 +867,8 @@
     if (s.engineDeal === undefined) s.engineDeal = null;
     if (!s.engineEarlyAccess || typeof s.engineEarlyAccess !== 'object') s.engineEarlyAccess = {};
     if (typeof s.tradeTension !== 'number') s.tradeTension = 0;
+    if (s.localEngineProject === undefined) s.localEngineProject = null;
+    if (!Array.isArray(s.localEngines)) s.localEngines = [];
     if (!Array.isArray(s.playerMakers)) {
       // 단수 문자열이던 시절의 세이브 — 배열로 옮긴다.
       s.playerMakers = typeof s.playerMaker === 'string' && s.playerMaker ? [s.playerMaker] : [];
@@ -800,7 +880,7 @@
     // 불러오는 순간 "특색 없는 보잉"이 되면 안 된다. 다만 시작 관계 보정은
     // newGame 한 번뿐인 효과라 소급하지 않는다 (그 판의 관계는 이미 20년치
     // 영업의 결과이지, 출발선이 아니다).
-    if (!s.trait || typeof s.trait !== 'object') {
+    {
       const makers = s.playerMakers || [];
       const exact = PLAYABLE_COMPANIES.find(
         (c) => c.makers.length === makers.length && c.makers.every((m) => makers.includes(m)),
@@ -816,7 +896,21 @@
         (makers.length
           ? PLAYABLE_COMPANIES.find((c) => c.makers.length && makers.every((m) => c.makers.includes(m)))
           : null);
-      s.trait = (absorbed || companyPreset('deneb')).trait || {};
+      const preset = (absorbed || companyPreset('deneb')).trait || {};
+      if (!s.trait || typeof s.trait !== 'object') {
+        s.trait = { ...preset };
+      } else {
+        // 사풍은 있는데 **새로 생긴 축이 없는** 세이브 — PR 마다 축이 하나씩 늘기
+        // 때문에 이 경우가 훨씬 흔하다. 없는 칸만 채운다:
+        //   · 이미 있는 칸은 건드리지 않는다 — 진행 중인 판의 규칙이 프리셋을
+        //     손볼 때마다 도중에 바뀌면 안 된다(사풍을 상태에 복사해 둔 이유).
+        //   · 없는 칸은 채운다 — 안 그러면 옛 UAC 세이브가 UEC 국산화를
+        //     20년 내내 못 보게 된다. 새 기능이 옛 판에서 통째로 사라지는 것은
+        //     "규칙이 안 바뀐다"가 아니라 그냥 버그다.
+        for (const [k, v] of Object.entries(preset)) {
+          if (!(k in s.trait)) s.trait[k] = v;
+        }
+      }
     }
     if (!Array.isArray(s.milestones)) s.milestones = [];
     return s;
@@ -1014,10 +1108,17 @@
       delivered: 0,
       stock: 0,
       launchTurn: s.turn,
+      // 지금 엔진을 단 분기. 착수 시점에는 착수 분기와 같지만, 국산화로 갈아
+      // 끼우면 그때로 옮겨 간다 — 옛 엔진을 평가할 연도가 이 값이다.
+      engineTurn: s.turn,
       certTurn: null,
       // 호환성 판정을 통과했을 때만 원형 연결을 남긴다. 원형에서 소재·기술·항속을
       // 갈아엎어 신규 설계 비용을 전액 낸 설계에 파생형 딱지가 붙으면 안 된다.
       derivedFrom: evalSpec.derivative ? spec.derivedFrom : null,
+      // 이 설계가 어떤 연구 위에서 그려졌는지 — 엔진을 갈아 끼울 때 이 시점을
+      // 그대로 되짚어야 연구 보정이 두 평가에서 상쇄된다(연비 상한에 닿은 설계는
+      // 안 그러면 1점이 어긋난다).
+      research: { ...((s.research && s.research.done) || {}) },
     };
     // 패밀리 계보 — 조종석·정비 공통성이 이 단위로 쌓인다. 패밀리로 착수하면
     // 자기 자신이 뿌리가 되고, 그 패밀리의 파생형은 뿌리를 물려받는다.
@@ -1038,27 +1139,55 @@
     return { ok: true, program };
   }
 
+  /**
+   * 프로그램이 들고 있는 **설계 스펙** — 기체를 다시 평가해야 할 때 읽는 한 곳.
+   *
+   * 프로그램에서 스펙을 손으로 되짚는 자리가 둘(파생형 착수 시드·엔진 교체의 쌍
+   * 평가)인데, 따로 적어 두니 한쪽에만 칸이 빠지는 일이 반복됐다. 옛 세이브의
+   * `material`(단면·날개 소재로 쪼개기 전의 한 칸)이 그 예다 — 빠뜨리면 복합재
+   * 기체가 알루미늄으로 평가돼 비율이 어긋난다. 새 설계 축은 여기 한 번만 넣는다.
+   *
+   * `material` 은 `fuselage`/`wingMat` 이 있으면 평가기가 무시한다(옛 칸이 새 칸을
+   * 덮지 않는다). 옛 세이브에만 값을 한다.
+   */
+  function programSpec(p) {
+    return {
+      segment: p.segment,
+      seats: p.seats,
+      range: p.range,
+      tech: p.tech,
+      material: p.material,
+      fuselage: p.fuselage,
+      wingMat: p.wingMat,
+      engine: p.engine,
+      abreast: p.abreast,
+      wing: p.wing,
+      fuelMargin: p.fuelMargin,
+      etops: !!p.etops,
+      growth: !!p.growth,
+      maintainable: !!p.maintainable,
+      engines: p.engines || 2,
+      dualSource: !!p.dualSource,
+      // **착수 시점의** 장기 연구다. 완료된 연구는 그 뒤 설계에만 값을 하고 이미
+      // 나온 기체를 소급해 고치지 않으므로, 지금 연구 목록으로 되짚으면 기체가
+      // 갖지도 않은 보정을 얹게 된다. 옛 세이브는 ensureShape 가 채워 준다.
+      research: p.research || {},
+      // 조직 경험도 같은 성질이다 — 착수 시점의 값이 결함 위험 배수로 들어가
+      // 있다. 배수라 대개 상쇄되지만 위험 상한(defectRiskMax)에 닿으면 깨진다.
+      experience: p.experience || 0,
+    };
+  }
+
   /** 파생형 착수용 설계 시드 — 원형의 기술/소재를 물려받는다. */
   function derivativeSpec(base, seatDelta) {
     const seg = SEGMENTS[base.segment];
+    // 연구와 경험만은 물려받지 않는다. 파생형도 **지금 그리는 설계**라 착수 시점의
+    // 값은 오늘 것을 쓴다(파생형은 애초에 경험 할인을 받지 않는다).
+    const { research, experience, ...inherited } = programSpec(base);
     return {
-      segment: base.segment,
+      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화도 함께.
+      ...inherited,
       seats: clamp(base.seats + seatDelta, seg.seats.min, seg.seats.max),
-      range: base.range,
-      tech: base.tech,
-      material: base.material,
-      fuselage: base.fuselage,
-      wingMat: base.wingMat,
-      engine: base.engine,
-      abreast: base.abreast,
-      wing: base.wing,
-      fuelMargin: base.fuelMargin,
-      etops: base.etops,
-      // 구조 설계의 일부라 파생형이 물려받는다 — 성장 여유·정비성·엔진 수·이중화.
-      growth: !!base.growth,
-      maintainable: !!base.maintainable,
-      engines: base.engines || 2,
-      dualSource: !!base.dualSource,
       // 호환성 판정에 쓰이도록 원형 스펙을 함께 싣는다.
       derivedFrom: {
         id: base.id,
@@ -1206,6 +1335,8 @@
       experience: companyExperience(s),
       ...engineDealContext(s),
       ...researchContext(s),
+      // 해금한 국산 엔진 — 설계 화면과 착수가 같은 목록을 봐야 한다.
+      domesticEngines: s.localEngines || [],
       houseFocus: t.focus || null,
       houseDeriv: t.deriv || null,
     };
@@ -1625,6 +1756,7 @@
     tickUpgrades(s, report);
     tickEtopsService(s);
     tickForeignCert(s, rng, report);
+    tickLocalEngine(s);
     // 경쟁사 인도도 이 분기 몫으로 집계한다. 다음 분기 준비 단계에서 굴리면
     // 플레이어는 80분기, 경쟁사는 79분기가 되어 점유율이 늘 유리해진다.
     simulateRivals(s, rng);
@@ -1994,6 +2126,448 @@
       `${p.name} 조기 ETOPS 취득에 착수했다 (${fmtMoney(cost)}). 재시험 ${num(addedHours)}시간이 늘고, 취항과 동시에 대양 노선에 들어간다.`,
     );
     return { ok: true, cost };
+  }
+
+  // ─────────────────────── UEC 국산화 (trait.localEngine) ───────────────────────
+  //
+  // UAC 는 서방 엔진을 달고 시작한다 — Tu-204 에 CFM56, Il-96 에 PW4000. 실제
+  // 러시아 기체가 수출형에서 그랬듯이, 그게 서방 시장에 들이밀 수 있는 조합이기
+  // 때문이다. 대신 그 엔진은 남의 공급망이고 남의 값이다.
+  //
+  // 자회사 UEC 에 개발비를 부어 그 자리를 국산 엔진으로 갈아 끼울 수 있다.
+  // **시간과 돈을 둘 다 채워야** 끝난다: 돈을 아무리 부어도 minQuarters 는 줄지
+  // 않고, 분기가 아무리 지나도 자금이 안 차면 끝나지 않는다. 실제 엔진 개발이 그렇다.
+  //
+  // 완성되면 그 엔진을 달고 있던 **우리 기종 전부**가 자동으로 갈아탄다 — 이름이
+  // 바뀌고 생산원가가 내려간다. 대신 연비가 처지고 초기 신뢰성이 나빠진다:
+  // PS-90A 가 CFM56 대비 실제로 그랬고, 그래서 Tu-204 는 국내선에서 버티고
+  // 수출에서는 밀렸다.
+  //
+  // 측정된 값의 성격은 **원가를 사고 수주 경쟁력을 파는 것**이다 (Tu-204 기준):
+  // 대당 원가 $59M → $50M, 대신 모든 수주전에서 1.5~1.8점을 잃는다. 서방의 벽이
+  // −3점인 것과 견주면 그 절반쯤이다. 유가가 오를수록 감점이 조금 더 벌어지지만
+  // (0.6 에서 −1.5, 1.9 에서 −1.8) 시대를 갈아엎을 만큼은 아니다 — 이 축의 본질은
+  // 유가가 아니라 **곳간**이다. 현금이 급한 회사가 파는 것이 수주 경쟁력이다.
+
+  /** 계약한 엔진과 다른 것을 받게 된 항공사의 관계 하락. */
+  const LOCAL_ENGINE_SWAP_RELATION = 4;
+
+  /** 관계 점수를 실제로 들고 있는 계정 — 카탈로그의 항공사뿐이다. */
+  const RELATION_AIRLINES = new Set(AIRLINES.map((a) => a.id));
+
+  function localEngineSpec(s) {
+    return companyTrait(s).localEngine || null;
+  }
+
+  /** 이 기종이 국산 엔진을 달고 있나 — 국가 발주 우대와 공급 차질 면역의 근거. */
+  function hasDomesticEngine(p) {
+    return !!(p && (root.AirlinerEngines.get(p.engine) || {}).domestic);
+  }
+
+  /** 그 세대의 값 — 2세대는 새 코어라 훨씬 비싸고 길다. */
+  function localEngineGen(spec, gen) {
+    return gen === 2 ? spec.gen2 || null : spec;
+  }
+
+  /**
+   * 2세대를 착수할 수 있는 가장 이른 **분기** — 취항에서 개발 기간만큼 거슬러 잡는다.
+   *
+   * 따로 적어 둔 숫자가 아니라 유도한 값인 이유는, 그래야 완성이 그 엔진의 취항보다
+   * 앞설 수 없기 때문이다. 앞서면 갈아타는 시점에 그 엔진을 아직 못 사는 상태가 되고,
+   * 쌍 평가가 통째로 폴백으로 떨어진다(비율이 전부 1 — 국산화가 아무 값도 안 바꾼다).
+   *
+   * 연도가 아니라 분기로 세는 이유 — 14분기는 3.5년이라 열리는 시점이 연중이다.
+   * 소수 연도로 들고 다니면 화면이 그걸 연도로 잘라 "2008년부터"라고 적는데,
+   * 실제로는 2008년 3분기다. 버튼은 잠겨 있는데 화면은 열렸다고 말하게 된다.
+   */
+  function localEngineOpensAt(to, quarters) {
+    return (to.eis - CONFIG.startYear) * 4 - quarters;
+  }
+
+  /**
+   * 지금 국산화를 걸 수 있는 자리들.
+   *
+   * - **1세대** — 우리가 쓰고 있는 서방 엔진을 국산으로. 원가를 사고 수주 경쟁력을 판다.
+   * - **2세대** — 그 국산 엔진을 PD 계열로. 판 것을 되사 오는 사업이라 1세대를
+   *   지나온 회사에만 열린다. 아직 이른 후보도 **감춰 두지 않고** 열리는 해와 함께
+   *   내보낸다(`locked`) — 20년짜리 판에서 다음 목표가 보이는 것이 화면의 값이다.
+   *
+   * 열쇠가 `엔진 → 대체` 쌍인 것에 이유가 있다. PS-90A 는 협동체와 광동체를 모두
+   * 돌리는데 2세대는 급마다 갈린다(PD-14 · PD-35). 엔진 하나로 묶으면 둘 중 하나가
+   * 조용히 사라진다.
+   */
+  function localEngineTargets(s) {
+    const spec = localEngineSpec(s);
+    if (!spec) return [];
+    const seen = new Map();
+    for (const p of s.programs) {
+      if (p.phase === 'cancelled' || p.phase === 'sold') continue;
+      const eng = root.AirlinerEngines.get(p.engine);
+      if (!eng) continue;
+      // 서방 엔진이면 1세대, 이미 국산이면 2세대다.
+      const gen = eng.domestic ? 2 : 1;
+      const rates = localEngineGen(spec, gen);
+      if (!rates || !rates.map) continue;
+      const replacement = rates.map[p.segment];
+      // 그 급에 대안이 없거나, 이미 그 엔진을 달고 있으면 갈아 끼울 것이 없다.
+      if (!replacement || replacement === eng.id) continue;
+      const to = root.AirlinerEngines.get(replacement);
+      if (!to) continue;
+      const key = `${eng.id}→${replacement}`;
+      if (!seen.has(key)) {
+        // 그 국산 엔진을 이미 만들어 뒀다면 이건 **개발이 아니라 재장착**이다:
+        // 엔진은 있고, 그 기체에 다는 인증만 하면 된다. 싸고 짧다.
+        const refit = (s.localEngines || []).includes(replacement);
+        const quarters = refitQuarters(rates.minQuarters, refit);
+        const opensTurn = gen === 2 ? localEngineOpensAt(to, quarters) : null;
+        seen.set(key, {
+          engine: eng,
+          replacement,
+          gen,
+          refit,
+          costRate: rates.costRate,
+          minQuarters: rates.minQuarters,
+          opensTurn,
+          opensAt: opensTurn === null ? null : yearOf(opensTurn),
+          opensLabel: opensTurn === null ? null : turnLabel(opensTurn),
+          locked: opensTurn !== null && s.turn < opensTurn,
+          programs: [],
+        });
+      }
+      seen.get(key).programs.push(p);
+    }
+    return [...seen.values()];
+  }
+
+  /** 이미 개발한 엔진을 다른 기체에 다는 값 — 개발의 일부만 든다. */
+  const LOCAL_ENGINE_REFIT_RATE = 0.35;
+
+  function localEngineCost(s, target) {
+    const spec = localEngineSpec(s);
+    const segs = target.programs.map((p) => p.segment);
+    // 여러 급이 걸린 엔진이면 가장 큰 급 기준이다 — 광동체용 코어를 만드는 값이
+    // 협동체용보다 싸질 수는 없다.
+    const base = Math.max(...segs.map((seg) => SEGMENTS[seg].devBase));
+    // 옛 세이브·옛 호출부는 후보에 세대 값이 없다 — 그때는 1세대 요율로 읽는다.
+    const rate = target.costRate ?? spec.costRate;
+    return Math.round(base * rate * (target.refit ? LOCAL_ENGINE_REFIT_RATE : 1));
+  }
+
+  /** 재장착은 절반이면 된다 — 엔진은 이미 있고 그 기체에 다는 인증만 남았다. */
+  function refitQuarters(minQuarters, refit) {
+    return refit ? Math.max(2, Math.round(minQuarters * 0.5)) : minQuarters;
+  }
+
+  /** 그 사업에 필요한 최소 분기. */
+  function localEngineQuarters(s, target) {
+    const spec = localEngineSpec(s);
+    return refitQuarters((target && target.minQuarters) ?? spec.minQuarters, !!(target && target.refit));
+  }
+
+  function startLocalEngine(s, targetEngineId, replacementId) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const spec = localEngineSpec(s);
+    if (!spec) return { ok: false, error: '이 회사에는 국산화할 엔진 자회사가 없습니다.' };
+    if (s.localEngineProject) return { ok: false, error: '이미 국산화 사업을 하나 진행 중입니다.' };
+    const all = localEngineTargets(s).filter((t) => t.engine.id === targetEngineId);
+    // 대체 엔진까지 받는 이유 — PS-90A 는 협동체·광동체를 모두 돌리는데 2세대는
+    // 급마다 갈린다(PD-14 · PD-35). 엔진만으로는 어느 쪽인지 정해지지 않는다.
+    const matched = replacementId ? all.filter((t) => t.replacement === replacementId) : all;
+    if (!matched.length) return { ok: false, error: '지금 우리 기종이 달고 있는 엔진만 국산화할 수 있습니다.' };
+    if (matched.length > 1) {
+      return { ok: false, error: `이 엔진에는 갈아탈 곳이 둘입니다 — 어느 쪽인지 정하세요 (${matched.map((t) => (root.AirlinerEngines.get(t.replacement) || {}).name || t.replacement).join(' · ')}).` };
+    }
+    const target = matched[0];
+    if (target.locked) {
+      const to = root.AirlinerEngines.get(target.replacement);
+      return { ok: false, error: `${to ? to.name : target.replacement} 는 ${target.opensLabel}부터 착수할 수 있습니다.` };
+    }
+    const minQuarters = localEngineQuarters(s, target);
+    s.localEngineProject = {
+      target: target.engine.id,
+      engine: target.replacement,
+      cost: localEngineCost(s, target),
+      minQuarters,
+      refit: !!target.refit,
+      gen: target.gen || 1,
+      funded: 0,
+      quarters: 0,
+    };
+    const rep = root.AirlinerEngines.get(target.replacement);
+    const repName = rep ? rep.name : target.replacement;
+    pushLog(
+      s,
+      'program',
+      target.refit
+        ? `${spec.maker}에 ${target.engine.name} 자리에 ${repName} 를 다는 재장착 인증을 맡겼다. 엔진은 이미 우리 것이라 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기면 된다.`
+        : target.gen === 2
+          ? `${spec.maker}에 ${target.engine.name} 를 대신할 **차세대 코어**(${repName}) 개발을 맡겼다. 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기 — 1세대를 만들어 본 팀이 하는 일이지만 코어부터 새로 그린다.`
+          : `${spec.maker}에 ${target.engine.name} 대체 엔진(${repName}) 개발을 맡겼다. 총 ${fmtMoney(s.localEngineProject.cost)}, 최소 ${minQuarters}분기 — 자금과 기간을 **둘 다** 채워야 나온다.`,
+    );
+    return { ok: true, project: s.localEngineProject };
+  }
+
+  function fundLocalEngine(s, amount) {
+    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
+    ensureShape(s);
+    const proj = s.localEngineProject;
+    if (!proj) return { ok: false, error: '진행 중인 국산화 사업이 없습니다.' };
+    const need = proj.cost - proj.funded;
+    if (need <= 0) return { ok: false, error: '개발비는 이미 다 채웠습니다 — 남은 것은 기간입니다.' };
+    const put = Math.min(Math.max(0, Math.round(amount)), need);
+    if (put <= 0) return { ok: false, error: '넣을 금액을 정하세요.' };
+    if (s.cash < put) return { ok: false, error: `현금이 부족합니다 (보유 ${fmtMoney(s.cash)}).` };
+    s.cash -= put;
+    s.pending.rdCost += put;
+    proj.funded += put;
+    return { ok: true, funded: proj.funded, cost: proj.cost, put };
+  }
+
+  /** 국산화 취소 — 넣은 돈은 돌아오지 않는다. 개발을 접는 것과 같은 규칙이다. */
+  function cancelLocalEngine(s) {
+    if (!s.localEngineProject) return { ok: false, error: '진행 중인 국산화 사업이 없습니다.' };
+    const spent = s.localEngineProject.funded;
+    s.localEngineProject = null;
+    pushLog(s, 'bad', `국산 엔진 개발을 접었다. 투입한 ${fmtMoney(spent)}은 돌아오지 않는다.`);
+    return { ok: true, spent };
+  }
+
+  /**
+   * 엔진을 갈아 끼우면 이 기종이 어떻게 되나 — **엔진만 다른 두 평가**의 차이.
+   *
+   * 엔진에서 유도되는 값을 손으로 하나씩 패치하지 않는다. 원가·정가·연비·객실·
+   * 결함 위험이 전부 엔진을 타는데, 그중 하나라도 빠뜨리면 그게 그대로 버그가
+   * 된다(정가를 빠뜨려 국산화한 기체가 서방 정가로 팔리던 것이 그 예다).
+   * 엔진이 아닌 항은 두 평가에 똑같이 들어가 비율에서 상쇄되므로, 아래 스펙
+   * 되짚기가 완벽하지 않아도 결과는 정확하다. 재평가로 통째로 갈아치우지 않는
+   * 이유는 그 사이 쌓인 것(개량·품질 투자·인증 주사위)이 지워지기 때문이다.
+   *
+   * 완성 시점의 실제 적용(tickLocalEngine)과 착수 전 예고(생산 탭 카드)가 **이
+   * 함수 하나**를 쓴다. 예고를 엔진 배수로 따로 계산하면 카드가 −16%를 적어 놓고
+   * 실제로는 −18%가 나오는 식으로 갈라진다 — 그 카드는 거짓말을 하는 것이다.
+   *
+   * 상태는 건드리지 않는다. 바뀔 값을 계산해서 돌려줄 뿐이다.
+   */
+  function localEngineImpact(s, p, from, to, liveYear, engineBefore) {
+    // 옛 엔진은 **그 엔진을 단 시점**의 연도로, 새 엔진은 **바뀐 기체가 보이는**
+    // 연도로 평가한다. 그래야 성숙도 프리미엄이 옛 엔진 몫은 빠지고 새 엔진 몫이
+    // 얹힌다.
+    //
+    // 착수 연도가 아니라 **장착 연도**인 이유 — 2세대 국산화는 1세대로 한 번
+    // 갈아 끼운 엔진을 다시 바꾼다. SSJ-100 은 1998년에 나왔지만 D-436(취항 1999)을
+    // 단 것은 2000년이다. 착수 연도로 재면 그 시점에 못 사는 엔진이라 평가가
+    // 폴백으로 떨어지고(exact 실패), 정가·결함 위험·미성숙 표시가 통째로 안 바뀐다.
+    const engineBorn = typeof p.engineTurn === 'number' ? p.engineTurn : p.launchTurn || 0;
+    const designYear = Math.max(yearOf(0), yearOf(engineBorn));
+    // 이중화였는지는 옛 평가가 그대로 재현해야 이중화 할증(원가 +3%)이 비율에서
+    // 빠진다 — 대안을 접는 것이 국산화가 파는 값의 일부다.
+    const hadDual = !!(p.dualSource || p.altEngine);
+    // 원형 계보를 빼먹으면 파생형이 두 평가 모두에서 신규 설계로 잡힌다. 그러면
+    // 재장착 감점(연비 −3)도, 파생형이 원형에서 물려받는 이중화 여부도 어긋난다.
+    //
+    // 계보의 엔진은 **스냅숏이 아니라 원형 프로그램의 지금 엔진**에서 읽는다.
+    // `derivedFrom` 은 착수 시점의 복사본이라, 국산화가 원형을 갈아 끼우는 순간부터
+    // 거짓말을 시작한다 — 원형은 PS-90A 인데 계보만 CFM56 을 가리키는 식으로.
+    // 원형과 엔진이 달랐던 파생형은 그 사이 갈아타기에서 아예 건너뛰므로 스냅숏을
+    // 고칠 기회조차 없다. 원형이 있으면 원형을 믿고, 없을 때만 스냅숏으로 물러선다.
+    //
+    // 새 평가의 계보는 **원형과 함께 옮긴다**. 국산화는 그 엔진을 단 기종을 전부
+    // 같은 분기에 갈아 끼우므로 계보 전체가 같이 움직인다. 파생형에만 재장착 감점을
+    // 물리면, 나란히 국산 엔진으로 옮겨 간 원형과 파생형이 착수 방식 때문에 갈라진다.
+    // 반대로 원형과 같은 엔진으로 되돌아오는 파생형은 그 감점이 풀려야 한다.
+    const anc = p.derivedFrom;
+    // 원형의 엔진은 **이번 갈아타기 전** 값이어야 한다. 갈아타기는 프로그램을
+    // 차례로 도는데, 원형이 먼저 처리되면 파생형 차례에는 이미 새 엔진이 박혀
+    // 있다 — 그 값을 "있던 그대로"로 읽으면 원형이 늘 재장착으로 잡힌다.
+    const parent = anc && anc.id ? s.programs.find((x) => x.id === anc.id) : null;
+    const parentEngine = parent ? (engineBefore ? engineBefore.get(parent.id) ?? parent.engine : parent.engine) : null;
+    const ancEngineOld = parent ? parentEngine : anc && anc.engine;
+    const parentMoves = !!parent && parentEngine === from.id && to.segments.includes(parent.segment);
+    const ancEngine = parentMoves ? to.id : ancEngineOld;
+    const ancOld = anc ? { ...anc, dualSource: hadDual, engine: ancEngineOld } : null;
+    const ancNew = anc ? { ...anc, dualSource: false, engine: ancEngine } : null;
+    const base = {
+      ...programSpec(p),
+      domesticEngines: [from.id, to.id],
+      // 조기 접근으로 착수한 기종(UAC 의 SaM146)은 이 맥락이 없으면 옛 엔진이
+      // 설계 당시 연도에 "못 사는 엔진"으로 잡혀 평가가 통째로 어긋난다 —
+      // exact 가 깨져 비율이 전부 1이 되고, 국산화가 아무 값도 안 바꾼다.
+      earlyEngines: Object.keys(s.engineEarlyAccess || {}),
+    };
+    // 옛 평가는 **있던 그대로**(이중화 포함), 새 평가는 **될 그대로**(단일 국산).
+    const evOld = evaluate({ ...base, engine: from.id, year: designYear, dualSource: hadDual, derivedFrom: ancOld });
+    const evNew = evaluate({ ...base, engine: to.id, year: liveYear, dualSource: false, derivedFrom: ancNew });
+
+    // 둘 중 하나라도 요청한 엔진으로 안 잡히면(그 시점에 못 사는 엔진 등) 비율이
+    // 엉뚱해진다. 그때는 엔진 배수만으로 물러선다 — 틀린 값보다 거친 값이 낫다.
+    const exact = evOld.engine === from.id && evNew.engine === to.id;
+    const ratio = (a, b) => (exact && b ? a / b : 1);
+    // 공급사 성능 패키지는 그 공급사 엔진에 붙은 값이다 — 엔진이 내려가면 함께 나간다.
+    const eff = clamp(p.efficiency - (p.enginePipGain || 0), 1, 99);
+    return {
+      exact,
+      hadDual,
+      ancEngine,
+      unitCostBase: exact
+        ? Math.round(p.unitCostBase * ratio(evNew.unitCostBase, evOld.unitCostBase) * 10) / 10
+        : Math.round((p.unitCostBase * to.costMult) / from.costMult * 10) / 10,
+      listPrice: Math.round(p.listPrice * ratio(evNew.listPrice, evOld.listPrice) * 10) / 10,
+      efficiency: clamp(Math.round(eff + (exact ? evNew.efficiency - evOld.efficiency : to.eff - from.eff)), 1, 99),
+      comfort: clamp(Math.round(p.comfort + (exact ? evNew.comfort - evOld.comfort : to.comfort - from.comfort)), 1, 99),
+      defectRisk:
+        Math.round(clamp(p.defectRisk * ratio(evNew.defectRisk, evOld.defectRisk), 0.02, CONFIG.defectRiskMax) * 1000) / 1000,
+      engineImmature: exact ? evNew.engineImmature : !!p.engineImmature,
+    };
+  }
+
+  /**
+   * 착수 전 예고 — 이 사업을 끝내면 걸린 기종들이 실제로 어떻게 바뀌나.
+   * 완성 시점(지금 + 최소 분기)의 연도로 잡는다. 그때가 새 엔진이 실제로 보이는
+   * 시점이고, 성숙도 프리미엄이 그 연도를 탄다.
+   */
+  function localEnginePreview(s, target) {
+    const from = target && target.engine;
+    const to = target && root.AirlinerEngines.get(target.replacement);
+    if (!from || !to) return [];
+    const liveYear = yearOf(s.turn + localEngineQuarters(s, target));
+    return target.programs.map((p) => {
+      const im = localEngineImpact(s, p, from, to, liveYear);
+      return {
+        program: p,
+        exact: im.exact,
+        // 원가·정가는 비율로, 연비·객실은 점수 차로 — 화면이 쓰는 그대로.
+        cost: p.unitCostBase ? im.unitCostBase / p.unitCostBase - 1 : 0,
+        listPrice: p.listPrice ? im.listPrice / p.listPrice - 1 : 0,
+        efficiency: im.efficiency - p.efficiency,
+        comfort: im.comfort - p.comfort,
+        defectRisk: im.defectRisk - p.defectRisk,
+      };
+    });
+  }
+
+  /**
+   * 국산화 진행 — 매 분기 정산에서 부른다. 자금과 기간이 **둘 다** 차면 완성되고,
+   * 그 엔진을 달고 있던 우리 기종이 전부 갈아탄다.
+   */
+  function tickLocalEngine(s) {
+    const proj = s.localEngineProject;
+    if (!proj) return;
+    const spec = localEngineSpec(s);
+    if (!spec) return;
+    proj.quarters += 1;
+    // 옛 세이브(프로젝트에 minQuarters 가 없던 판)는 사풍의 기본값으로 읽는다.
+    const need = proj.minQuarters ?? spec.minQuarters;
+    if (proj.funded < proj.cost || proj.quarters < need) return;
+
+    const from = root.AirlinerEngines.get(proj.target);
+    const to = root.AirlinerEngines.get(proj.engine);
+    s.localEngineProject = null;
+    if (!from || !to) return;
+
+    if (!s.localEngines.includes(to.id)) s.localEngines.push(to.id);
+
+    const swapped = [];
+    const dropped = [];
+    const upset = new Set();
+    // 갈아타기 **전** 엔진 배치. 계보의 "있던 그대로"를 여기서 읽는다.
+    const engineBefore = new Map(s.programs.map((x) => [x.id, x.engine]));
+    // 갈아탄 기체가 실제로 보이는 분기 — tickLocalEngine 은 s.turn++ **전에** 돈다.
+    const liveYear = yearOf(s.turn + 1);
+    for (const p of s.programs) {
+      if (p.phase === 'cancelled' || p.phase === 'sold') continue;
+      if (p.engine !== from.id) continue;
+      // **그 엔진이 들어가는 급만** 갈아탄다. 1세대는 PS-90A 가 협동체·광동체를
+      // 모두 돌려서 이 경계가 드러나지 않았지만, 2세대는 급마다 갈린다(PD-14 ·
+      // PD-35). 엔진만 보고 갈아 끼우면 PD-14 사업이 광동체까지 끌고 가, 협동체용
+      // 엔진을 단 광동체가 된다 — 평가는 그 엔진을 거부하므로 값은 폴백으로
+      // 떨어지고 이름만 바뀐다.
+      if (!to.segments.includes(p.segment)) continue;
+
+      const im = localEngineImpact(s, p, from, to, liveYear, engineBefore);
+
+      // 공급사 성능 패키지 카운터도 풀어야 새 공급사의 패키지를 받을 수 있다.
+      p.enginePipGain = 0;
+
+      // 이중화 기체는 서방 대안 인증을 함께 접는다. 안 그러면 국산 원가·국가
+      // 발주 우대·공급 차질 면역을 받으면서 대안 공급사의 선호 가산(+2)까지
+      // 챙기는, 양쪽을 다 갖는 구멍이 된다.
+      if (p.altEngine) {
+        dropped.push(p.name);
+        p.altEngine = null;
+        p.altEngineName = null;
+        p.altMaker = null;
+        p.dualSource = false;
+      }
+
+      p.unitCostBase = im.unitCostBase;
+      p.listPrice = im.listPrice;
+      p.efficiency = im.efficiency;
+      p.comfort = im.comfort;
+      p.defectRisk = im.defectRisk;
+      if (im.exact) p.engineImmature = im.engineImmature;
+
+      p.engine = to.id;
+      // 엔진에서 나온 **표시용 캐시**도 함께 간다. 안 고치면 국산화한 Tu-204 가
+      // 20년 뒤 회고에서까지 CFM56 을 달고 있는 것으로 남는다.
+      p.engineName = to.name;
+      p.engineMaker = to.maker;
+      // 다음 세대가 "이 엔진을 언제 달았나"를 여기서 읽는다.
+      p.engineTurn = s.turn + 1;
+
+      // 개발비·개발기간·필요인력은 **일부러 그대로 둔다.** 엔진이 그 값들에도
+      // 들어가지만, 이미 착수해 진행 중인 개발의 계약을 도중에 다시 쓰는 셈이고,
+      // devCost 는 품질 투자·풍동·런치 에이드·서방 형식증명·국산화 비용의 기준이라
+      // 지금 흔들면 이미 제시한 값들이 소급해서 바뀐다. 갈아 끼우는 것은 기체가
+      // 앞으로 낼 성능과 원가이지, 이미 쓴 개발비가 아니다.
+
+      // 이미 계약된 주문은 그 엔진을 보고 서명한 것이다. 주문마다 엔진 구성을
+      // 따로 들고 다니게 하는 대신(생산·인도 회계를 통째로 갈라야 한다), 계약과
+      // 다른 것을 받게 된 항공사의 관계를 깎는다 — 잔고가 두꺼울 때 갈아타는
+      // 것이 실제로 비싸지도록.
+      for (const o of s.backlog) {
+        // 관계 점수는 **카탈로그에 있는 항공사**에만 있다. 정부·국영뿐 아니라
+        // 리스사(lessor)·인수 승계(takeover) 같은 기관 계정도 잔고를 들 수 있는데,
+        // 그쪽을 깎으면 아무도 안 읽는 유령 항목(s.relations.lessor)이 생기고
+        // 로그만 "관계가 깎였다"고 말한다. 뺄 이름을 하나씩 세는 대신 있는 이름만
+        // 받는다 — 새 기관 계정이 늘어도 새지 않는다.
+        if (o.programId === p.id && o.remaining > 0 && RELATION_AIRLINES.has(o.airlineId)) {
+          upset.add(o.airlineId);
+        }
+      }
+      swapped.push(p.name);
+    }
+    // 계보 스냅숏의 엔진은 **원형 프로그램의 지금 엔진을 비춘다.** 갈아탄 기종만
+    // 고쳐서는 모자란다 — 원형과 엔진이 달라 이번에 건너뛴 파생형의 계보도 원형이
+    // 옮겨 간 만큼 낡는다. 한 규칙으로 전부 다시 맞춘다.
+    for (const p of s.programs) {
+      const d = p.derivedFrom;
+      if (!d || !d.id) continue;
+      const parent = s.programs.find((x) => x.id === d.id);
+      if (parent && d.engine !== parent.engine) p.derivedFrom = { ...d, engine: parent.engine };
+    }
+    for (const aid of upset) {
+      s.relations[aid] = clamp((s.relations[aid] ?? 40) - LOCAL_ENGINE_SWAP_RELATION, 0, 100);
+    }
+    // 옛 세이브의 진행 중 사업에는 세대 표시가 없다 — 대체 대상이 이미 국산이면
+    // 그것이 곧 2세대다.
+    const gen2 = (proj.gen || (from.domestic ? 2 : 1)) === 2;
+    // engineRelations(공급사별 인도 실적)는 손대지 않는다. 이미 인도한 기체는
+    // 실제로 그 공급사 엔진을 달고 나갔고, 그 이력까지 지우면 장부가 거짓이 된다.
+    // 앞으로의 인도분이 UEC 쪽에 쌓이면서 자연히 무게중심이 옮겨 간다.
+    pushLog(
+      s,
+      'good',
+      swapped.length
+        ? `${to.name} ${gen2 ? '개발' : '국산화'} 완료. ${swapped.join(' · ')}의 엔진이 ${from.name}에서 ${to.name}으로 바뀌었다 — ${
+            gen2 ? '연비가 서방과 겨룰 자리로 올라왔다. 대신 대당 원가는 1세대만큼 싸지 않다' : '생산원가가 내려가고 공급이 우리 손에 들어왔다'
+          }.${
+            dropped.length ? ` ${dropped.join(' · ')}의 서방 대안 엔진 인증은 함께 접었다.` : ''
+          }${
+            upset.size ? ` 다만 ${from.name}으로 계약한 잔고가 남아 있어 ${upset.size}개 항공사의 관계가 깎였다.` : ''
+          }`
+        : `${to.name} 개발 완료. 갈아 끼울 기체는 없지만, 이제 설계에서 고를 수 있다.`,
+    );
   }
 
   // ─────────────────── 서방 형식증명 (foreignBid.certification) ───────────────────
@@ -3306,6 +3880,10 @@
     r.progress[proj.id] = (r.progress[proj.id] || 0) + 1;
     if (r.progress[proj.id] >= proj.quarters) {
       r.done[proj.id] = true;
+      // **언제** 끝났는지도 남긴다. 착수 시점의 연구를 프로그램이 들고 다니게 된
+      // 뒤로는 이 값이 곧 "그 기체가 이 연구를 받았는가"의 기준이 된다.
+      r.doneTurn = r.doneTurn || {};
+      r.doneTurn[proj.id] = s.turn;
       r.active = null;
       pushLog(s, 'good', `${proj.name} 연구 완료 — ${proj.effect}. 이제부터의 설계·생산에 적용된다.`);
     }
@@ -3569,6 +4147,8 @@
       delivered: 0,
       stock: 0,
       launchTurn: s.turn,
+      // 인수한 기체는 이미 그 엔진을 달고 온다 — 장착 시점은 인수 분기다.
+      engineTurn: s.turn,
       certTurn: s.turn,
       derivedFrom: null,
       acquired: true,
@@ -4400,6 +4980,7 @@
     launchAidRate,
     designContext,
     derivativeSpec,
+    programSpec,
     investQuality,
     investWindTunnel,
     WIND_TUNNEL_COST_RATE,
@@ -4415,6 +4996,17 @@
     delayCertification,
     startEarlyEtops,
     startForeignCert,
+    startLocalEngine,
+    fundLocalEngine,
+    cancelLocalEngine,
+    localEngineSpec,
+    localEngineTargets,
+    localEngineCost,
+    localEngineQuarters,
+    turnLabel,
+    localEngineImpact,
+    localEnginePreview,
+    hasDomesticEngine,
     foreignCertSpec,
     foreignCertified,
     testAircraftCost,

@@ -22,8 +22,8 @@
    * 소재 교체·기술 상향·항속 대폭 변경은 재설계에 가까우므로 할인 대상이 아니다.
    */
   /** 이중화의 대안 엔진 — 다른 공급사 것 중 성숙 우선, 그중 연비 최고. */
-  function bestAltEngine(segmentId, primary, year, earlyIds) {
-    const pool = Engines.available(segmentId, year, earlyIds).filter((e) => e.maker !== primary.maker);
+  function bestAltEngine(segmentId, primary, year, earlyIds, domesticIds) {
+    const pool = Engines.available(segmentId, year, earlyIds, domesticIds).filter((e) => e.maker !== primary.maker);
     if (!pool.length) return null;
     const mature = pool.filter((e) => Engines.maturityRisk(e, year) === 1);
     const from = mature.length ? mature : pool;
@@ -110,13 +110,22 @@
     // 엔진은 설계의 두 번째 축이다. spec.year(소수 연도)가 있으면 그 시점에 실제로
     // 살 수 있는 엔진으로 좁히고, 갓 나온 엔진이면 성숙도 위험이 얹힌다.
     // 런칭 파트너 계약(spec.earlyEngines)이 있으면 그 엔진만 몇 년 먼저 열린다.
-    const eng = Engines.resolve(seg.id, spec.engine, spec.year, spec.earlyEngines);
+    // 국산 엔진(spec.domesticEngines)은 해금한 회사에게만 보인다.
+    const eng = Engines.resolve(seg.id, spec.engine, spec.year, spec.earlyEngines, spec.domesticEngines);
     const engMaturity = eng ? Engines.maturityRisk(eng, spec.year) : 1;
     // 엔진 이중화 — 한 기체에 두 공급사 엔진 옵션을 인증한다 (A330·777 이 그랬다).
     // 구조(파일런·나셀 두 벌)라 파생형은 원형을 따른다. 대안 공급사는 그 시점
     // 카탈로그에서 결정적으로 고른다: 성숙한 것 우선, 그중 연비 최고.
     const dualWanted = derivative ? !!(spec.derivedFrom && spec.derivedFrom.dualSource) : !!spec.dualSource;
-    const altEng = dualWanted && eng ? bestAltEngine(seg.id, eng, spec.year, spec.earlyEngines) : null;
+    // 국산 엔진을 주엔진으로 고르면 이중화는 성립하지 않는다. 붙여 두면 국산
+    // 원가·국가 발주 우대·공급 차질 면역(셋 다 주엔진만 본다)을 받으면서 서방
+    // 대안의 선호 가산(+2)까지 챙기는, 양쪽을 다 갖는 설계가 된다 — 국산화가
+    // 파는 것이 정확히 그 수주 경쟁력이다. 완성된 국산화가 대안 인증을 접는
+    // 것과 같은 규칙을 설계 단계에도 건다.
+    const altEng =
+      dualWanted && eng && !eng.domestic
+        ? bestAltEngine(seg.id, eng, spec.year, spec.earlyEngines, spec.domesticEngines)
+        : null;
     const dual = !!altEng;
     // 독점 공급 계약 중에 다른 공급사 엔진으로 설계하면 통합 지원이 빠져 개발이
     // 비싸다. 이중화는 정의상 다른 공급사가 끼므로 주엔진이 계약사여도 할증이다.

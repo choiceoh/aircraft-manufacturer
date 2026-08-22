@@ -14,6 +14,7 @@ for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', '
   require(path.join(JS, f));
 }
 
+const Eng = globalThis.AirlinerEngines;
 const {
   AirlinerEngine: E,
   AirlinerDesign: D,
@@ -7745,6 +7746,1277 @@ test('서방 형식증명: 평판이 높을 때 산 인증은 평판이 떨어�
   assert.ok(B.homeBias(s, { airlineId: 'panamer' }, bare) < 0, '안 산 기종에는 벽이 되살아난다');
 });
 
+// ─────────────────── UEC 국산화 (trait.localEngine) ───────────────────
+//
+// 자회사에 개발비를 부어 서방 엔진을 국산으로 갈아 끼운다. 이름이 바뀌고
+// 생산원가가 내려가되, 연비가 처지고 초기 신뢰성이 나빠진다.
+
+test('국산화: 해금 전에는 아무도 국산 엔진을 못 고른다', () => {
+  const domestic = Eng.ENGINES.filter((e) => e.domestic);
+  assert.ok(domestic.length >= 2, '국산 엔진이 카탈로그에 있어야 한다');
+
+  for (const seg of ['regional', 'narrow', 'wide']) {
+    for (const year of [1998, 2005, 2017]) {
+      const pool = Eng.available(seg, year);
+      assert.ok(!pool.some((e) => e.domestic), `${seg}/${year}: 해금 없이 국산 엔진이 풀에 들어오면 안 된다`);
+      // 기본 엔진이 국산이 되면 엔진을 지정하지 않은 옛 세이브가 조용히 갈아탄다.
+      const def = Eng.defaultFor(seg, year);
+      assert.ok(def && !def.domestic, `${seg}/${year}: 기본 엔진이 국산이면 안 된다`);
+    }
+  }
+  // 해금하면 그 엔진만 보인다.
+  assert.ok(Eng.available('narrow', 2005, [], ['ps90a']).some((e) => e.id === 'ps90a'));
+  assert.ok(!Eng.available('regional', 2005, [], ['ps90a']).some((e) => e.domestic), '해금은 그 엔진에만 적용된다');
+});
+
+test('국산화: 자금과 기간을 둘 다 채워야 끝난다', () => {
+  const s = E.newGame(4301, 'uac');
+  s.cash += 40000;
+  const spec = E.localEngineSpec(s);
+  assert.ok(spec, 'UAC 에는 엔진 자회사가 있다');
+
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  assert.strictEqual(E.startLocalEngine(s, 'pw4000').ok, false, '동시에 둘은 못 한다');
+
+  // 돈을 다 부어도 기간은 안 줄어든다.
+  const proj = s.localEngineProject;
+  assert.ok(E.fundLocalEngine(s, proj.cost).ok);
+  assert.strictEqual(E.fundLocalEngine(s, 100).ok, false, '다 채운 뒤에는 더 넣을 수 없다');
+  for (let i = 0; i < proj.minQuarters - 1; i++) E.endTurn(s);
+  assert.ok(s.localEngineProject, `자금을 다 채워도 ${proj.minQuarters}분기 전에는 안 끝난다`);
+  E.endTurn(s);
+  assert.strictEqual(s.localEngineProject, null, '기간까지 차면 끝난다');
+
+  // 반대로 기간만 지나고 자금이 모자라면 안 끝난다.
+  const t = E.newGame(4301, 'uac');
+  t.cash += 40000;
+  E.startLocalEngine(t, 'cfm56-5b');
+  E.fundLocalEngine(t, Math.round(t.localEngineProject.cost / 2));
+  for (let i = 0; i < spec.minQuarters + 6; i++) E.endTurn(t);
+  assert.ok(t.localEngineProject, '자금이 모자라면 분기가 아무리 지나도 안 끝난다');
+});
+
+test('국산화: 그 엔진을 단 기종만 갈아타고, 값이 양방향으로 움직인다', () => {
+  const s = E.newGame(4302, 'uac');
+  s.cash += 40000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  const il = s.programs.find((p) => p.engine === 'pw4000');
+  assert.ok(tu && il, '두 승계기가 서로 다른 서방 엔진을 단다');
+  const before = { cost: tu.unitCostBase, eff: tu.efficiency, risk: tu.defectRisk };
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(tu.engine, 'ps90a', '이름이 바뀌어야 한다');
+  assert.strictEqual(il.engine, 'pw4000', '다른 엔진을 단 기종은 그대로다');
+  assert.ok(tu.unitCostBase < before.cost, '생산원가가 내려가야 한다');
+  assert.ok(tu.efficiency < before.eff, '연비는 처져야 한다 — 공짜 개선이면 결정이 아니라 버튼이다');
+  assert.ok(tu.defectRisk > before.risk, '초기 신뢰성도 나빠져야 한다');
+  assert.ok(s.localEngines.includes('ps90a'), '해금 목록에 올라야 한다');
+
+  // 해금된 뒤에는 설계에서도 고를 수 있다.
+  assert.ok(E.designContext(s).domesticEngines.includes('ps90a'));
+  // 파생형은 국산 엔진을 그대로 물려받고 재장착으로 잡히지 않는다.
+  const d = E.launchProgram(s, E.derivativeSpec(tu, 25), 'Tu-204-300');
+  assert.ok(d.ok, d.error);
+  assert.strictEqual(d.program.engine, 'ps90a');
+  assert.ok(d.program.derivative, '같은 엔진이므로 순수 동체 연장이다');
+});
+
+test('국산화: 이미 만든 엔진을 다른 기체에 다는 것은 재장착이라 싸고 짧다', () => {
+  const s = E.newGame(4303, 'uac');
+  s.cash += 60000;
+  const newDev = E.localEngineTargets(s).find((t) => t.engine.id === 'pw4000');
+  const fullCost = E.localEngineCost(s, newDev);
+  const fullQuarters = E.localEngineQuarters(s, newDev);
+  assert.strictEqual(newDev.refit, false);
+
+  // 협동체 쪽으로 PS-90A 를 먼저 만들어 둔다.
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  const refit = E.localEngineTargets(s).find((t) => t.engine.id === 'pw4000');
+  assert.ok(refit && refit.refit, '같은 국산 엔진으로 가는 길은 이제 재장착이다');
+  assert.ok(E.localEngineCost(s, refit) < fullCost * 0.6, '재장착은 뚜렷이 싸야 한다');
+  assert.ok(E.localEngineQuarters(s, refit) < fullQuarters, '재장착은 더 짧아야 한다');
+
+  const il = s.programs.find((p) => p.engine === 'pw4000');
+  const beforeCost = il.unitCostBase;
+  E.startLocalEngine(s, 'pw4000');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(il.engine, 'ps90a');
+  assert.ok(il.unitCostBase < beforeCost);
+});
+
+test('국산화: 중단하면 넣은 돈은 돌아오지 않는다', () => {
+  const s = E.newGame(4304, 'uac');
+  s.cash += 40000;
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, 500);
+  const cash = s.cash;
+  const r = E.cancelLocalEngine(s);
+  assert.ok(r.ok);
+  assert.strictEqual(r.spent, 500);
+  assert.strictEqual(s.cash, cash, '환급은 없다 — 개발 중단과 같은 규칙이다');
+  assert.strictEqual(s.localEngineProject, null);
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok, '다시 시작할 수는 있다');
+  assert.strictEqual(s.localEngineProject.funded, 0, '다시 시작하면 처음부터다');
+});
+
+test('국산화: 공급 차질은 국산 엔진을 비켜 간다', () => {
+  const shortage = Data.EVENTS.find((e) => e.id === 'engine_shortage');
+  assert.ok(shortage, '엔진 공급 차질 사건이 있어야 한다');
+
+  const s = E.newGame(4305, 'uac');
+  assert.ok(shortage.condition(s), '서방 엔진을 달고 있으면 걸린다');
+
+  // 모든 양산 기종을 국산으로 바꿔 두면 이 사건 자체가 성립하지 않는다.
+  for (const p of s.programs) if (p.phase === 'production') p.engine = 'ps90a';
+  assert.strictEqual(shortage.condition(s), false, '국산 엔진만 남으면 남의 공급망 사고가 아니다');
+});
+
+test('국산화: 국가 발주가 국산 엔진을 단 기체를 더 쳐 준다', () => {
+  const def = Dec.get('state_order');
+  const price = (engineId) => {
+    const s = E.newGame(4306, 'uac');
+    s.turn = 20;
+    s.cash = 700;
+    for (const p of s.programs) if (p.phase === 'production') p.engine = engineId;
+    const memo = {};
+    const h = {
+      rng: R.createRng(4),
+      remember: (k, v) => ((memo[k] = v), v),
+      recall: (k, f) => (memo[k] === undefined ? f : memo[k]),
+    };
+    def.text(s, h);
+    const p = s.programs.find((x) => x.id === memo.program);
+    return { unit: memo.unitPrice, list: p.listPrice };
+  };
+  const foreign = price('cfm56-5b');
+  const local = price('ps90a');
+  const trait = E.companyTrait(E.newGame(4306, 'uac'));
+  const bonus = trait.localEngine.stateBonus;
+  assert.strictEqual(local.list, foreign.list, '같은 기종이어야 비교가 성립한다');
+  assert.ok(local.unit > foreign.unit, `국산 엔진 기체가 더 비싸게 팔려야 한다 (${local.unit} vs ${foreign.unit})`);
+  // 단가는 정수로 반올림돼 나오므로 비율이 아니라 반올림한 값으로 못박는다.
+  assert.strictEqual(foreign.unit, Math.round(local.list * trait.stateOrders.priceMult));
+  assert.strictEqual(local.unit, Math.round(local.list * (trait.stateOrders.priceMult + bonus)));
+});
+
+test('국산화: 세이브 왕복에도 진행도와 해금이 살아 있다', () => {
+  const s = E.newGame(4307, 'uac');
+  s.cash += 40000;
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, 400);
+  E.endTurn(s);
+  const back = E.ensureShape(JSON.parse(JSON.stringify(s)));
+  assert.deepStrictEqual(back.localEngineProject, s.localEngineProject);
+
+  // 옛 세이브(두 칸이 아예 없던 판)도 조용히 채워진다.
+  const old = E.newGame(4307, 'uac');
+  delete old.localEngineProject;
+  delete old.localEngines;
+  E.ensureShape(old);
+  assert.strictEqual(old.localEngineProject, null);
+  assert.deepStrictEqual(old.localEngines, []);
+});
+
+test('국산화: 다른 다섯 회사에는 이 사업이 없다', () => {
+  for (const id of ['deneb', 'boeing', 'airbus', 'embraer', 'bombardier']) {
+    const s = E.newGame(4308, id);
+    assert.strictEqual(E.localEngineSpec(s), null, `${id}: 엔진 자회사가 없어야 한다`);
+    assert.deepStrictEqual(E.localEngineTargets(s), []);
+    s.cash += 40000;
+    assert.strictEqual(E.startLocalEngine(s, 'cfm56-5b').ok, false, `${id}: 살 수 없는 것을 팔면 안 된다`);
+    // 설계 맥락에도 국산 해금이 실리지 않는다.
+    assert.deepStrictEqual(E.designContext(s).domesticEngines, []);
+  }
+});
+
+test('국산화: 대상 기종이 먼저 죽어도 엔진은 남고, 개발 중 기종도 갈아탄다', () => {
+  // 완성 시점에 갈아 끼울 기체가 하나도 없을 수 있다(그 사이 중단·매각).
+  // 그때도 엔진 자체는 만들어진 것이므로 해금은 살아 있어야 한다 — 넣은 돈이
+  // 통째로 사라지면 "대상을 잃으면 개발비도 잃는다"는 숨은 규칙이 생긴다.
+  const s = E.newGame(4309, 'uac');
+  s.cash += 40000;
+  const ssj = s.programs.find((p) => p.engine === 'cf34-3');
+  assert.ok(ssj && ssj.phase === 'dev', 'UAC 는 서랍 속 설계안을 갖고 시작한다');
+
+  assert.ok(E.startLocalEngine(s, 'cf34-3').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  E.cancelProgram(s, ssj.id);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(s.localEngineProject, null, '대상이 없어도 사업은 끝난다');
+  assert.ok(s.localEngines.includes('d436'), '엔진은 만들어졌으므로 해금은 남는다');
+  assert.strictEqual(ssj.engine, 'cf34-3', '죽은 기종은 건드리지 않는다');
+
+  // 개발 중 기종은 갈아타고 개발을 그대로 이어 간다.
+  const t = E.newGame(4309, 'uac');
+  t.cash += 60000;
+  const dev = t.programs.find((p) => p.phase === 'dev');
+  dev.share = 100;
+  E.startLocalEngine(t, 'cf34-3');
+  E.fundLocalEngine(t, t.localEngineProject.cost);
+  for (let i = 0; i < 20 && t.localEngineProject; i++) E.endTurn(t);
+  assert.strictEqual(dev.engine, 'd436', '개발 중 기종도 갈아탄다');
+  assert.notStrictEqual(dev.phase, 'cancelled', '갈아탔다고 개발이 죽으면 안 된다');
+});
+
+test('국산화: 사업을 걸어도 결정론은 그대로다', () => {
+  const run = () => {
+    const g = E.newGame(4310, 'uac');
+    g.cash += 40000;
+    E.startLocalEngine(g, 'cfm56-5b');
+    E.fundLocalEngine(g, 600);
+    for (let i = 0; i < 14; i++) E.endTurn(g);
+    return JSON.stringify(g);
+  };
+  assert.strictEqual(run(), run(), '같은 시드·같은 조작은 같은 결과여야 한다');
+});
+
+test('사풍: 축이 새로 생겨도 옛 세이브가 그 기능을 받는다 (없는 칸만 채운다)', () => {
+  // 회귀 — 사풍 복원이 "trait 이 통째로 없을 때"만 돌아서, trait 은 있는데 새 축이
+  // 없는 세이브(PR 마다 생기는 훨씬 흔한 경우)가 그 기능을 20년 내내 못 봤다.
+  const s = E.newGame(4311, 'uac');
+  delete s.trait.localEngine;
+  delete s.localEngineProject;
+  delete s.localEngines;
+  E.ensureShape(s);
+  assert.ok(E.localEngineSpec(s), '새로 생긴 축이 채워져야 한다');
+  assert.ok(E.localEngineTargets(s).length > 0, '기능이 실제로 열려야 한다');
+
+  // 이미 있는 칸은 건드리지 않는다 — 진행 중인 판의 규칙이 도중에 바뀌면 안 된다.
+  const t = E.newGame(4311, 'uac');
+  t.trait.foreignBid = { regions: ['북미'], penalty: 99, fadeFrom: 0, fadeTo: 1 };
+  delete t.trait.localEngine;
+  E.ensureShape(t);
+  assert.strictEqual(t.trait.foreignBid.penalty, 99, '있는 칸은 그대로여야 한다');
+  assert.ok(t.trait.localEngine, '없는 칸만 채운다');
+});
+
+test('사풍: 상태의 trait 이 공용 프리셋을 가리키면 안 된다', () => {
+  // 회귀 — newGame 이 프리셋의 trait 객체를 그대로 물리고 있었다. 상태가 공용
+  // 카탈로그를 가리키면 ensureShape 의 채우기가 그 카탈로그를 오염시켜, 한 판에서
+  // UAC 를 불러오는 것만으로 같은 프로세스의 다른 회사 프리셋이 바뀐다.
+  const preset = E.PLAYABLE_COMPANIES.find((c) => c.id === 'uac');
+  const snapshot = JSON.stringify(preset.trait);
+
+  const s = E.newGame(4312, 'uac');
+  assert.notStrictEqual(s.trait, preset.trait, '상태는 프리셋 객체를 물면 안 된다');
+  s.trait.foreignBid = null;
+  s.trait.__scribble = 1;
+  E.ensureShape(s);
+  assert.strictEqual(JSON.stringify(preset.trait), snapshot, '프리셋이 오염되면 안 된다');
+
+  // 데네브 프리셋도 마찬가지 — 기준선이 다른 회사의 축을 물려받으면 안 된다.
+  const deneb = E.PLAYABLE_COMPANIES.find((c) => c.id === 'deneb');
+  assert.deepStrictEqual(Object.keys(deneb.trait).sort(), ['name', 'note']);
+});
+
+test('국산화: 자회사는 독점 공급 계약의 상대가 아니다', () => {
+  // 회귀 — 국산화 뒤 인도분이 UEC 로 쌓여 최대 공급사가 되면, 자기 자회사와
+  // "독점 공급 계약"을 맺고 자기 돈으로 자기에게 리베이트를 주면서 다른 공급사
+  // 설계에 8% 할증을 무는 계약을 사게 됐다.
+  const s = E.newGame(4313, 'uac');
+  s.engineRelations = { UEC: 400 };
+  assert.strictEqual(Dec.get('engine_exclusive').weight(s), 0, '자회사만 있으면 제안이 없어야 한다');
+
+  // 서방 공급사가 섞여 있으면 그쪽으로 제안이 간다.
+  s.engineRelations = { UEC: 400, CFM: 80 };
+  assert.ok(Dec.get('engine_exclusive').weight(s) > 0);
+  const memo = {};
+  const h = { rng: R.createRng(2), remember: (k, v) => ((memo[k] = v), v), recall: (k, f) => (memo[k] === undefined ? f : memo[k]) };
+  Dec.get('engine_exclusive').text(s, h);
+  assert.strictEqual(memo.maker, 'CFM', `자회사가 아니라 실제 거래처가 상대여야 한다 (집힌 값: ${memo.maker})`);
+});
+
+test('국산화: 이중화 기체는 서방 대안 인증을 함께 접는다', () => {
+  // 회귀 — 주엔진만 갈아 끼우면 국산 원가·국가 발주 우대·공급 차질 면역을
+  // 받으면서 대안 공급사의 선호 가산(+2)까지 챙기는, 양쪽을 다 갖는 구멍이 됐다.
+  const s = E.newGame(4314, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  tu.altEngine = 'v2500';
+  tu.dualSource = true;
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(tu.engine, 'ps90a');
+  assert.ok(!tu.altEngine, '서방 대안 인증이 남아 있으면 안 된다');
+  assert.strictEqual(tu.dualSource, false);
+
+  // 이제 어느 항공사에도 선호 가산을 못 받는다 — 국산화가 파는 것이 그 경쟁력이다.
+  let rfp = null;
+  for (let i = 0; i < 40 && !rfp; i++) {
+    rfp = s.rfps.find((r) => r.segment === 'narrow' && !B.scoreBid(s, r, tu, 0).blocked);
+    if (!rfp) E.endTurn(s);
+  }
+  if (rfp) assert.ok(B.scoreBid(s, rfp, tu, 0).enginePref <= 0, '국산 단일 공급이면 선호 가산이 없다');
+});
+
+test('국산 엔진: 해금 검사는 날짜 검사와 별개다', () => {
+  // 회귀 — resolve 의 `!year` 분기가 날짜를 건너뛰면서 해금까지 함께 건너뛰어,
+  // 연도 없이 부르는 순수 평가에서는 아무나 국산 엔진을 달 수 있었다.
+  assert.notStrictEqual(Eng.resolve('narrow', 'ps90a').id, 'ps90a', '연도가 없어도 해금은 봐야 한다');
+  assert.strictEqual(Eng.resolve('narrow', 'ps90a', undefined, [], ['ps90a']).id, 'ps90a', '해금하면 연도 없이도 된다');
+
+  const spec = { segment: 'narrow', seats: 180, range: 5000, tech: 50, material: 'aluminum', engine: 'ps90a' };
+  assert.notStrictEqual(D.evaluate(spec).engine, 'ps90a', '해금 없는 평가가 국산 엔진을 달면 안 된다');
+  assert.strictEqual(D.evaluate({ ...spec, domesticEngines: ['ps90a'] }).engine, 'ps90a');
+});
+
+test('국산 엔진: 국산을 주엔진으로 고르면 이중화가 붙지 않는다', () => {
+  // 회귀 — 완성된 국산화는 대안 인증을 접는데, **새로 설계하는** 길에서 같은
+  // 조합이 되살아났다: 국산 원가·국가 발주 우대·공급 차질 면역(셋 다 주엔진만
+  // 본다)을 받으면서 서방 대안의 선호 가산(+2)까지 챙기는 설계.
+  const base = { segment: 'narrow', seats: 180, range: 5000, tech: 50, material: 'aluminum', year: 2010, dualSource: true };
+  const west = D.evaluate({ ...base, engine: 'cfm56-5b' });
+  assert.ok(west.altEngine, '서방 주엔진에는 이중화가 붙는다');
+
+  const dom = D.evaluate({ ...base, engine: 'ps90a', domesticEngines: ['ps90a'] });
+  assert.strictEqual(dom.engine, 'ps90a');
+  assert.ok(!dom.altEngine, '국산 주엔진에는 대안이 붙으면 안 된다');
+  // 붙지 않으므로 이중화 할증도 물지 않는다 — 아무것도 안 사는 돈이면 안 된다.
+  const plain = D.evaluate({ ...base, engine: 'ps90a', dualSource: false, domesticEngines: ['ps90a'] });
+  assert.strictEqual(dom.devCost, plain.devCost, '못 붙이는 이중화에 개발비를 물리면 안 된다');
+  assert.strictEqual(dom.unitCostBase, plain.unitCostBase);
+});
+
+test('국산화: 성숙한 엔진으로 갈아타면 옛 엔진의 초기 위험도 함께 나간다', () => {
+  // 회귀 — 새 엔진의 성숙도만 얹고 옛 엔진 몫은 그대로 뒀더니, 갓 나온 엔진으로
+  // 설계한 **개발 중** 기종이 성숙한 엔진으로 갈아탄 뒤에도 그 프리미엄을 계속
+  // 지고 다녔다. 한 번도 안 떠 본 기체가 이미 내려간 엔진의 초기 위험을 안고
+  // 갈 이유가 없다 — defectRisk 는 앞으로의 확률이지 지난 이력이 아니다.
+  const s = E.newGame(4316, 'uac');
+  s.cash += 80000;
+  for (let i = 0; i < 6; i++) E.endTurn(s); // BR715(eis 1999)가 열릴 때까지
+
+  const spec = { segment: 'narrow', seats: 180, range: 5200, tech: 50, material: 'aluminum', engine: 'br715' };
+  const r = E.launchProgram(s, spec, '신형');
+  assert.ok(r.ok, r.error);
+  const p = r.program;
+  assert.strictEqual(p.engine, 'br715');
+  assert.ok(Eng.maturityRisk(Eng.get('br715'), E.yearOf(s.turn)) > 1, '갓 나온 엔진이어야 이 검사가 의미가 있다');
+
+  E.startLocalEngine(s, 'br715');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(p.engine, 'ps90a');
+  assert.strictEqual(p.phase, 'dev', '개발 중에 갈아탄 경우를 재는 검사다');
+
+  // 같은 시점에 그 엔진으로 새로 설계한 기체와 같아야 한다.
+  const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(s) });
+  assert.strictEqual(fresh.engine, 'ps90a');
+  assert.ok(
+    Math.abs(p.defectRisk - fresh.defectRisk) < 0.005,
+    `갈아탄 기체와 신규 설계가 같아야 한다 (${p.defectRisk} vs ${fresh.defectRisk})`,
+  );
+});
+
+test('국산화: 갓 나온 엔진으로 갈아타면 초기 위험을 새로 떠안는다', () => {
+  // 회귀 — 갈아타기가 riskMult 비율만 적용해, 같은 시점에 그 엔진으로 **새로
+  // 설계한** 기체보다 갈아탄 기체가 오히려 안전했다(광고와 반대).
+  const s = E.newGame(4315, 'uac');
+  s.cash += 60000;
+  const ssj = s.programs.find((p) => p.engine === 'cf34-3');
+  const before = ssj.defectRisk;
+
+  E.startLocalEngine(s, 'cf34-3');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(ssj.engine, 'd436');
+
+  const to = Eng.get('d436');
+  const from = Eng.get('cf34-3');
+  const maturity = Eng.maturityRisk(to, E.yearOf(s.turn));
+  assert.ok(maturity > 1, 'D-436 이 아직 성숙 구간이어야 이 검사가 의미가 있다');
+  // 성숙도를 뺀 계산보다 확실히 높아야 한다.
+  assert.ok(
+    ssj.defectRisk > (before * to.riskMult) / from.riskMult,
+    `초기 위험이 얹혀야 한다 (${ssj.defectRisk} vs ${(before * to.riskMult) / from.riskMult})`,
+  );
+});
+
+test('국산화: 엔진에서 유도되는 값이 하나도 빠지지 않고 함께 움직인다', () => {
+  // 회귀 — 갈아타기가 파생 필드를 손으로 하나씩 패치하던 시절, 정가를 빠뜨려
+  // 국산화한 기체가 서방 정가 그대로 팔렸다(입찰·국가 발주·재고 처분·개조 키트가
+  // 전부 그 값을 쓴다). 지금은 **엔진만 다른 두 평가의 차이**를 얹으므로 축이
+  // 하나 늘어도 저절로 따라온다.
+  const s = E.newGame(4317, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  const before = { price: tu.listPrice, cost: tu.unitCostBase };
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(tu.engine, 'ps90a');
+
+  assert.ok(tu.listPrice < before.price, `정가가 엔진을 따라 내려가야 한다 (${before.price} → ${tu.listPrice})`);
+  assert.ok(tu.unitCostBase < before.cost, '원가도 마찬가지');
+
+  // 같은 스펙을 그 엔진으로 새로 평가한 값과 비율이 맞아야 한다.
+  const fresh = D.evaluate({
+    segment: tu.segment, seats: tu.seats, range: tu.range, tech: tu.tech,
+    fuselage: tu.fuselage, wingMat: tu.wingMat, abreast: tu.abreast, wing: tu.wing,
+    fuelMargin: tu.fuelMargin, engine: 'ps90a', ...E.designContext(s),
+  });
+  assert.ok(Math.abs(tu.listPrice - fresh.listPrice) < 1, `정가가 신규 설계와 맞아야 한다 (${tu.listPrice} vs ${fresh.listPrice})`);
+
+  // 화면·경력 보고서가 읽는 캐시도 함께 간다.
+  assert.strictEqual(tu.engineName, 'PS-90A');
+  assert.strictEqual(tu.engineMaker, 'UEC');
+  assert.strictEqual(E.careerReport(s).programs.find((x) => x.name === tu.name).engineName, 'PS-90A');
+
+  // 개발비는 일부러 안 바꾼다 — 품질 투자·풍동·런치 에이드·형식증명·국산화 비용의
+  // 기준이라, 흔들면 이미 제시한 값들이 소급해서 바뀐다.
+  assert.strictEqual(tu.devCost, s.programs.find((x) => x.id === tu.id).devCost);
+});
+
+test('국산화: 엔진에서 나온 표시용 캐시가 하나도 안 남는다', () => {
+  // 회귀 — engineName 을 고치면서도 altEngineName·altMaker·engineImmature 는
+  // 옛 엔진 것으로 남아 있었다. 같은 계열의 값은 같이 움직여야 한다.
+  const s = E.newGame(4322, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  tu.altEngine = 'v2500';
+  tu.altEngineName = 'V2500';
+  tu.altMaker = 'IAE';
+  tu.dualSource = true;
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(tu.engine, 'ps90a');
+
+  assert.ok(!tu.altEngine && !tu.altEngineName && !tu.altMaker, '접은 대안의 표기가 남으면 안 된다');
+  assert.strictEqual(tu.dualSource, false);
+
+  // 성숙도 표기도 새 엔진 기준이어야 한다.
+  const expected = Math.round((Eng.maturityRisk(Eng.get('ps90a'), E.yearOf(s.turn)) - 1) * 100) / 100;
+  assert.strictEqual(tu.engineImmature, expected);
+});
+
+test('국산화: 옛 공급사의 성능 패키지는 엔진과 함께 나간다', () => {
+  // 회귀 — engine_pip 로 받은 +2 가 그 공급사 엔진이 내려간 뒤에도 남고,
+  // 카운터가 상한에 걸린 채라 새 공급사의 패키지도 못 받았다.
+  const s = E.newGame(4318, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  tu.enginePipGain = 2;
+  tu.efficiency += 2;
+  const withPip = tu.efficiency;
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(tu.enginePipGain, 0, '카운터가 풀려야 새 공급사 패키지를 받는다');
+  const engDelta = Eng.get('ps90a').eff - Eng.get('cfm56-5b').eff;
+  assert.strictEqual(tu.efficiency, withPip - 2 + engDelta, '패키지 몫을 빼고 엔진 차이를 얹어야 한다');
+});
+
+test('국산화: 계약과 다른 엔진을 받게 된 항공사는 관계가 깎인다', () => {
+  // 주문마다 엔진 구성을 따로 들고 다니게 하는 대신(생산·인도 회계를 갈라야
+  // 한다), 잔고가 두꺼울 때 갈아타는 것이 비싸지도록 값을 매긴다.
+  //
+  // 재는 자리는 **갈아타는 그 분기**다. 잔고를 지운 판과 통째로 비교하면 20분기
+  // 동안 인도·수주·사건이 갈려 관계 차이가 국산화 때문인지 알 수 없다.
+  const s = E.newGame(4319, 'uac');
+  s.cash += 60000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  const holders = [...new Set(s.backlog.filter((o) => o.programId === tu.id && o.remaining > 0).map((o) => o.airlineId))];
+  assert.ok(holders.length, '승계 잔고가 있어야 이 검사가 의미가 있다');
+
+  E.startLocalEngine(s, 'cfm56-5b');
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+
+  // 개발이 10분기라 승계 잔고는 대개 그 전에 다 나간다 — 이 대가는 "갈아타는
+  // 시점에 마침 잔고가 두껍다"는 상황의 값이다. 그 상황을 만들어 잰다.
+  const buyer = holders[0];
+  let before = null;
+  for (let i = 0; i < 20 && !before; i++) {
+    const proj = s.localEngineProject;
+    if (proj && proj.funded >= proj.cost && proj.quarters >= (proj.minQuarters ?? 10) - 1) {
+      s.backlog.push({
+        id: 'ord-test', airlineId: buyer, airlineName: buyer, programId: tu.id,
+        programName: tu.name, qty: 8, remaining: 8, unitPrice: tu.listPrice, wonTurn: s.turn,
+      });
+      const rel = s.relations[buyer];
+      E.endTurn(s);
+      assert.strictEqual(tu.engine, 'ps90a', '이 분기에 갈아타야 한다');
+      before = rel;
+      break;
+    }
+    E.endTurn(s);
+  }
+  assert.ok(before !== null, '20분기 안에 갈아타야 한다');
+  assert.ok(s.relations[buyer] < before, `${buyer}: 계약과 다른 엔진을 받게 됐으면 관계가 깎여야 한다`);
+
+  // "잔고가 없으면 안 깎인다"는 여기서 검사하지 않는다. 관계는 무응찰·인도·사건
+  // 으로 매 분기 저 혼자 움직여서, 한 분기의 증감만 보고 원인을 국산화로 돌릴 수
+  // 없기 때문이다. 그 방향은 아래 단위 검사가 대신 못박는다.
+  assert.ok(before - s.relations[buyer] >= 1, '깎인 폭이 눈에 보여야 한다');
+});
+
+test('국산화: 관계 하락은 그 기종 잔고를 든 민항사에만 붙는다', () => {
+  // 위 검사의 반대 방향 — 전체 판을 돌리는 대신 잔고 구성만 바꿔 규칙을 직접 본다.
+  const run = (makeBacklog) => {
+    const s = E.newGame(4321, 'uac');
+    s.cash += 60000;
+    const tu = s.programs.find((x) => x.engine === 'cfm56-5b');
+    const other = s.programs.find((x) => x.engine !== 'cfm56-5b' && x.phase === 'production');
+    s.backlog = makeBacklog(tu, other);
+    E.startLocalEngine(s, 'cfm56-5b');
+    E.fundLocalEngine(s, s.localEngineProject.cost);
+    const proj = s.localEngineProject;
+    proj.quarters = (proj.minQuarters ?? 10) - 1;
+    const before = { ...s.relations };
+    E.endTurn(s);
+    assert.strictEqual(tu.engine, 'ps90a', '이 분기에 갈아타야 한다');
+    return Object.keys(s.relations).filter((a) => s.relations[a] < (before[a] ?? 0) - 3);
+  };
+
+  // 그 기종 잔고를 든 항공사는 깎인다.
+  assert.ok(
+    run((tu) => [{ id: 'o1', airlineId: 'albion', programId: tu.id, qty: 6, remaining: 6, unitPrice: 100, wonTurn: 0 }]).includes('albion'),
+  );
+  // 다른 기종 잔고만 든 항공사는 안 깎인다.
+  assert.ok(
+    !run((tu, other) =>
+      other ? [{ id: 'o1', airlineId: 'albion', programId: other.id, qty: 6, remaining: 6, unitPrice: 100, wonTurn: 0 }] : [],
+    ).includes('albion'),
+    '다른 기종 잔고는 이 국산화와 상관이 없다',
+  );
+  // 정부·국영 계정은 항공사가 아니다 — 관계 장부의 대상이 아니다.
+  assert.deepStrictEqual(
+    run((tu) => [{ id: 'o1', airlineId: 'state', programId: tu.id, qty: 6, remaining: 6, unitPrice: 100, wonTurn: 0, gov: true }]),
+    [],
+  );
+});
+
+test('설계 요약은 미리보기·착수와 같은 맥락을 쓴다', () => {
+  // 회귀 — 요약만 손으로 맥락을 조합해 두어, 해금한 국산 엔진을 고르면 요약이
+  // 서방 기본값으로 되돌린 값을 보여 줬다(같은 화면에서 숫자가 갈렸다).
+  const s = E.newGame(4320, 'uac');
+  s.localEngines = ['ps90a'];
+  const spec = { ...D.defaultSpec('narrow', E.yearOf(s.turn)), engine: 'ps90a' };
+  const ev = D.evaluate({ ...spec, ...E.designContext(s) });
+  assert.strictEqual(ev.engine, 'ps90a', '해금했으니 그 엔진으로 잡혀야 한다');
+
+  const html = P.renderDesignSummary(s, spec);
+  assert.ok(html.includes(E.fmtMoney(ev.devCost)), '요약이 실제 착수와 같은 개발비를 보여야 한다');
+
+  const western = D.evaluate({ ...spec, year: E.yearOf(s.turn), experience: E.companyExperience(s), ...E.engineDealContext(s) });
+  assert.notStrictEqual(western.engine, 'ps90a', '옛 경로는 서방 기본값으로 되돌린다 — 그게 이 회귀의 원인이었다');
+  assert.ok(!html.includes(E.fmtMoney(western.devCost)), '요약에 그 값이 남아 있으면 안 된다');
+});
+
+test('국산화: 조기 접근 엔진으로 착수한 기종도 제대로 갈아탄다', () => {
+  // 회귀 — 옛 엔진을 평가할 때 조기 접근 맥락을 안 넘겨, SaM146 으로 착수한
+  // 기종은 그 엔진이 "설계 당시 못 사는 엔진"으로 잡혔다. 그러면 exact 가 깨져
+  // 비율이 전부 1이 되고, 국산화가 **아무 값도 안 바꾼다**.
+  const s = E.newGame(4323, 'uac');
+  s.cash += 90000;
+  for (let i = 0; i < 44; i++) E.endTurn(s); // 2009 — UAC 의 SaM146 조기 접근이 열린다
+
+  const spec = { segment: 'regional', seats: 98, range: 3050, tech: 55, material: 'aluminum', engine: 'sam146' };
+  const r = E.launchProgram(s, spec, 'SSJ');
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.program.engine, 'sam146', '조기 접근으로 잡혀야 이 검사가 의미가 있다');
+  const p = r.program;
+  const before = { risk: p.defectRisk, price: p.listPrice };
+
+  assert.ok(E.startLocalEngine(s, 'sam146').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(p.engine, 'd436');
+
+  assert.notStrictEqual(p.defectRisk, before.risk, '값이 하나도 안 움직이면 갈아탄 것이 아니다');
+  assert.notStrictEqual(p.listPrice, before.price);
+
+  const fresh = D.evaluate({ ...spec, engine: 'd436', ...E.designContext(s) });
+
+  // 정가는 그 사이 아무것도 건드리지 않으므로 신규 설계와 정확히 맞아야 한다.
+  assert.ok(Math.abs(p.listPrice - fresh.listPrice) < 1, `정가가 신규 설계와 맞아야 한다 (${p.listPrice} vs ${fresh.listPrice})`);
+
+  // 결함 위험은 **정확히 같을 수 없다** — 그 사이 설계 동결에서 인증 주사위가
+  // 한 번 굴러 값을 흔들어 놓기 때문이다(그게 이 게임의 규칙이다). 여기서 볼 것은
+  // "비율이 1로 죽지 않았는가", 즉 옛 엔진 몫이 실제로 빠졌는가다.
+  assert.ok(p.defectRisk < before.risk * 0.95, `옛 엔진의 초기 위험이 빠져야 한다 (${before.risk} → ${p.defectRisk})`);
+});
+
+test('국산화: 대안을 접으면 이중화 원가 할증도 함께 빠진다', () => {
+  // 회귀 — 대안 인증만 지우고 원가에 박힌 이중화 할증(+3%)은 남겨, 아무 혜택도
+  // 없는 기체가 그 값을 계속 물었다.
+  const s = E.newGame(4324, 'uac');
+  s.cash += 90000;
+  const spec = { segment: 'narrow', seats: 180, range: 5200, tech: 50, material: 'aluminum', engine: 'cfm56-5b', dualSource: true };
+  const r = E.launchProgram(s, spec, 'DS');
+  assert.ok(r.ok, r.error);
+  const p = r.program;
+  assert.ok(p.altEngine, '이중화로 잡혀야 이 검사가 의미가 있다');
+
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(p.engine, 'ps90a');
+  assert.strictEqual(p.dualSource, false);
+
+  // 단일 공급 국산 설계와 원가가 같아야 한다 — 할증이 남아 있으면 더 비싸다.
+  const single = D.evaluate({ ...spec, engine: 'ps90a', dualSource: false, ...E.designContext(s) });
+  assert.ok(
+    Math.abs(p.unitCostBase - single.unitCostBase) < 0.5,
+    `이중화 할증이 빠져야 한다 (${p.unitCostBase} vs ${single.unitCostBase})`,
+  );
+});
+
+test('국산화: 파생형은 원형과 함께 옮겨 간다 — 계보의 엔진도 따라간다', () => {
+  // 회귀 — 쌍 평가가 원형 계보(derivedFrom)를 빼고 돌아, 파생형이 두 평가 모두에서
+  // 신규 설계로 잡혔다. 계보에 박힌 엔진도 서방 것으로 남아, 다음 세대 국산화가
+  // 이 기체를 "재장착"으로 잘못 읽는다.
+  const s = E.newGame(4325, 'uac');
+  s.cash += 200000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  const r = E.launchProgram(s, E.derivativeSpec(tu, 25), 'Tu-204-300');
+  assert.ok(r.ok, r.error);
+  const d = r.program;
+  assert.strictEqual(d.derivedFrom.engine, 'cfm56-5b', '원형의 서방 엔진을 계보에 담고 있다');
+  const before = { parent: tu.efficiency, deriv: d.efficiency };
+
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+
+  assert.strictEqual(d.engine, 'ps90a');
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a', '원형이 옮겨 갔으면 계보도 함께 옮겨야 한다');
+  // 국산화는 계보 전체를 같은 분기에 갈아 끼운다. 파생형에만 재장착 감점(−3)이
+  // 붙으면, 나란히 옮겨 간 원형과 파생형이 착수 방식 때문에 갈라진다.
+  assert.strictEqual(
+    d.efficiency - before.deriv,
+    tu.efficiency - before.parent,
+    '원형과 파생형이 같은 폭으로 움직여야 한다',
+  );
+});
+
+test('국산화: 서방 엔진을 달았던 파생형은 계보로 돌아오며 재장착 감점이 풀린다', () => {
+  const s = E.newGame(4326, 'uac');
+  s.cash += 400000;
+  const tu = s.programs.find((p) => p.engine === 'cfm56-5b');
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(tu.engine, 'ps90a');
+
+  // 국산 원형에 일부러 서방 엔진을 단 파생형 — 이 시점에 이미 재장착이다.
+  const spec = E.derivativeSpec(tu, 25);
+  spec.engine = 'cfm56-5b';
+  const r = E.launchProgram(s, spec, 'Tu-204-300W');
+  assert.ok(r.ok, r.error);
+  const d = r.program;
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a');
+  const before = d.efficiency;
+
+  // 재장착 국산화로 계보 엔진으로 되돌린다.
+  assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+  assert.strictEqual(d.engine, 'ps90a');
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a', '계보는 그대로다 — 옮겨 간 것은 파생형 쪽이다');
+
+  // 엔진 점수만 보면 −4 인데, 재장착 감점 3 이 풀리므로 실제로는 −1 이다.
+  const raw = Eng.get('ps90a').eff - Eng.get('cfm56-5b').eff;
+  assert.ok(d.efficiency - before > raw, `재장착 감점이 풀려야 한다 (${d.efficiency - before} vs ${raw})`);
+  assert.strictEqual(d.efficiency, tu.efficiency, '계보로 돌아왔으면 원형과 같은 값이다');
+});
+
+test('국산화: 카드가 적는 증감이 실제로 적용되는 값이다', () => {
+  // 회귀 — 카드가 엔진 배수(costMult 비)로 어림해 −16%를 적었는데, 국산화가
+  // 이중화 대안까지 접으면서 실제로는 −18%가 나왔다. 예고와 결과가 갈리면
+  // 그 카드는 거짓말을 하는 것이다.
+  for (const targetId of ['cfm56-5b', 'pw4000', 'cf34-3']) {
+    const s = E.newGame(4327, 'uac');
+    s.cash += 200000;
+    if (targetId === 'cfm56-5b') {
+      const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+      p.dualSource = true;
+      p.altEngine = 'v2500';
+    }
+    const target = () => E.localEngineTargets(s).find((x) => x.engine.id === targetId);
+    assert.ok(target(), `${targetId}: 후보로 잡혀야 한다`);
+    assert.ok(E.startLocalEngine(s, targetId).ok);
+    E.fundLocalEngine(s, s.localEngineProject.cost);
+
+    // 비교 기준은 **갈아타기 직전 분기**다. 개량(PIP)·공급가 변동이 그 사이에
+    // 값을 흔들므로, 착수 시점과 비교하면 그 흔들림까지 예고 오차로 잡힌다.
+    let pre = [];
+    let before = [];
+    for (let i = 0; i < 20 && s.localEngineProject; i++) {
+      const t = target();
+      pre = E.localEnginePreview(s, t);
+      before = t.programs.map((p) => ({ id: p.id, name: p.name, cost: p.unitCostBase, eff: p.efficiency }));
+      E.endTurn(s);
+    }
+    assert.strictEqual(s.localEngineProject, null, `${targetId}: 끝나야 비교할 것이 있다`);
+    assert.strictEqual(pre.length, before.length, '걸린 기종마다 한 줄씩 나와야 한다');
+
+    before.forEach((b, i) => {
+      const p = s.programs.find((x) => x.id === b.id);
+      assert.strictEqual(p.name, pre[i].program.name, '예고와 실제가 같은 기종을 가리켜야 한다');
+      assert.strictEqual(
+        Math.round(pre[i].cost * 100),
+        Math.round((p.unitCostBase / b.cost - 1) * 100),
+        `${targetId}/${p.name}: 예고한 원가 증감이 실제와 같아야 한다`,
+      );
+      assert.strictEqual(pre[i].efficiency, p.efficiency - b.eff, `${targetId}/${p.name}: 연비도 마찬가지다`);
+    });
+  }
+});
+
+test('국산화: 이중화 기체의 예고는 엔진 배수보다 더 내려간다', () => {
+  // 대안 인증을 함께 접으면서 이중화 할증(원가 +3%)도 빠지기 때문이다.
+  // 엔진 배수만 보는 카드는 그만큼을 빼먹고 적는다.
+  const s = E.newGame(4329, 'uac');
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+  const solo = E.localEnginePreview(s, E.localEngineTargets(s).find((x) => x.engine.id === 'cfm56-5b'))[0].cost;
+  p.dualSource = true;
+  p.altEngine = 'v2500';
+  const dual = E.localEnginePreview(s, E.localEngineTargets(s).find((x) => x.engine.id === 'cfm56-5b'))[0].cost;
+  const raw = Eng.get('ps90a').costMult / Eng.get('cfm56-5b').costMult - 1;
+  assert.ok(dual < solo, `이중화 기체가 더 많이 내려가야 한다 (${dual} vs ${solo})`);
+  assert.ok(
+    Math.round(dual * 100) < Math.round(raw * 100),
+    `엔진 배수(${Math.round(raw * 100)}%)보다 더 내려가야 한다 (${Math.round(dual * 100)}%)`,
+  );
+});
+
+test('국산화: 예고는 상태를 건드리지 않는다', () => {
+  const s = E.newGame(4328, 'uac');
+  const before = JSON.stringify(E.serialize ? E.serialize(s) : s);
+  const t = E.localEngineTargets(s)[0];
+  E.localEnginePreview(s, t);
+  assert.strictEqual(JSON.stringify(E.serialize ? E.serialize(s) : s), before, '읽기만 해야 한다');
+});
+
+test('국산화: 소재가 한 칸뿐인 옛 세이브도 새 세이브와 같은 값을 낸다', () => {
+  // 회귀 — 쌍 평가가 스펙을 손으로 되짚으면서 `material` 을 빠뜨려, 단면·날개 소재로
+  // 쪼개기 전의 옛 세이브에서는 복합재 기체가 알루미늄으로 평가됐다. 두 평가의
+  // 바탕이 함께 어긋나므로 비율까지 틀어진다(정가 $122.1M 이 $121.7M 으로).
+  const run = (legacy) => {
+    const s = E.newGame(4340, 'uac');
+    s.cash += 200000;
+    const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+    const ev = D.evaluate({ segment: p.segment, seats: p.seats, range: p.range, tech: p.tech, material: 'composite', engine: 'cfm56-5b' });
+    p.listPrice = ev.listPrice;
+    p.unitCostBase = ev.unitCostBase;
+    p.efficiency = ev.efficiency;
+    if (legacy) {
+      p.material = 'composite';
+      delete p.fuselage;
+      delete p.wingMat;
+    } else {
+      p.fuselage = 'composite';
+      p.wingMat = 'composite';
+      delete p.material;
+    }
+    assert.ok(E.startLocalEngine(s, 'cfm56-5b').ok);
+    E.fundLocalEngine(s, s.localEngineProject.cost);
+    for (let i = 0; i < 20 && s.localEngineProject; i++) E.endTurn(s);
+    assert.strictEqual(p.engine, 'ps90a');
+    return { price: p.listPrice, cost: p.unitCostBase, eff: p.efficiency };
+  };
+  assert.deepStrictEqual(run(true), run(false), '소재를 어느 칸으로 들고 있든 같은 기체다');
+});
+
+test('설계 스펙은 한 곳에서 읽는다 — 파생형 시드와 엔진 교체가 같은 출처', () => {
+  // 프로그램에서 스펙을 되짚는 자리가 둘인데 따로 적어 두면 한쪽에만 칸이 빠진다.
+  // 실제로 `earlyEngines`·이중화·원형 계보·`material` 이 그렇게 빠졌다.
+  const s = E.newGame(4341, 'uac');
+  const p = s.programs.find((x) => x.phase === 'production');
+  const spec = E.programSpec(p);
+  for (const k of ['segment', 'seats', 'range', 'tech', 'material', 'fuselage', 'wingMat', 'engine', 'abreast', 'wing', 'fuelMargin', 'etops', 'growth', 'maintainable', 'engines', 'dualSource', 'research', 'experience']) {
+    assert.ok(k in spec, `${k} 칸이 있어야 한다`);
+  }
+  // 파생형 시드는 이 스펙 위에 좌석만 옮기고 계보를 얹은 것이다.
+  const seed = E.derivativeSpec(p, 20);
+  for (const [k, v] of Object.entries(spec)) {
+    // 착수 시점의 값(연구·경험)만은 물려받지 않는다 — 파생형도 지금 그리는 설계다.
+    if (k === 'seats' || k === 'research' || k === 'experience') continue;
+    assert.deepStrictEqual(seed[k], v, `파생형 시드의 ${k} 가 원형 스펙과 달라졌다`);
+  }
+  assert.strictEqual(seed.research, undefined, '연구는 시드에 실리면 안 된다');
+  assert.strictEqual(seed.experience, undefined, '경험도 마찬가지다');
+  assert.ok(seed.derivedFrom, '계보는 시드 쪽에만 붙는다');
+});
+
+// ─────────────────── UEC 2세대 (PD 계열) ───────────────────
+//
+// 1세대가 원가를 사고 수주 경쟁력을 판 거래였다면, 2세대는 그것을 되사 온다.
+// 훨씬 비싸고 길며, 1세대를 지나온 회사에만 열린다.
+
+/** 국산화 사업 하나를 끝까지 돌린다. */
+function runLocal(s, from, to) {
+  const r = E.startLocalEngine(s, from, to);
+  assert.ok(r.ok, r.error);
+  E.fundLocalEngine(s, s.localEngineProject.cost);
+  for (let i = 0; i < 60 && s.localEngineProject; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  assert.strictEqual(s.localEngineProject, null, `${from} → ${to} 가 끝나야 한다`);
+}
+
+test('2세대: 1세대를 지나야 열린다', () => {
+  const s = E.newGame(4360, 'uac');
+  s.cash += 400000;
+  assert.ok(
+    !E.localEngineTargets(s).some((t) => t.gen === 2),
+    '서방 엔진만 달고 있는 동안에는 2세대가 아예 없다',
+  );
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const t = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
+  assert.ok(t, '국산 엔진을 달고 나면 그 자리가 2세대 후보가 된다');
+  assert.strictEqual(t.gen, 2);
+  assert.strictEqual(t.engine.id, 'ps90a');
+});
+
+test('2세대: 착수 가능 연도는 취항에서 개발 기간만큼 거슬러 잡는다', () => {
+  const s = E.newGame(4361, 'uac');
+  s.cash += 400000;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const t = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
+  const pd14 = Eng.get('pd14');
+  const quarters = E.localEngineQuarters(s, t);
+  // 분기로 센다. 14분기는 3.5년이라 열리는 시점이 연중이고, 연도로 자르면
+  // 화면이 "2008년부터"라고 적는데 실제로는 2008년 3분기다.
+  assert.strictEqual(t.opensTurn + quarters, (pd14.eis - 1998) * 4, '완성이 취항보다 앞설 수 없어야 한다');
+  assert.strictEqual(t.opensLabel, E.turnLabel(t.opensTurn), '화면에 적을 시점은 분기까지다');
+  assert.ok(t.locked, '2004년에는 아직 이르다');
+
+  const early = E.startLocalEngine(s, 'ps90a', 'pd14');
+  assert.strictEqual(early.ok, false);
+  assert.ok(early.error.includes(t.opensLabel), `언제부터인지 분기까지 알려 줘야 한다 (${early.error})`);
+
+  // 한 분기 전에는 여전히 잠겨 있고, 그 분기가 되면 열린다.
+  const held = { ...s, turn: t.opensTurn - 1 };
+  assert.strictEqual(E.startLocalEngine(held, 'ps90a', 'pd14').ok, false, '한 분기 전에는 안 된다');
+
+  // 열리는 해까지 보낸다.
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const openYear = 1998 + s.turn / 4;
+  assert.ok(openYear >= t.opensAt, `${openYear} 에는 열려 있어야 한다`);
+
+  const p = s.programs.find((x) => x.engine === 'ps90a' && x.segment === 'narrow');
+  runLocal(s, 'ps90a', 'pd14');
+  assert.strictEqual(p.engine, 'pd14');
+  // 취항 전에 갈아타면 평가가 그 엔진을 거부해 값이 폴백으로 떨어진다.
+  assert.ok(1998 + s.turn / 4 >= pd14.eis, '완성 시점이 취항보다 앞설 수 없다');
+});
+
+test('2세대: 그 엔진이 들어가는 급만 갈아탄다', () => {
+  // 회귀 — 1세대는 PS-90A 가 협동체·광동체를 모두 돌려 이 경계가 안 드러났다.
+  // 엔진만 보고 갈아 끼우면 PD-14(협동체 전용) 사업이 광동체까지 끌고 간다.
+  const s = E.newGame(4362, 'uac');
+  s.cash += 900000;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  runLocal(s, 'pw4000', 'ps90a');
+  const narrow = s.programs.find((x) => x.engine === 'ps90a' && x.segment === 'narrow');
+  const wide = s.programs.find((x) => x.engine === 'ps90a' && x.segment === 'wide');
+  assert.ok(narrow && wide, '협동체·광동체가 같은 국산 엔진을 단다');
+
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  runLocal(s, 'ps90a', 'pd14');
+  assert.strictEqual(narrow.engine, 'pd14');
+  assert.strictEqual(wide.engine, 'ps90a', '광동체는 협동체용 코어를 달 수 없다');
+  assert.ok(Eng.get('pd14').segments.includes('narrow') && !Eng.get('pd14').segments.includes('wide'));
+});
+
+test('2세대: 엔진 하나에 갈아탈 곳이 둘이면 어느 쪽인지 정해야 한다', () => {
+  const s = E.newGame(4363, 'uac');
+  s.cash += 900000;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  runLocal(s, 'pw4000', 'ps90a');
+  for (let i = 0; i < 80 && E.localEngineTargets(s).some((x) => x.gen === 2 && x.locked); i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const both = E.localEngineTargets(s).filter((x) => x.engine.id === 'ps90a');
+  assert.strictEqual(both.length, 2, 'PS-90A 자리에 PD-14 와 PD-35 가 각각 붙는다');
+
+  const vague = E.startLocalEngine(s, 'ps90a');
+  assert.strictEqual(vague.ok, false, '엔진만으로는 정해지지 않는다');
+  assert.match(vague.error, /PD-14/);
+  assert.match(vague.error, /PD-35/);
+  assert.strictEqual(s.localEngineProject, null, '실패했으면 사업이 시작되면 안 된다');
+  assert.ok(E.startLocalEngine(s, 'ps90a', 'pd35').ok, '명시하면 된다');
+});
+
+test('2세대: 1세대와 거래 방향이 정반대다 — 원가를 내주고 연비를 산다', () => {
+  const s = E.newGame(4364, 'uac');
+  s.cash += 900000;
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+
+  const t1 = E.localEngineTargets(s).find((x) => x.engine.id === 'cfm56-5b');
+  const pre1 = E.localEnginePreview(s, t1).find((x) => x.program.id === p.id);
+  assert.ok(pre1.cost < 0 && pre1.efficiency < 0, `1세대는 원가를 사고 연비를 판다 (${pre1.cost} / ${pre1.efficiency})`);
+  runLocal(s, 'cfm56-5b', 'ps90a');
+
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd14').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const t2 = E.localEngineTargets(s).find((x) => x.replacement === 'pd14');
+  const pre2 = E.localEnginePreview(s, t2).find((x) => x.program.id === p.id);
+  assert.ok(pre2.cost > 0 && pre2.efficiency > 0, `2세대는 그 반대다 (${pre2.cost} / ${pre2.efficiency})`);
+
+  // 2세대는 새 코어라 훨씬 비싸고 길다 — 공짜로 되사 올 수는 없다.
+  assert.ok(E.localEngineCost(s, t2) > E.localEngineCost(s, t1), '개발비가 더 커야 한다');
+  assert.ok(E.localEngineQuarters(s, t2) > E.localEngineQuarters(s, t1), '기간도 더 길어야 한다');
+
+  const risk = p.defectRisk;
+  runLocal(s, 'ps90a', 'pd14');
+  assert.strictEqual(p.engine, 'pd14');
+  assert.ok(p.defectRisk > risk, '갓 나온 코어라 초기 신뢰성은 다시 나빠진다');
+  // 3세대는 없다 — 이미 그 엔진을 달고 있으면 후보에서 빠진다.
+  assert.ok(!E.localEngineTargets(s).some((x) => x.engine.id === 'pd14'));
+});
+
+test('국산화: 원형과 엔진이 달랐던 파생형도 계보가 원형을 따라간다', () => {
+  // 회귀 — 이 파생형은 원형이 갈아탈 때 **건너뛴다**(엔진이 다르므로). 그래서
+  // 계보 스냅숏을 고칠 기회가 없고, 나중에 자기가 갈아탈 때도 스냅숏이 자기 옛
+  // 엔진과 달라 손대지 못했다. 결국 원형과 같은 엔진을 달고도 재장착 감점(−3)을
+  // 계속 물었다.
+  const s = E.newGame(4373, 'uac');
+  s.cash += 900000;
+  const tu = s.programs.find((x) => x.engine === 'cfm56-5b');
+  const spec = E.derivativeSpec(tu, 25);
+  spec.engine = 'v2500';
+  const r = E.launchProgram(s, spec, 'Tu-204-200');
+  assert.ok(r.ok, r.error);
+  const d = r.program;
+  assert.strictEqual(d.derivedFrom.engine, 'cfm56-5b');
+  assert.ok(d.efficiency < tu.efficiency, '착수 시점에는 재장착 감점을 문 것이 맞다');
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  assert.strictEqual(d.engine, 'v2500', '엔진이 다르므로 이번에는 건너뛴다');
+  assert.strictEqual(d.derivedFrom.engine, 'ps90a', '건너뛴 기종의 계보도 원형을 따라가야 한다');
+
+  runLocal(s, 'v2500', 'ps90a');
+  assert.strictEqual(d.engine, 'ps90a');
+  assert.strictEqual(d.efficiency, tu.efficiency, '같은 엔진으로 모였으면 재장착 감점이 풀린다');
+});
+
+test('국산화: 착수 시점의 연구가 두 평가에 함께 들어간다', () => {
+  // 회귀 — 연구 보정을 빼고 평가하면 두 평가가 함께 낮아져 대개 상쇄되지만,
+  // **연비 상한(99)에 닿은 설계**는 상쇄가 깨진다. 상한에서 잘린 만큼이 옛 평가
+  // 쪽에서만 사라지기 때문이다.
+  const spec = {
+    segment: 'narrow', seats: 180, range: 5200, tech: 88,
+    fuselage: 'composite', wingMat: 'composite', engine: 'cfm56-5b',
+    fuelMargin: 0.02, abreast: 6, wing: 45,
+  };
+  const s = E.newGame(4374, 'uac');
+  s.cash += 900000;
+  s.research = { done: { aero: true } };
+  const p = E.launchProgram(s, spec, 'HiEff').program;
+  assert.strictEqual(p.efficiency, 99, '상한에 닿은 설계라야 이 검사가 의미가 있다');
+  assert.deepStrictEqual(p.research, { aero: true }, '어떤 연구 위에서 그려졌는지 프로그램이 들고 있어야 한다');
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(s), year: 1998 + s.turn / 4 });
+  assert.strictEqual(p.efficiency, fresh.efficiency, '같은 연구 위의 신규 설계와 맞아야 한다');
+});
+
+test('국산화: 착수 뒤에 끝난 연구는 갈아타기에 끼어들지 않는다', () => {
+  // 연구는 그 뒤 설계에만 값을 한다 — 이미 나온 기체를 소급해 고치지 않는다.
+  // 지금 연구 목록으로 되짚으면 기체가 갖지도 않은 보정을 얹게 된다.
+  const spec = {
+    segment: 'narrow', seats: 180, range: 5200, tech: 88,
+    fuselage: 'composite', wingMat: 'composite', engine: 'cfm56-5b',
+    fuelMargin: 0.02, abreast: 6, wing: 45,
+  };
+  const s = E.newGame(4375, 'uac');
+  s.cash += 900000;
+  const p = E.launchProgram(s, spec, 'NoRes').program;
+  assert.deepStrictEqual(p.research, {});
+  const before = p.efficiency;
+
+  s.research = { done: { aero: true } };
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const engineOnly = D.evaluate({ ...spec, engine: 'ps90a', domesticEngines: ['ps90a'], year: 1998 + s.turn / 4 }).efficiency -
+    D.evaluate({ ...spec, year: 1998 }).efficiency;
+  assert.strictEqual(p.efficiency, before + engineOnly, '엔진 차이만 얹혀야 한다');
+});
+
+test('국산화: 자회사는 런칭 파트너를 제안하지 않는다', () => {
+  // 회귀 — PD 계열이 카탈로그에 들어오면서 열린 구멍이다. UEC 인도가 쌓인
+  // 2010년 UAC 판에서 "UEC가 PD-14 의 런칭 파트너를 제안했다($403M)"가 떴다.
+  // 분담금은 engineEarlyAccess 만 채우는데 국산 엔진의 문은 localEngines 가
+  // 잡으므로, 내고도 아무것도 못 쓰는 계약이었다.
+  const ev = Dec.DECISIONS.find((x) => x.id === 'engine_launch_partner');
+  assert.ok(ev, '런칭 파트너 사건이 있어야 한다');
+
+  const s = E.newGame(4381, 'uac');
+  s.turn = (2010 - 1998) * 4;
+  s.engineRelations = { UEC: 120 };
+  assert.strictEqual(ev.weight(s), 0, '자회사만 거래처면 제안이 아예 없어야 한다');
+
+  // 서방 공급사가 섞여 있으면 그쪽으로는 정상적으로 제안이 간다.
+  s.turn = (2014 - 1998) * 4;
+  s.engineRelations = { UEC: 120, CFM: 60 };
+  assert.ok(ev.weight(s) > 0, 'LEAP-1A(2016) 는 제안 대상이다');
+  const memo = {};
+  const h = { remember: (k, v) => ((memo[k] = v), v), recall: (k, f) => (memo[k] === undefined ? f : memo[k]) };
+  ev.text(s, h);
+  assert.ok(!Eng.get(memo.engine).domestic, `국산 엔진이 잡히면 안 된다 (${memo.engine})`);
+});
+
+test('국산화: 착수 시점의 조직 경험도 두 평가에 함께 들어간다', () => {
+  // 회귀 — 경험은 결함 위험에 **배수**로 들어가서 대개 상쇄되지만, 위험 상한
+  // (defectRiskMax)에 닿으면 상한에서 잘린 만큼이 한쪽에만 남아 깨진다.
+  const spec = {
+    segment: 'wide', seats: 330, range: 12000, tech: 95,
+    fuselage: 'composite', wingMat: 'composite', engine: 'ps90a',
+    fuelMargin: 0.02, abreast: 9, wing: 35, etops: true,
+  };
+  const s = E.newGame(4391, 'uac');
+  s.cash += 900000;
+  s.localEngines = ['ps90a'];
+  const p = E.launchProgram(s, spec, 'HiRisk').program;
+  // 경험 1점 위에서 그린 설계로 맞춘다.
+  p.experience = 1;
+  p.defectRisk = D.evaluate({ ...spec, domesticEngines: ['ps90a', 'pd35'], year: 2014, experience: 1 }).defectRisk;
+
+  s.turn = (2011 - 1998) * 4;
+  runLocal(s, 'ps90a', 'pd35');
+  assert.strictEqual(p.engine, 'pd35');
+
+  const year = 1998 + s.turn / 4;
+  const fresh = (xp) =>
+    D.evaluate({ ...spec, engine: 'pd35', domesticEngines: ['ps90a', 'pd35'], year, experience: xp }).defectRisk;
+  assert.ok(fresh(0) >= Data.CONFIG.defectRiskMax, '상한에 닿는 설계라야 이 검사가 의미가 있다');
+  assert.strictEqual(p.defectRisk, fresh(1), '같은 경험 위의 신규 설계와 맞아야 한다');
+  assert.notStrictEqual(p.defectRisk, fresh(0), '경험을 빠뜨리면 상한에 눌려 위험이 낮게 잡힌다');
+});
+
+test('마이그레이션: 옛 세이브의 착수 시점 연구를 되짚는다', () => {
+  // 완료 시점을 적어 둔 적이 없어 정확한 복원은 안 된다. 대신 **확실히 없었던
+  // 것만** 걷어 낸다 — 연구는 정해진 분기를 채워야 끝나므로, 착수 분기가 그보다
+  // 이르면 그 연구는 그때 존재할 수 없었다.
+  const aero = Data.RESEARCH_PROJECTS.find((x) => x.id === 'aero');
+  const s = E.newGame(4392, 'uac');
+  s.cash += 900000;
+  s.research = { active: null, progress: {}, done: { aero: true } };
+  const late = E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5000, tech: 70, material: 'aluminum', engine: 'cfm56-5b' }, 'Late').program;
+  late.launchTurn = aero.quarters + 2;
+  for (const q of s.programs) delete q.research;
+
+  const back = JSON.parse(JSON.stringify(s));
+  E.ensureShape(back);
+  for (const q of back.programs) {
+    if (q.launchTurn < aero.quarters) {
+      assert.deepStrictEqual(q.research, {}, `${q.name}: 연구가 끝날 수 없던 시점이다`);
+    } else {
+      assert.deepStrictEqual(q.research, { aero: true }, `${q.name}: 완료된 연구를 되짚어야 한다`);
+    }
+  }
+
+  // 되짚은 연구가 실제로 갈아타기의 값을 맞춘다 — 상한에 닿은 설계에서 1점.
+  const spec = {
+    segment: 'narrow', seats: 180, range: 5200, tech: 88,
+    fuselage: 'composite', wingMat: 'composite', engine: 'cfm56-5b',
+    fuelMargin: 0.02, abreast: 6, wing: 45,
+  };
+  const t = E.newGame(4393, 'uac');
+  t.cash += 900000;
+  t.research = { active: null, progress: {}, done: { aero: true } };
+  const p = E.launchProgram(t, spec, 'HiEff').program;
+  p.launchTurn = aero.quarters + 2;
+  assert.strictEqual(p.efficiency, 99, '상한에 닿은 설계라야 이 검사가 의미가 있다');
+  delete p.research;
+
+  const old = JSON.parse(JSON.stringify(t));
+  const back2 = old.programs.find((x) => x.name === 'HiEff');
+  E.ensureShape(old);
+  assert.deepStrictEqual(back2.research, { aero: true });
+  const r = E.startLocalEngine(old, 'cfm56-5b', 'ps90a');
+  assert.ok(r.ok, r.error);
+  E.fundLocalEngine(old, old.localEngineProject.cost);
+  for (let i = 0; i < 40 && old.localEngineProject; i++) {
+    old.cash += 6000;
+    E.endTurn(old);
+  }
+  const fresh = D.evaluate({ ...spec, engine: 'ps90a', ...E.designContext(old), year: 1998 + old.turn / 4 });
+  assert.strictEqual(back2.efficiency, fresh.efficiency, '되짚은 연구 위의 신규 설계와 맞아야 한다');
+});
+
+test('마이그레이션: 연구 완료 분기를 로그에서 되찾는다', () => {
+  // 회귀 — 프로젝트 길이만으로 가르면 "연구가 0분기에 시작해 쉬지 않고 돌았다"는
+  // 가정이 된다. 실제로는 아무 때나 시작하고 멈출 수 있어서, 늦게 끝난 연구를
+  // 그 전에 착수한 기체에 얹게 된다.
+  const aero = Data.RESEARCH_PROJECTS.find((x) => x.id === 'aero');
+  const build = () => {
+    const s = E.newGame(4401, 'uac');
+    s.cash += 900000;
+    const p = E.launchProgram(s, { segment: 'narrow', seats: 170, range: 5000, tech: 70, material: 'aluminum', engine: 'cfm56-5b' }, 'Mid').program;
+    p.launchTurn = aero.quarters * 4; // 연구가 끝날 수 있는 가장 이른 시점보다 한참 뒤
+    s.research = { active: null, progress: {}, done: { aero: true } };
+    for (const q of s.programs) delete q.research;
+    return s;
+  };
+
+  // 1) 로그에 완료 기록이 남아 있으면 그 분기가 정답이다.
+  const withLog = build();
+  const late = withLog.programs.find((x) => x.name === 'Mid').launchTurn + 20;
+  withLog.log.unshift({ turn: late, label: E.turnLabel(late), kind: 'good', text: `${aero.name} 연구 완료 — ${aero.effect}.` });
+  const a = JSON.parse(JSON.stringify(withLog));
+  E.ensureShape(a);
+  assert.strictEqual(a.research.doneTurn.aero, late, '로그의 분기를 그대로 읽어야 한다');
+  assert.deepStrictEqual(a.programs.find((x) => x.name === 'Mid').research, {}, '연구보다 먼저 나온 기체다');
+
+  // 2) 로그가 밀려 사라졌으면 가장 이른 가능 시점으로 물러선다.
+  const noLog = build();
+  noLog.log = [];
+  const b = JSON.parse(JSON.stringify(noLog));
+  E.ensureShape(b);
+  assert.strictEqual(b.research.doneTurn.aero, aero.quarters, '그보다 이를 수는 없다');
+  assert.deepStrictEqual(b.programs.find((x) => x.name === 'Mid').research, { aero: true });
+
+  // 3) 앞으로는 추정할 일이 없다 — 완료 분기를 그때 적는다.
+  const live = E.newGame(4403, 'uac');
+  live.cash += 900000;
+  assert.ok(E.startResearch(live, 'aero').ok);
+  for (let i = 0; i < aero.quarters + 2 && !live.research.done.aero; i++) {
+    live.cash += 6000;
+    E.endTurn(live);
+  }
+  assert.ok(live.research.done.aero, '연구가 끝나야 한다');
+  assert.strictEqual(typeof live.research.doneTurn.aero, 'number', '완료 분기를 남겨야 한다');
+});
+
+test('성능 패키지: 연비 상한에 걸린 기종은 카운터도 오르지 않는다', () => {
+  // 회귀 — 상한에서 값은 안 움직이는데 enginePipGain 만 올랐다. 국산화는 그
+  // 카운터만큼을 되돌리므로, 받은 적 없는 점수를 갈아탈 때 빼앗겼다.
+  const pip = Data.EVENTS.find((x) => x.id === 'engine_pip');
+  const s = E.newGame(4404, 'uac');
+  s.cash += 900000;
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b' && x.phase === 'production');
+  s.engineRelations = { [Eng.get('cfm56-5b').maker]: 200 };
+  p.efficiency = 99;
+  pip.apply(s, { rng: R.createRng(3) });
+  assert.strictEqual(p.efficiency, 99);
+  assert.ok(!p.enginePipGain, `못 받은 개선분을 적으면 안 된다 (${p.enginePipGain})`);
+
+  // 그래서 갈아탈 때도 엔진 차이만 빠진다.
+  const before = p.efficiency;
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  const drop = before - p.efficiency;
+  p.efficiency = before;
+  p.engine = 'cfm56-5b';
+  const s2 = E.newGame(4404, 'uac');
+  const q = s2.programs.find((x) => x.engine === 'cfm56-5b' && x.phase === 'production');
+  q.efficiency = 99;
+  s2.cash += 900000;
+  runLocal(s2, 'cfm56-5b', 'ps90a');
+  assert.strictEqual(drop, 99 - q.efficiency, '패키지를 못 받은 기종과 같은 폭이어야 한다');
+});
+
+test('마이그레이션: 연구가 끝난 그 분기에 착수한 기체는 그 연구를 못 받았다', () => {
+  // 착수는 플레이어가 그 분기에 하고, 연구 정산은 같은 분기의 endTurn 안에서
+  // 뒤늦게 돈다. 그래서 완료 분기에 착수한 기체는 실제로 연구 없이 평가된다 —
+  // 마이그레이션도 같은 경계를 써야 한다.
+  const aero = Data.RESEARCH_PROJECTS.find((x) => x.id === 'aero');
+
+  // 살아 있는 경로가 어느 쪽인지 먼저 못박는다.
+  const live = E.newGame(4410, 'uac');
+  live.cash += 900000;
+  assert.ok(E.startResearch(live, 'aero').ok);
+  let sameTurn = null;
+  for (let i = 0; i < aero.quarters + 3 && !sameTurn; i++) {
+    const willFinish = live.research.active === 'aero' && (live.research.progress.aero || 0) + 1 >= aero.quarters;
+    if (willFinish) {
+      sameTurn = E.launchProgram(live, { segment: 'narrow', seats: 170, range: 5000, tech: 70, material: 'aluminum', engine: 'cfm56-5b' }, 'SameTurn').program;
+    }
+    live.cash += 6000;
+    E.endTurn(live);
+  }
+  assert.ok(sameTurn, '연구가 끝나는 분기에 착수해 봐야 한다');
+  assert.strictEqual(sameTurn.launchTurn, live.research.doneTurn.aero, '같은 분기여야 이 검사가 의미가 있다');
+  assert.deepStrictEqual(sameTurn.research, {}, '살아 있는 경로는 못 받은 것으로 적는다');
+
+  // 마이그레이션이 그 경계를 그대로 쓴다.
+  const base = E.newGame(4412, 'uac');
+  base.research = { active: null, progress: {}, done: { aero: true }, doneTurn: { aero: 20 } };
+  for (const [turn, expected] of [[19, {}], [20, {}], [21, { aero: true }]]) {
+    const s = JSON.parse(JSON.stringify(base));
+    s.programs = [{ ...s.programs[0], id: `x${turn}`, launchTurn: turn }];
+    delete s.programs[0].research;
+    E.ensureShape(s);
+    assert.deepStrictEqual(s.programs[0].research, expected, `launchTurn ${turn} (완료 20분기)`);
+  }
+});
+
+test('2세대: 옛 엔진은 착수 연도가 아니라 그 엔진을 단 연도로 평가한다', () => {
+  // 회귀 — SSJ-100 은 1998년에 나왔지만 D-436(취항 1999)을 단 것은 2000년이다.
+  // 착수 연도로 재면 그 시점에 못 사는 엔진이라 평가가 폴백으로 떨어져(exact 실패),
+  // 정가·결함 위험이 통째로 안 바뀐 채 2세대로 넘어갔다.
+  const s = E.newGame(4411, 'uac');
+  s.cash += 900000;
+  const ss = s.programs.find((p) => p.segment === 'regional');
+  assert.strictEqual(ss.engineTurn, ss.launchTurn, '착수 시점에는 두 값이 같다');
+  assert.ok(yearOfTurn(ss.launchTurn) < Eng.get('d436').eis, '착수 시점에는 D-436 이 아직 없다');
+
+  runLocal(s, ss.engine, 'd436');
+  assert.strictEqual(ss.engine, 'd436');
+  assert.ok(ss.engineTurn > ss.launchTurn, '엔진을 단 분기가 따로 남아야 한다');
+  assert.ok(yearOfTurn(ss.engineTurn) >= Eng.get('d436').eis, '그 시점에는 살 수 있는 엔진이다');
+
+  for (let i = 0; i < 80 && E.localEngineTargets(s).find((x) => x.replacement === 'pd8').locked; i++) {
+    s.cash += 6000;
+    E.endTurn(s);
+  }
+  const before = { price: ss.listPrice, risk: ss.defectRisk };
+  runLocal(s, 'd436', 'pd8');
+  assert.strictEqual(ss.engine, 'pd8');
+  assert.notStrictEqual(ss.listPrice, before.price, '정가가 따라 움직여야 한다');
+  assert.ok(ss.defectRisk > before.risk, '갓 나온 코어라 초기 위험이 얹힌다');
+});
+
+function yearOfTurn(turn) {
+  return 1998 + Math.floor(turn / 4);
+}
+
+test('국산화: 관계가 깎이는 것은 카탈로그에 있는 항공사뿐이다', () => {
+  // 회귀 — 리스사·인수 승계 같은 기관 계정의 잔고까지 세면, 아무도 안 읽는
+  // 유령 항목(s.relations.lessor)이 생기고 로그만 "관계가 깎였다"고 말한다.
+  const s = E.newGame(4413, 'uac');
+  s.cash += 900000;
+  const p = s.programs.find((x) => x.engine === 'cfm56-5b');
+  const real = Data.AIRLINES[0].id;
+  s.backlog.push({ programId: p.id, remaining: 20, airlineId: 'lessor', airlineName: '국제 리스사', unitPrice: 80 });
+  s.backlog.push({ programId: p.id, remaining: 20, airlineId: 'takeover', airlineName: '인수 승계', unitPrice: 80 });
+  s.backlog.push({ programId: p.id, remaining: 20, airlineId: real, airlineName: 'A', unitPrice: 80 });
+  const beforeReal = s.relations[real];
+
+  runLocal(s, 'cfm56-5b', 'ps90a');
+  assert.strictEqual(s.relations.lessor, undefined, '리스사에는 관계 항목이 없다');
+  assert.strictEqual(s.relations.takeover, undefined, '인수 승계도 마찬가지다');
+  assert.ok(s.relations[real] < beforeReal, '실재하는 항공사는 깎여야 한다');
+});
+
 // ─────────────────── 기존 사건의 현장 효과 ───────────────────
 
 function plantDecision(s, id, memo) {
@@ -7888,3 +9160,4 @@ test('설계 동결은 초도 비행 성공으로 기록된다', () => {
     Dec.DECISIONS.push(...savedDecisions);
   }
 });
+
