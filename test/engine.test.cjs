@@ -9292,3 +9292,45 @@ test('통합: 경력 순위표의 우리 인도 대수가 점유율과 같은 �
     `순위표 점유율 ${us.share} 과 점유율 카드 ${E.marketShare(s)} 가 어긋난다`,
   );
 });
+
+test('통합: 사건이 계열 항공사를 손님으로 고르지 않는다', () => {
+  // 사건이 만드는 주문에는 `inHouse` 표식이 없어 자회사 장부를 지나지 않는다 — 제조사만
+  // 대금을 받고 시장 인도로 세는데 자회사는 내지도 받지도 않는다. 없던 돈과 없던 기체다.
+  const target = Data.AIRLINES[3];
+  const setup = () => {
+    const s = E.newGame(20260827);
+    // 이 회사를 압도적 최대 고객으로 만든다 — `topCustomer` 가 여기로 떨어지게.
+    const p = s.programs.find((x) => x.phase === 'production' && x.segment === target.bias) || s.programs[0];
+    s.fleets = { [target.id]: { [p.id]: 400 } };
+    s.relations = {};
+    for (const a of Data.AIRLINES) s.relations[a.id] = 40;
+    s.relations[target.id] = 95;
+    return s;
+  };
+  // 에어쇼의 '주요 고객만 따로 만난다' — `topCustomer` 를 그대로 쓰는 자리다.
+  const dec = Dec.DECISIONS.find((d) => d.id === 'airshow');
+  const opt = dec.options.find((o) => o.id === 'targeted');
+  const run = (s) => {
+    const seen = [];
+    opt.apply(s, {
+      expense: () => {},
+      relation: (id) => seen.push(id),
+      order: (o) => {
+        seen.push(o.airlineId);
+        return o;
+      },
+    });
+    return seen;
+  };
+
+  assert.ok(run(setup()).includes(target.id), `${target.name} 이 안 골리면 이 검사는 아무것도 안 잰다`);
+
+  const s2 = setup();
+  s2.inHouseAirlineId = target.id;
+  const after = run(s2);
+  assert.ok(!after.includes(target.id), `계열 항공사(${target.name})를 손님으로 골랐다`);
+  assert.ok(
+    after.every((id) => Data.AIRLINES.some((a) => a.id === id)),
+    `실존 항공사가 아닌 것을 골랐다 — ${JSON.stringify(after)}`,
+  );
+});

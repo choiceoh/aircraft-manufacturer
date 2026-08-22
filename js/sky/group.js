@@ -181,24 +181,32 @@
    * 착수금은 돌려주지 않는다 — 제조사 장부에 위약금으로 남는다는 것이 이 게임의 규칙이고,
    * 그룹 합산으로는 한 주머니에서 다른 주머니로 옮긴 것이라 성적도 움직이지 않는다.
    */
+  /**
+   * 제조사가 자회사에 물어 줄 돈을 실제로 넘긴다.
+   *
+   * 계약을 깨서 무는 위약금과, 옛 정가 주문을 원가로 되맞추며 돌려주는 착수금이 여기로
+   * 온다. 안 넘기면 제조사에서는 나갔는데 항공사에는 안 들어와 연결 장부에서 통째로
+   * 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
+   *
+   * 문 닫은 자회사에는 줄 수 없다 — 그 돈은 제조사에 남는다(파산한 회사는 그룹 자본에서
+   * 0 으로 세므로 합산이 어긋나지도 않는다). **다만 기록은 그때만 지운다** — 살아 있는데
+   * 못 준 경우까지 지우면 돈이 조용히 사라진다.
+   */
+  function settleRefund(mfg, sky, airlineId) {
+    const refund = mfg.inHouseRefund || 0;
+    if (refund <= 0) return;
+    const a = St.airline(sky, airlineId);
+    if (!a) return;
+    if (a.alive) a.cash += refund * MUSD;
+    mfg.inHouseRefund = 0;
+  }
+
   function reconcileOrders(mfg, sky, airlineId) {
     if (!mfg || !sky) return [];
     // **먼저 물어 준 돈을 받는다.** 제조사가 계약을 깨면 선수금과 위약금을 물어 주는데,
     // 그 돈의 상대가 우리 자회사다. 안 받으면 제조사에서는 나갔는데 항공사에는 안
     // 들어와 연결 장부에서 통째로 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
-    const refund = mfg.inHouseRefund || 0;
-    if (refund > 0) {
-      const a = St.airline(sky, airlineId);
-      // 문 닫은 자회사에는 줄 수 없다 — 그 돈은 제조사에 남는다(파산한 회사는 그룹
-      // 자본에서 0 으로 세므로 합산이 어긋나지도 않는다). **다만 기록은 그때만 지운다** —
-      // 살아 있는데 못 준 경우까지 지우면 돈이 조용히 사라진다.
-      if (a && a.alive) {
-        a.cash += refund * MUSD;
-        mfg.inHouseRefund = 0;
-      } else if (a && !a.alive) {
-        mfg.inHouseRefund = 0;
-      }
-    }
+    settleRefund(mfg, sky, airlineId);
     if (!sky.orders || !sky.orders.length) return [];
     const live = {};
     for (const o of mfg.backlog || []) {
@@ -324,6 +332,10 @@
     // 옛 세이브의 자체 인도분이 성적표에 그대로 시장 성과로 남는다. 표식이 있어 두 번
     // 돌지는 않는다.
     migrateInHouseCounters(mfg, sky, airlineId);
+    // **여기서 미납분도 정산한다.** 이관이 되돌려 줄 착수금을 `inHouseRefund` 에 적어
+    // 두는데, 끝난 판은 `betweenTurns` 를 더 돌지 않아 그 돈이 자회사에 영영 안 들어간다 —
+    // 제조사에서는 나갔는데 항공사에는 안 들어와 성적표의 그룹 자본이 그만큼 낮아진다.
+    settleRefund(mfg, sky, airlineId);
     const eq = combinedEquity(mfg, sky, airlineId);
     const alive = !!a.alive && !(mfg.gameOver && mfg.gameOver.reason === 'bankrupt');
     // 증자로 불린 자본은 그만큼 우리 몫이 아니다 — 제조사 점수가 이미 쓰는 규칙이다.

@@ -3322,3 +3322,36 @@ test('통합: 이력을 옮겨도 이사회 목표의 남은 몫은 그대로다
     );
   }
 });
+
+test('통합: 끝난 판도 되돌려 줄 돈을 자회사에 넘기고 성적을 낸다', () => {
+  // 이관이 되돌려 줄 착수금을 적어 두는데 끝난 판은 분기를 더 안 넘긴다 — 제조사에서는
+  // 나갔는데 항공사에는 안 들어와 성적표의 그룹 자본이 그만큼 낮아진다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  // 옛 정가 주문으로 되돌린다.
+  const o = mfg.backlog.find((x) => x.inHouse && x.programId === prog.id);
+  const rate = Data.CONFIG.depositRate;
+  const extra = o.remaining * (prog.listPrice - o.unitPrice) * rate;
+  assert.ok(extra > 0, '정가와 원가가 같으면 이 검사는 아무것도 안 잰다');
+  o.unitPrice = prog.listPrice;
+  mfg.cash += extra;
+  a.cash -= extra * G.MUSD;
+  sky.orders.find((x) => x.external && x.typeId === prog.id).paid += extra * G.MUSD;
+  delete mfg.inHousePriceRebased;
+  delete mfg.inHouseMigrated;
+
+  // 판이 끝났다 — `betweenTurns` 는 다시 돌지 않는다.
+  sky.turn = sky.totalTurns;
+  const cashBefore = a.cash;
+  const score = G.groupScore(mfg, sky, meId);
+
+  assert.ok(score, '성적이 안 나왔다');
+  assert.strictEqual(mfg.inHouseRefund || 0, 0, '되돌려 줄 돈이 제조사에 남았다');
+  assert.ok(
+    Math.abs(a.cash - cashBefore - extra * G.MUSD) < 1,
+    `자회사가 못 받았다 — ${Math.round((a.cash - cashBefore) / 1e6)}M (${Math.round(extra)}M 이어야 한다)`,
+  );
+});
