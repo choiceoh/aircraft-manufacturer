@@ -708,7 +708,10 @@
     // 성적표가 그 기체를 자산으로 센다 — 판이 끝난 뒤에 오는 기체다. 발주인 채로 둔다
     // (선급금으로 자기자본에는 이미 잡혀 있으니 값이 사라지지는 않는다).
     const last = Math.min(s.turn + 1, s.totalTurns - 1);
-    const due = s.orders.filter((o) => o.deliverTurn <= last);
+    // **자체 발주는 여기서 인도하지 않는다.** 통합 모드의 자체 항공사 발주는 제조사의
+    // 생산 대기열이 정하는 때에 온다 — 남의 주문과 같은 줄에 선다는 것이 그 모드의
+    // 규칙이라, 항공사 쪽 타이머로 미리 세우면 줄을 서지 않은 것이 된다.
+    const due = s.orders.filter((o) => !o.external && o.deliverTurn <= last);
     if (!due.length) return;
     for (const o of due) {
       // 죽은 회사에는 인도하지 않는다 (fold 가 지우지 못한 경로가 있어도 여기서 막힌다).
@@ -718,21 +721,43 @@
       // 프로그램 정가가 3% 오른 것만으로 이미 인도된 기단의 자산가치와 감가상각비가
       // 통째로 움직인다 — 아무 거래도 없었는데 자본과 차입 한도가 바뀐다.
       const unit = typeof o.paid === 'number' && o.count > 0 ? o.paid / o.count : null;
-      for (let i = 0; i < o.count; i++) {
-        s.planes.push({
-          id: s.nextId++,
-          typeId: o.typeId,
-          airlineId: o.airlineId,
-          paid: unit,
-          ageQuarters: 0,
-          routeId: null,
-          hoursSinceCheck: 0,
-          quartersSinceCheck: 0,
-          checkUntilTurn: -1,
-        });
-      }
+      pushNewPlanes(s, o.airlineId, o.typeId, o.count, unit);
     }
-    s.orders = s.orders.filter((o) => o.deliverTurn > s.turn + 1);
+    // **거를 때도 같은 기준(`last`)을 쓴다.** `s.turn + 1` 로 거르면, 기간 안 발주와
+    // 기간 밖 발주가 같은 분기에 걸린 마지막 분기에 후자가 인도도 안 된 채 장부에서
+    // 사라진다 — 선급금까지 함께 증발한다.
+    s.orders = s.orders.filter((o) => o.external || o.deliverTurn > last);
+  }
+
+  /** 갓 나온 기체를 기단에 세운다. 타이머 인도와 제조사 인도가 이 한 곳을 쓴다. */
+  function pushNewPlanes(s, airlineId, typeId, count, unitPaid) {
+    for (let i = 0; i < count; i++) {
+      s.planes.push({
+        id: s.nextId++,
+        typeId,
+        airlineId,
+        paid: unitPaid,
+        ageQuarters: 0,
+        routeId: null,
+        hoursSinceCheck: 0,
+        quartersSinceCheck: 0,
+        checkUntilTurn: -1,
+      });
+    }
+  }
+
+  /**
+   * 제조사 계층이 인도한 기체를 받는다 — 통합 모드의 자체 발주 통로.
+   *
+   * 항공사 타이머를 거치지 않고 곧장 램프에 선다. 값은 제조사가 청구한 값 그대로다.
+   */
+  function receiveAircraft(s, airlineId, typeId, count, unitPaid) {
+    const a = airline(s, airlineId);
+    if (!a || !a.alive) return { ok: false, error: '없는 항공사입니다.' };
+    if (!Number.isInteger(count) || count < 1) return { ok: false, error: '대수가 올바르지 않습니다.' };
+    if (!s.types[typeId]) return { ok: false, error: '없는 기종입니다.' };
+    pushNewPlanes(s, airlineId, typeId, count, typeof unitPaid === 'number' ? unitPaid : null);
+    return { ok: true, count };
   }
 
   /**
@@ -961,6 +986,7 @@
     slotRent,
     slotRentTotal,
     residual,
+    receiveAircraft,
     lifetimePaxOf,
     fleetValue,
     depreciation,

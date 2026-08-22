@@ -835,7 +835,7 @@
     const r = E.endTurn(s);
     if (!r.ok) {
       toast(r.error, 'bad');
-      return;
+      return null;
     }
 
     const rep = r.report;
@@ -853,6 +853,8 @@
     // 정산 결과는 개요 맨 위 결산 카드에 남는다. 스크롤이 아래에 있으면 그걸 못 본다.
     scrollTop();
     if (s.gameOver) showGameOver(s);
+    // 통합 모드의 껍데기가 이 리포트에서 자체 발주 인도분을 읽는다.
+    return rep;
   }
 
   function showGameOver(s) {
@@ -1053,7 +1055,7 @@
 
   // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
   if (root.AirlinerShell) {
-    root.AirlinerShell.register('maker', { boot, render, turn: endTurnNow });
+    root.AirlinerShell.register('maker', { boot, render, turn: endTurnNow, state: () => ui.state });
   } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();

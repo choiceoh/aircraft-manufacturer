@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
 // 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js', 'sky/group.js']) {
   require(path.join(JS, f));
 }
 
@@ -2122,4 +2122,211 @@ test('상태: 이번 분기에 문 닫은 회사의 기록도 청산 뒤 잔액�
   assert.strictEqual(r.debt, a.debt, '기록 부채가 상태와 다르다');
   assert.strictEqual(r.debt, 0, '청산 뒤인데 빚이 남아 있다');
   assert.strictEqual(r.equity, St.equity(s, a), '기록 자본이 상태와 다르다');
+});
+
+test('상태: 기간 안 발주를 인도해도 기간 밖 발주가 장부에서 사라지지 않는다', () => {
+  // 인도 대상을 고르는 기준과 장부에서 거르는 기준이 다르면, 둘이 같은 분기에 걸린
+  // 마지막 분기에 기간 밖 발주가 인도도 안 된 채 증발한다(선급금까지 함께).
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const typeId = Object.keys(s.types)[0];
+  s.turn = s.totalTurns - 1;
+  const inside = { id: s.nextId++, airlineId: a.id, typeId, count: 1, paid: 50e6, deliverTurn: s.totalTurns - 1 };
+  const outside = { id: s.nextId++, airlineId: a.id, typeId, count: 1, paid: 50e6, deliverTurn: s.totalTurns };
+  s.orders = [inside, outside];
+  const before = St.planesOf(s, a.id).length;
+
+  St.advance(s);
+
+  assert.strictEqual(St.planesOf(s, a.id).length, before + 1, '기간 안 발주 한 기만 들어와야 한다');
+  assert.ok(!s.orders.some((o) => o.id === inside.id), '인도된 발주는 장부에서 빠져야 한다');
+  assert.ok(s.orders.some((o) => o.id === outside.id), '기간 밖 발주가 인도도 없이 사라졌다');
+});
+
+// ───────────────────────── 통합 모드 (제조사 + 자체 항공사) ─────────────────────────
+
+const G = globalThis.AirlinerSkyGroup;
+
+/** 제조사 판 하나와 항공사 판 하나를 같은 세계로 세운다. */
+function groupGame(seed) {
+  const mfg = E.newGame(seed || 1234);
+  const sky = St.newGame(seed || 1234, { programs: mfg.programs });
+  return { mfg, sky, meId: sky.airlines[0].id, prog: mfg.programs[0] };
+}
+
+test('통합: 자체 발주는 양쪽 장부에 같은 값을 반대로 적는다', () => {
+  // 계열 간 거래다. 제조사가 받은 착수금과 항공사가 낸 착수금이 같아야, 합산 성적이
+  // 이전가격에 흔들리지 않는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 2 });
+  const a = St.airline(sky, meId);
+  const mCash = mfg.cash;
+  const aCash = a.cash;
+
+  const r = G.placeOrder(mfg, sky, meId, prog.id, 2);
+  assert.strictEqual(r.ok, true, r.msg);
+  assert.ok(Math.abs(mfg.cash - mCash - q.deposit) < 1e-6, `제조사가 받은 착수금 ${mfg.cash - mCash}`);
+  assert.ok(Math.abs(aCash - a.cash - q.deposit * G.MUSD) < 1, `항공사가 낸 착수금 ${(aCash - a.cash) / G.MUSD}M`);
+  // 같은 값이 양쪽으로 오갔으므로 그룹 현금은 그대로다.
+  assert.ok(
+    Math.abs((mfg.cash * G.MUSD + a.cash) - (mCash * G.MUSD + aCash)) < 1,
+    '계열 간 거래가 그룹 현금을 움직였다',
+  );
+  assert.ok(mfg.backlog.some((o) => o.inHouse && o.programId === prog.id), '제조사 수주 장부에 안 올랐다');
+});
+
+test('통합: 발주가 실패하면 어느 장부도 건드리지 않는다', () => {
+  // 제조사에 먼저 올리고 항공사에서 실패하면, 아무도 사지 않은 주문이 생산 대기열을
+  // 차지한 채 남는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 1; // 착수금을 못 낸다
+  const mCash = mfg.cash;
+  const backlog = mfg.backlog.length;
+  const orders = (sky.orders || []).length;
+
+  const r = G.placeOrder(mfg, sky, meId, prog.id, 5);
+  assert.strictEqual(r.ok, false, '현금이 없는데 발주가 됐다');
+  assert.strictEqual(mfg.cash, mCash, '제조사 현금이 움직였다');
+  assert.strictEqual(mfg.backlog.length, backlog, '유령 주문이 대기열에 올랐다');
+  assert.strictEqual((sky.orders || []).length, orders, '항공사 장부가 움직였다');
+
+  // 양산 전 기종·잘못된 대수도 마찬가지다.
+  a.cash = 5000e6;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 0).ok, false, '0대');
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 1.5).ok, false, '소수 대수');
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, 'no-such', 1).ok, false, '없는 기종');
+  assert.strictEqual(mfg.backlog.length, backlog, '실패한 발주가 대기열에 남았다');
+});
+
+test('통합: 자체 발주는 항공사 타이머가 인도하지 않는다 — 제조사 줄에 선다', () => {
+  // 남의 주문과 같은 줄에 서는 것이 이 모드의 규칙이다. 항공사 타이머로 미리 세우면
+  // 줄을 서지 않은 것이 된다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const before = St.planesOf(sky, meId).length;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 2).ok, true);
+
+  for (let i = 0; i < 6; i++) St.advance(sky, { programs: mfg.programs });
+
+  assert.strictEqual(St.planesOf(sky, meId).length, before, '항공사 타이머가 기체를 세웠다');
+  assert.ok(sky.orders.some((o) => o.external && o.typeId === prog.id), '자체 발주가 장부에서 사라졌다');
+});
+
+test('통합: 제조사가 인도하면 기체가 서고 선급금이 지워진다', () => {
+  // 선급금을 안 지우면 인도된 기체가 기단과 선급금 양쪽에 잡혀 자기자본이 두 번 세어진다.
+  const { mfg, sky, meId, prog } = groupGame();
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 2).ok, true);
+  const a = St.airline(sky, meId);
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 2 });
+  const before = St.planesOf(sky, meId).length;
+  const eqBefore = St.equity(sky, a);
+  const cashBefore = a.cash;
+
+  // 제조사가 두 기를 인도했다고 알린다.
+  const report = { inHouse: [{ airlineId: meId, programId: prog.id, qty: 2, unitPrice: q.unitPrice, balance: q.balance }] };
+  const got = G.receiveDeliveries(mfg, sky, report, meId);
+
+  assert.strictEqual(got.length, 1);
+  assert.strictEqual(St.planesOf(sky, meId).length, before + 2, '기체가 안 섰다');
+  assert.ok(Math.abs(cashBefore - a.cash - q.balance * G.MUSD) < 1, '잔금이 안 나갔다');
+  assert.ok(!sky.orders.some((o) => o.external && o.typeId === prog.id), '선급금 기록이 남았다');
+  // 정가만큼 현금이 나가고 그만큼 기체가 들어왔으니 자기자본은 거의 그대로다.
+  assert.ok(Math.abs(St.equity(sky, a) - eqBefore) < 1, `자본이 ${Math.round((St.equity(sky, a) - eqBefore) / 1e6)}M 움직였다`);
+  // 새 기체는 치른 값을 새기고 있어야 한다 — 카탈로그로 다시 재면 정가가 오를 때 자본이 분다.
+  const fresh = St.planesOf(sky, meId).filter((p) => p.ageQuarters === 0 && p.typeId === prog.id);
+  assert.strictEqual(fresh.length, 2);
+  for (const p of fresh) assert.ok(Math.abs(p.paid - q.unitPrice * G.MUSD) < 1, '치른 값이 안 새겨졌다');
+});
+
+test('통합: 나눠 인도돼도 선급금이 그만큼만 줄어든다', () => {
+  // 생산 대기열은 재고만큼만 내보내므로 한 발주가 여러 분기에 나뉜다.
+  const { mfg, sky, meId, prog } = groupGame();
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+  const order = sky.orders.find((o) => o.external);
+  const paid = order.paid;
+
+  G.consumeOrder(sky, meId, prog.id, 1);
+  assert.strictEqual(order.count, 3, '대수가 안 줄었다');
+  assert.ok(Math.abs(order.paid - paid * 0.75) < 1, `선급금 ${Math.round(order.paid)} — 4분의 1만 줄어야 한다`);
+
+  G.consumeOrder(sky, meId, prog.id, 3);
+  assert.ok(!sky.orders.some((o) => o.external), '다 인도됐는데 기록이 남았다');
+});
+
+test('통합: 겹치는 노선이 많을수록 경쟁 항공사가 더 크게 등을 돌린다', () => {
+  // 자체 항공사를 갖는 값이다. 회사 수로 재면 남의 안방에 한 편 넣은 것과 노선망을
+  // 통째로 겹쳐 놓은 것이 같은 값이 된다.
+  const { mfg, sky, meId } = groupGame();
+  const rival = sky.airlines.find((x) => x.id !== meId && x.alive);
+  const rivalRoutes = St.routesOf(sky, rival.id).filter((r) => r.active);
+  assert.ok(rivalRoutes.length >= 2, '겹칠 노선이 있어야 검사가 산다');
+
+  // 겹치는 노선이 하나도 없으면 아무 일도 없다.
+  const clean = mfg.relations[rival.id];
+  for (const r of St.routesOf(sky, meId)) r.active = false;
+  assert.deepStrictEqual(G.applyRivalry(mfg, sky, meId), [], '겹치는 노선이 없는데 관계가 깎였다');
+  assert.strictEqual(mfg.relations[rival.id], clean);
+
+  // 상대 노선 하나를 그대로 베낀다.
+  const me = St.airline(sky, meId);
+  const copy = (r) => ({ id: sky.nextId++, airlineId: meId, from: r.from, to: r.to, fareMul: 1, freq: 4, serviceExtra: 0, active: true, last: null });
+  sky.routes.push(copy(rivalRoutes[0]));
+  G.applyRivalry(mfg, sky, meId);
+  const afterOne = clean - mfg.relations[rival.id];
+  assert.ok(afterOne > 0, '겹치는데 관계가 안 깎였다');
+
+  // 하나 더 베끼면 더 깎인다.
+  mfg.relations[rival.id] = clean;
+  sky.routes.push(copy(rivalRoutes[1]));
+  G.applyRivalry(mfg, sky, meId);
+  const afterTwo = clean - mfg.relations[rival.id];
+  assert.ok(afterTwo > afterOne, `노선 2개(${afterTwo})가 1개(${afterOne})보다 커야 한다`);
+  assert.ok(me, '내 회사가 있어야 한다');
+});
+
+test('통합: 한 분기에 깎이는 신뢰에 상한이 있다', () => {
+  // 없으면 노선망이 크게 겹친 대형 항공사의 관계가 몇 해 만에 0 이 되고, 그 뒤로는
+  // 노선을 더 겹쳐도 아무 값도 안 치른다 — 값이 사라지면 규칙도 사라진다.
+  const { mfg, sky, meId } = groupGame();
+  const rival = sky.airlines.find((x) => x.id !== meId && x.alive);
+  const rivalRoutes = St.routesOf(sky, rival.id).filter((r) => r.active);
+  for (const r of rivalRoutes) {
+    sky.routes.push({ id: sky.nextId++, airlineId: meId, from: r.from, to: r.to, fareMul: 1, freq: 4, serviceExtra: 0, active: true, last: null });
+  }
+  // 겹치는 노선을 잔뜩 만들어도 한 분기 손실은 상한을 못 넘는다.
+  for (let i = 0; i < 40; i++) {
+    const r = rivalRoutes[i % rivalRoutes.length];
+    sky.routes.push({ id: sky.nextId++, airlineId: rival.id, from: r.from, to: r.to, fareMul: 1, freq: 4, serviceExtra: 0, active: true, last: null });
+  }
+  const before = mfg.relations[rival.id];
+  G.applyRivalry(mfg, sky, meId);
+  const drop = before - mfg.relations[rival.id];
+  assert.ok(drop > 0, '안 깎였다');
+  assert.ok(drop <= G.RIVALRY_MAX_PER_QUARTER + 1e-9, `한 분기에 ${drop} 이나 깎였다`);
+  assert.ok(mfg.relations[rival.id] >= 0, '관계가 음수가 됐다');
+});
+
+test('통합: 합산 자기자본은 계열 간 거래에 흔들리지 않는다', () => {
+  // 합산으로 재는 이유가 이것이다 — 이전가격으로 성적을 만들 길이 없어야 한다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const before = G.combinedEquity(mfg, sky, meId);
+  assert.ok(before.maker > 0 && before.airline > 0);
+
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  const after = G.combinedEquity(mfg, sky, meId);
+  // 착수금은 한쪽에서 나가 다른 쪽으로 들어갔다. 제조사 순자산은 수주를 자산으로
+  // 세지 않으므로, 그룹 합계는 항공사가 선급금으로 잡은 만큼과 정확히 맞물린다.
+  assert.ok(
+    Math.abs(after.total - before.total) < 1,
+    `합산이 ${Math.round((after.total - before.total) / 1e6)}M 움직였다 — 계열 거래가 성적을 만들었다`,
+  );
+  assert.ok(after.internal > 0, '상계할 계열 선급금이 잡혀야 검사가 산다');
+
+  // 발주를 넣었다 뺐다 해도 성적이 안 만들어져야 한다 — 상계가 없으면 여기서 불어난다.
+  for (let i = 0; i < 5; i++) assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 2).ok, true);
+  const piled = G.combinedEquity(mfg, sky, meId);
+  assert.ok(
+    Math.abs(piled.total - before.total) < 1,
+    `발주 여섯 번에 합산이 ${Math.round((piled.total - before.total) / 1e6)}M 불었다`,
+  );
 });

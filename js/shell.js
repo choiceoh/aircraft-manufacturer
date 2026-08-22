@@ -114,8 +114,19 @@
     if (turning) return;
     turning = true;
     try {
-      if (has('maker') && parts.maker && parts.maker.turn) parts.maker.turn();
-      if (has('airline') && parts.airline && parts.airline.turn) parts.airline.turn();
+      const group = shell.mode === 'group' ? root.AirlinerSkyGroup : null;
+      const maker = parts.maker;
+      const air = parts.airline;
+      const report = has('maker') && maker && maker.turn ? maker.turn() : null;
+      // 통합 모드에서만 두 계층이 서로를 본다. 규칙은 전부 `js/sky/group.js` 에 있다 —
+      // 껍데기는 언제 부를지만 안다.
+      if (group && maker && air) {
+        group.betweenTurns(maker.state(), air.state(), air.meId(), report);
+      }
+      if (has('airline') && air && air.turn) air.turn();
+      if (group && maker && air) {
+        group.afterTurns(maker.state(), air.state(), air.meId());
+      }
     } finally {
       turning = false;
     }

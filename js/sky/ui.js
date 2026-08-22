@@ -429,7 +429,7 @@
 
   // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
   if (root.AirlinerShell) {
-    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn });
+    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, state: () => ui.state, meId: () => ui.meId });
   } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();

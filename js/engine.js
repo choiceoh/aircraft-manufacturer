@@ -1034,6 +1034,79 @@
   }
 
   /** 인도된 기체를 항공사 선단에 올린다 — 이후 그 항공사 입찰에서 공통성 가산이 붙는다. */
+  /**
+   * 자체 항공사 발주 — 통합 모드에서만 쓴다.
+   *
+   * 계열 항공사는 공고를 내지 않는다. 입찰을 거치지 않고 장부에 바로 올라가되,
+   * **줄은 똑같이 선다** — 생산 대기열에서 남의 주문을 제치지 않는다. 그래서 자체
+   * 항공사의 값은 "확정된 런치 커스터머"이지 "공짜 기체"가 아니다.
+   *
+   * 값은 정가 그대로다. 계열 간 거래라 깎아 봐야 한 주머니에서 다른 주머니로 옮길
+   * 뿐이고(합산 성적으로 재므로), 정가로 두어야 제조사 장부가 남의 주문과 같은 자로
+   * 읽힌다. 대금 일정도 같다 — 지금 착수금, 인도 때 잔금.
+   */
+  /**
+   * 자체 발주 견적. 상태를 건드리지 않는다.
+   *
+   * 값을 매기는 자리가 여기 하나여야 한다 — 부르는 쪽이 착수금 비율을 따로 알고
+   * 있으면, 엔진의 상수를 바꾼 날 화면의 견적과 실제 청구액이 갈린다.
+   */
+  function inHouseQuote(s, opts) {
+    const o = opts || {};
+    const qty = o.qty;
+    const p = s.programs.find((x) => x.id === o.programId);
+    if (!p) return null;
+    const n = Number.isInteger(qty) && qty > 0 ? qty : 1;
+    const total = n * p.listPrice;
+    const deposit = Math.round(total * CONFIG.depositRate);
+    return {
+      programId: p.id,
+      name: p.name,
+      qty: n,
+      unitPrice: p.listPrice,
+      total,
+      deposit,
+      balance: total - deposit,
+      depositRate: CONFIG.depositRate,
+      orderable: p.phase === 'production',
+    };
+  }
+
+  function placeInHouseOrder(s, opts) {
+    const o = opts || {};
+    const qty = o.qty;
+    if (!Number.isInteger(qty) || qty < 1) return { ok: false, error: '대수는 1 이상의 정수여야 합니다.' };
+    const p = s.programs.find((x) => x.id === o.programId);
+    if (!p) return { ok: false, error: '없는 프로그램입니다.' };
+    if (p.phase !== 'production') return { ok: false, error: `${p.name}은(는) 아직 양산 기종이 아닙니다.` };
+    const airline = AIRLINES.find((a) => a.id === o.airlineId);
+    if (!airline) return { ok: false, error: '없는 항공사입니다.' };
+
+    const unitPrice = p.listPrice;
+    const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
+    s.cash += deposit;
+    s.pending.revenue += deposit;
+    s.stats.ordersWon += qty;
+    s.pending.ordersWon = (s.pending.ordersWon || 0) + qty;
+    s.backlog.push({
+      id: 'ord-' + s.nextId++,
+      airlineId: airline.id,
+      airlineName: airline.name,
+      programId: p.id,
+      programName: p.name,
+      qty,
+      remaining: qty,
+      unitPrice,
+      wonTurn: s.turn,
+      reqEtops: false,
+      gov: false,
+      // 인도될 때 항공사 계층에 실제 기체로 넘겨야 한다는 표식.
+      inHouse: true,
+    });
+    pushLog(s, 'good', `자체 항공사 ${airline.name}이(가) ${p.name} ${qty}기를 발주했다.`);
+    return { ok: true, qty, unitPrice, deposit, total: qty * unitPrice };
+  }
+
   function addToFleet(s, airlineId, programId, n) {
     if (!s.fleets[airlineId]) s.fleets[airlineId] = {};
     s.fleets[airlineId][programId] = (s.fleets[airlineId][programId] || 0) + n;
@@ -2952,6 +3025,21 @@
       p.stock -= n;
       p.delivered += n;
       addToFleet(s, o.airlineId, p.id, n);
+      // 자체 항공사로 나간 기체는 리포트에 따로 적는다. 껍데기가 이 목록을 보고
+      // 항공사 계층에 실제 기재를 세운다 — 엔진은 항공사 계층을 알지 못한다.
+      if (o.inHouse) {
+        if (!report.inHouse) report.inHouse = [];
+        // 항공사가 낼 잔금은 **총액 기준**이다 — 금융 조건·로열티·관세는 제조사 쪽
+        // 사정이지 계열 항공사가 치르는 값이 아니다. 착수금과 합해 정가가 된다.
+        const rate = typeof o.depositRate === 'number' ? o.depositRate : CONFIG.depositRate;
+        report.inHouse.push({
+          airlineId: o.airlineId,
+          programId: p.id,
+          qty: n,
+          unitPrice: o.unitPrice,
+          balance: n * o.unitPrice * (1 - rate),
+        });
+      }
       recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
       // 엔진 공급사 관계 — 그 공급사 엔진을 단 인도가 쌓일수록 협상 테이블이 생긴다.
       // 이중화 기체는 항공사가 선호하는 쪽 엔진을 달아 나간다 — A330 이 그랬다.
@@ -4961,6 +5049,8 @@
 
   root.AirlinerEngine = {
     newGame,
+    placeInHouseOrder,
+    inHouseQuote,
     PLAYABLE_COMPANIES,
     launchProgram,
     companyExperience,
