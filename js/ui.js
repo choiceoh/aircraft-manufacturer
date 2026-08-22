@@ -869,15 +869,14 @@
    * 있는지 알려 주지 않으면, 20년을 함께 굴려 놓고 반쪽 성적만 보고 판을 닫는다.
    */
   function groupNote(s) {
-    const G = root.AirlinerSkyGroup;
     const Shell = root.AirlinerShell;
-    const Sky = root.AirlinerSkyUi;
-    if (!G || !Shell || !Sky || Shell.shell.mode !== 'group') return '';
-    const g = G.groupScore(s, Sky.ui.state, Sky.ui.meId);
-    if (!g) return '';
+    if (!root.AirlinerSkyGroup || !Shell || !root.AirlinerSkyUi || Shell.shell.mode !== 'group') return '';
+    // **여기서 그룹 점수를 찍지 않는다.** 이 모달은 제조사 정산 중에 열리는데, 같은
+    // 분기의 항공사 정산은 아직이다(`Shell.turn` 이 제조사 → 항공사 순서다). 숫자를
+    // 얼리면 자회사의 마지막 분기 손익·승객·파산이 빠진 값이 남고, 모달을 닫고 보는
+    // 성적표와 서로 다른 말을 한다.
     return `<p class="go-reason">위 등급은 <b>제조사 몫</b>이다. 자체 항공사까지 합한
-      <b>그룹 성적은 ${P.esc(g.grade)} · ${P.num(g.score)}점</b> —
-      <b>항공사</b> 화면 개요에 자세히 적혀 있다.</p>`;
+      <b>그룹 성적</b>은 <b>항공사</b> 화면 개요에 있다 — 그쪽 마지막 분기까지 정산한 값이다.</p>`;
   }
 
   function showGameOver(s) {

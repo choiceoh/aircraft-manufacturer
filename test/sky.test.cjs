@@ -2625,37 +2625,99 @@ test('통합: 한쪽이 무너지면 그룹도 실패다', () => {
   assert.notStrictEqual(G.groupScore(done, sky, meId).grade, 'F', '완주를 실패로 읽었다');
 });
 
-test('통합: 창업 자본을 모르는 옛 세이브는 성장 항목을 생략한다', () => {
-  // 0 을 기준으로 재면 있지도 않은 성장이 잡혀 점수가 통째로 부푼다.
-  const { mfg, sky, meId } = groupGame();
-  for (let i = 0; i < 4; i++) St.advance(sky, { programs: mfg.programs });
-  // 성장 점수가 0 이면 "뺐더니 줄었다"를 확인할 수 없다 — 자본을 키워 둔다.
-  St.airline(sky, meId).cash += 4000e6;
-  const normal = G.groupScore(mfg, sky, meId);
-  const growthRow = normal.rows.find((r) => r.label === '그룹 자본 성장');
-  assert.ok(growthRow, '보통은 성장 항목이 있어야 한다');
-  assert.ok(growthRow.points > 0, '성장 점수가 있어야 검사가 산다');
+test('통합: 그룹 자본은 창업 기준선을 나누지 않는다', () => {
+  // 성장 배수로 재던 때, UAC 는 창업 순자산이 −1,016M 이라 자회사를 누구로 고르느냐로
+  // 기준선이 85M 도 되고 음수도 됐다 — 성적을 가르는 것이 경영이 아니라 자회사 선택이
+  // 되고, 옛 세이브는 항공사 몫만 기준선이라 없는 성장이 잡혔다.
+  const mfg = E.newGame(1234, 'uac');
+  const sky = St.newGame(1234, { programs: mfg.programs });
+  const meId = sky.airlines[0].id;
+  const g = G.groupScore(mfg, sky, meId);
+  assert.ok(g, '성적이 나와야 한다');
+  assert.ok(Number.isFinite(g.score), `점수가 ${g.score} 다`);
+  assert.ok(g.rows.some((r) => r.label === '그룹 자본'), '자본 항목이 있어야 한다');
+  assert.ok(!g.rows.some((r) => /성장/.test(r.label)), '아직 성장 배수로 재고 있다');
 
-  const old = { ...mfg, startWorth: 0 };
-  const oldAirlines = sky.airlines.map((x) => ({ ...x }));
-  for (const x of sky.airlines) x.startEquity = 0;
-  const g = G.groupScore(old, sky, meId);
-  assert.ok(!g.rows.some((r) => r.label === '그룹 자본 성장'), '모르는 창업 자본으로 성장을 쟀다');
-  assert.ok(g.score < normal.score, '성장 항목을 뺐는데 점수가 안 줄었다');
-  for (let i = 0; i < sky.airlines.length; i++) sky.airlines[i].startEquity = oldAirlines[i].startEquity;
+  // 어느 자회사를 골라도 점수가 폭발하지 않는다.
+  for (const a of sky.airlines) {
+    const x = G.groupScore(mfg, sky, a.id);
+    assert.ok(Number.isFinite(x.score) && x.score >= 0 && x.score < 1e6, `${a.id}: ${x.score}`);
+  }
 });
 
-test('통합: 제조사가 창업 순자산을 새긴다', () => {
-  // 지금 다시 세면 그동안의 성장이 기준에 섞인다 — 항공사 쪽 `startEquity` 와 같은 이유다.
-  for (const company of ['deneb', 'boeing', 'airbus']) {
-    const s = E.newGame(1234, company);
-    assert.ok(s.startWorth > 0, `${company}: 창업 순자산이 안 새겨졌다`);
-  }
-  // 옛 세이브는 0 으로 채워 "모르는 값"임을 남긴다.
-  const s = E.newGame(1234);
-  delete s.startWorth;
-  E.ensureShape(s);
-  assert.strictEqual(s.startWorth, 0, '옛 세이브에 지금 값을 채워 넣었다');
+test('통합: 증자로 불린 자본은 그룹 점수에서 우리 몫만 센다', () => {
+  // 안 걸면 "성적을 깎는다"고 안내된 증자가 그룹 점수를 되레 올린다.
+  const { mfg, sky, meId } = groupGame();
+  const before = G.groupScore(mfg, sky, meId);
+  const cap = before.rows.find((r) => r.label === '그룹 자본');
+  assert.ok(cap && cap.points > 0, '자본 점수가 있어야 검사가 산다');
+
+  mfg.equityDilution = 0.5;
+  const cap2 = G.groupScore(mfg, sky, meId).rows.find((r) => r.label === '그룹 자본');
+  assert.ok(Math.abs(cap2.points - cap.points / 2) <= 1, `희석 50% 인데 ${cap2.points} (원래 ${cap.points})`);
+});
+
+test('통합: 자회사에 대주는 값은 만드는 값이지 파는 값이 아니다', () => {
+  // 정가로 넘기면 제조사가 마진을 이익으로 잡고 항공사는 그 값을 자산으로 자본화한다 —
+  // 그룹 밖에서는 아무 일도 없었는데 대당 32.6M 이 생긴다.
+  const { mfg, prog } = groupGame();
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 1 });
+  assert.strictEqual(q.unitPrice, prog.unitCostBase, '자체 발주가 원가로 안 넘어간다');
+  assert.ok(prog.listPrice > prog.unitCostBase, '마진이 있어야 이 검사가 뜻이 있다');
+});
+
+test('통합: 인도까지 마쳐도 그룹 자본이 안 불어난다', () => {
+  // 앞선 검사는 **발주만** 봤다 — 인도 뒤에 선급금이 사라지면서 마진이 남는 것을
+  // 놓쳤다. 여기서는 실제로 받아 세운다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  const before = G.combinedEquity(mfg, sky, meId).total;
+
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 4 });
+  // **제조사 쪽도 함께 움직여야 잰 값이 뜻이 있다.** 재고를 내주고 잔금을 받는다 —
+  // 처음엔 항공사 쪽만 흉내내서, 착수금만큼(31M) 어긋난 것을 누출로 잘못 읽었다.
+  prog.stock = (prog.stock || 0) + 4;
+  const beforeReal = G.combinedEquity(mfg, sky, meId).total;
+  prog.stock -= 4;
+  mfg.cash += q.balance;
+  const report = { inHouse: [{ airlineId: meId, programId: prog.id, qty: 4, unitPrice: q.unitPrice, balance: q.balance }] };
+  G.receiveDeliveries(mfg, sky, report, meId);
+
+  assert.strictEqual(St.planesOf(sky, meId).filter((p) => p.typeId === prog.id).length, 4, '기체가 안 섰다');
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(
+    Math.abs(after - beforeReal) < 1,
+    `인도 뒤 그룹 자본이 ${Math.round((after - beforeReal) / 1e6)}M 움직였다 — 계열 거래가 값을 만들었다`,
+  );
+  assert.ok(before > 0, '발주 전 자본도 재 둔다');
+});
+
+test('통합: 자회사에 넘긴 대수는 시장 성과로 안 센다', () => {
+  // 안 빼면 자기한테 팔아 점유율과 인도 점수를 만들 수 있다.
+  const { mfg, prog } = groupGame();
+  const before = E.operatingScore(mfg);
+
+  // 남에게 판 50기 — 점유율도 인도 점수도 오른다.
+  mfg.stats.delivered += 50;
+  prog.delivered += 50;
+  const outside = E.operatingScore(mfg);
+  assert.ok(outside > before, '남에게 판 인도는 점수가 올라야 한다');
+
+  // 자회사에 넘긴 50기 — 아무것도 안 올라야 한다.
+  mfg.stats.delivered += 50;
+  prog.delivered += 50;
+  mfg.stats.inHouseDelivered = (mfg.stats.inHouseDelivered || 0) + 50;
+  prog.inHouseDelivered = (prog.inHouseDelivered || 0) + 50;
+  assert.strictEqual(E.operatingScore(mfg), outside, '자회사에 넘긴 대수가 시장 성과로 세어졌다');
+
+  // 급별 가중을 총계로 뭉개면 광동체에서 어긋난다 — 프로그램별로 빼는지 본다.
+  const wide = { ...prog, id: 'w1', segment: 'wide', delivered: 10, inHouseDelivered: 10 };
+  mfg.programs.push(wide);
+  mfg.stats.delivered += 10;
+  mfg.stats.inHouseDelivered += 10;
+  assert.strictEqual(E.operatingScore(mfg), outside, '광동체를 자회사에 넘긴 몫이 점수로 남았다');
 });
 
 test('통합: 자체 발주는 항공사발 취소 충격을 비켜 간다', () => {

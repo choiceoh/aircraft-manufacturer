@@ -79,7 +79,16 @@
     // 접힌 회사는 이 목록에 없다 — `findIndex` 가 -1 을 내 "0위"가 뜬다.
     const rank = me.alive ? ranked.findIndex((x) => x.a.id === meId) + 1 : 0;
 
-    const over = s.turn >= s.totalTurns || !me.alive;
+    // 통합 모드에서는 **제조사가 무너져도 판이 끝난 것**이다. 항공사만 보고 판단하면,
+    // 파산 모달이 "그룹 성적은 항공사 화면에 있다"고 안내한 바로 그 화면에 성적표가
+    // 없다 — 그룹 결과는 이미 F 로 정해졌는데.
+    const groupOver = (() => {
+      const Shell = root.AirlinerShell;
+      if (!Shell || Shell.shell.mode !== 'group') return false;
+      const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
+      return !!(mfg && mfg.gameOver);
+    })();
+    const over = s.turn >= s.totalTurns || !me.alive || groupOver;
     return `
     <section class="cards">
       ${over ? groupFinalCard(s, meId) : ''}

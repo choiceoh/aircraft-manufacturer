@@ -261,16 +261,23 @@
     return { maker, airline: air, internal, total: maker + air - internal };
   }
 
-  /** 그룹의 창업 자본 — 두 계층이 판을 열 때 새겨 둔 값을 더한다. */
-  function foundingEquity(mfg, sky, airlineId) {
-    const a = sky && St.airline(sky, airlineId);
-    const air = a ? a.startEquity || 0 : 0;
-    const maker = mfg ? (mfg.startWorth || 0) * MUSD : 0;
-    return { maker, airline: air, total: maker + air };
-  }
-
-  /** 그룹 성적 배점. 자본 성장은 항공사 쪽 눈금을 그대로 쓴다 — 같은 자로 읽혀야 한다. */
-  const GROUP_GROWTH = 2000;
+  /**
+   * 그룹 자본 배점 — **창업 대비 배수가 아니라 절대값이다.**
+   *
+   * 처음에는 항공사 쪽처럼 성장 배수로 쟀다. 두 가지가 무너졌다.
+   *
+   * 하나, **기준선이 0 을 지날 수 있다.** UAC 는 창업 순자산이 −1,016M 이라 자회사를
+   * 누구로 고르느냐에 따라 합산 기준선이 85M 이 되기도 하고 음수가 되기도 한다 — 앞은
+   * 85M 오를 때마다 2,000점이고 뒤는 성장 항목이 통째로 사라진다. 성적을 가르는 것이
+   * 경영이 아니라 자회사 선택이 된다.
+   *
+   * 둘, 옛 세이브는 제조사 창업 순자산을 모르는데 항공사 것만 알고 있어서, 둘을 합친
+   * 기준선이 항공사 몫만 남는다 — 있지도 않은 성장이 잡힌다.
+   *
+   * 그래서 제조사 게임이 이미 쓰는 방식을 그대로 쓴다: 순자산 × 0.08. 기준선을 나누지
+   * 않으니 0 근처에서 터질 일이 없고, 두 게임과 같은 자로 읽힌다.
+   */
+  const GROUP_EQUITY_RATE = 0.08;
   /** 등급 문턱은 두 게임과 같다. 세 성적표를 나란히 읽을 수 있어야 한다. */
   const GROUP_CUTS = [['S', 7000], ['A', 4600], ['B', 3000], ['C', 1700]];
 
@@ -296,21 +303,20 @@
     if (!a) return null;
 
     const eq = combinedEquity(mfg, sky, airlineId);
-    const start = foundingEquity(mfg, sky, airlineId);
     const alive = !!a.alive && !(mfg.gameOver && mfg.gameOver.reason === 'bankrupt');
+    // 증자로 불린 자본은 그만큼 우리 몫이 아니다 — 제조사 점수가 이미 쓰는 규칙이다.
+    // 안 걸면 "성적을 깎는다"고 안내된 증자가 그룹 점수를 되레 올린다.
+    const ownership = 1 - (mfg.equityDilution || 0);
 
-    const rows = [];
-    // 창업 순자산을 모르는 옛 세이브에서는 성장 항목을 생략한다 — 0 을 기준으로 재면
-    // 있지도 않은 성장이 잡힌다.
-    const canGrow = start.total > 0;
-    if (canGrow) {
-      const mul = eq.total / start.total;
-      rows.push({
-        label: '그룹 자본 성장',
-        detail: `${mul.toFixed(2)}배 (창업 ${Math.round(start.total / MUSD)}M → ${Math.round(eq.total / MUSD)}M · 계열 상계 후)`,
-        points: Math.round(Math.max(0, mul - 1) * GROUP_GROWTH),
-      });
-    }
+    const rows = [
+      {
+        label: '그룹 자본',
+        detail: `${Math.round(eq.total / MUSD)}M × ${GROUP_EQUITY_RATE}${
+          ownership < 1 ? ` · 우리 몫 ${(ownership * 100).toFixed(0)}%` : ''
+        }${eq.internal ? ' · 계열 상계 후' : ''}`,
+        points: Math.round((Math.max(0, eq.total) / MUSD) * GROUP_EQUITY_RATE * ownership),
+      },
+    ];
     rows.push({
       label: '제조사 운영',
       detail: '누적 인도 · 시장 점유율 · 평판 (순자산은 그룹 자본에서 센다)',
@@ -330,7 +336,7 @@
         }
       }
     }
-    return { score, grade, alive, rows, equity: eq, founding: start };
+    return { score, grade, alive, rows, equity: eq };
   }
 
   /** 아직 인도되지 않은 자체 발주의 선급금 — 그룹 안에서만 오간 돈이다. */
@@ -416,9 +422,8 @@
     reconcileOrders,
     applyRivalry,
     combinedEquity,
-    foundingEquity,
     groupScore,
-    GROUP_GROWTH,
+    GROUP_EQUITY_RATE,
     GROUP_CUTS,
     internalPrepaid,
     beforeTurns,

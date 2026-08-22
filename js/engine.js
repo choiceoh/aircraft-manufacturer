@@ -370,9 +370,6 @@
       // 증자 횟수와 누적 지분 희석 — 최종 점수에서 그만큼 우리 몫이 아니다.
       equityRounds: 0,
       equityDilution: 0,
-      // 창업 순자산. 통합 모드의 그룹 성적이 "창업 대비 몇 배"로 재는데, 지금 다시
-      // 세면 그동안의 성장이 기준에 섞인다. 항공사 쪽 `startEquity` 와 같은 이유다.
-      startWorth: 0,
       // 조달 전략 — 원가 ↔ 공급 차질 위험.
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
@@ -444,9 +441,6 @@
       pushLog(s, 'event', `[시나리오 · ${scenario.name}] ${scenario.desc}`);
       pushLog(s, 'event', `목표: ${scenario.goalText}. 파산하면 어떤 목표든 실패다.`);
     }
-    // 상태가 다 선 뒤에 창업 순자산을 새긴다 — 승계 선단·라인·재고가 자리를 잡아야
-    // 실제 출발선이 나온다.
-    stampStartWorth(s);
     return s;
   }
 
@@ -456,12 +450,6 @@
    * 플레이어에게 후속기 개발을 버텨낼 캐시카우를 쥐여준다.
    * 대신 연비가 낮아 유가가 오르거나 경쟁사가 신형을 내면 급속히 경쟁력을 잃는다.
    */
-  /** 창업 순자산을 새긴다. `newGame` 이 상태를 다 세운 뒤에 부른다. */
-  function stampStartWorth(s) {
-    s.startWorth = netWorth(s);
-    return s;
-  }
-
   function seedLegacyProgram(s, preset) {
     // 1990년대 설계라 그 시절 엔진을 달고 있다 — 지금 기준으로는 연비가 처진다.
     // 어느 회사를 골랐든 승계라는 출발점은 같다: 이미 팔리는 기체, 이미 있는 선단.
@@ -611,10 +599,6 @@
   };
 
   function ensureShape(s) {
-    // 옛 세이브에는 창업 순자산이 없다. 지금 값으로 채우면 그 판의 그룹 성장이 0 에서
-    // 시작하므로, 없으면 통합 성적에서 성장 항목을 빼는 편이 정직하다 — 0 을 넣어
-    // "모르는 값"임을 남긴다(`groupScore` 가 0 을 보고 성장 항목을 생략한다).
-    if (typeof s.startWorth !== 'number') s.startWorth = 0;
     if (!s.effects) s.effects = {};
     if (!s.effects.grounded) {
       s.effects.grounded = {};
@@ -1067,19 +1051,32 @@
    * 값을 매기는 자리가 여기 하나여야 한다 — 부르는 쪽이 착수금 비율을 따로 알고
    * 있으면, 엔진의 상수를 바꾼 날 화면의 견적과 실제 청구액이 갈린다.
    */
+  /**
+   * 자체 발주 단가 — **원가다. 정가가 아니다.**
+   *
+   * 처음에는 정가로 넘겼다. "깎아도 한 주머니에서 다른 주머니로 옮길 뿐"이라고 생각했는데
+   * 틀렸다. 정가로 넘기면 제조사가 마진을 이익으로 잡고 항공사는 그 값을 자산으로
+   * 자본화한다 — 그룹 밖에서는 아무 일도 없었는데 대당 32.6M 이 생긴다. 자회사에
+   * 계속 대주는 것만으로 그룹 자기자본이 불어났다.
+   *
+   * 원가로 넘기면 만들 자리도 없다. 연결 회계가 내부거래 이익을 지우는 것과 같은 뜻이고,
+   * 규칙도 단순해진다 — **자회사에 대주는 값은 만드는 값이지 파는 값이 아니다.**
+   */
+  const inHouseUnitPrice = (p) => p.unitCostBase;
+
   function inHouseQuote(s, opts) {
     const o = opts || {};
     const qty = o.qty;
     const p = s.programs.find((x) => x.id === o.programId);
     if (!p) return null;
     const n = Number.isInteger(qty) && qty > 0 ? qty : 1;
-    const total = n * p.listPrice;
+    const total = n * inHouseUnitPrice(p);
     const deposit = Math.round(total * CONFIG.depositRate);
     return {
       programId: p.id,
       name: p.name,
       qty: n,
-      unitPrice: p.listPrice,
+      unitPrice: inHouseUnitPrice(p),
       total,
       deposit,
       balance: total - deposit,
@@ -1134,7 +1131,7 @@
     const airline = AIRLINES.find((a) => a.id === o.airlineId);
     if (!airline) return { ok: false, error: '없는 항공사입니다.' };
 
-    const unitPrice = p.listPrice;
+    const unitPrice = inHouseUnitPrice(p);
     const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
     s.cash += deposit;
     s.pending.revenue += deposit;
@@ -3080,6 +3077,14 @@
       // 자체 항공사로 나간 기체는 리포트에 따로 적는다. 껍데기가 이 목록을 보고
       // 항공사 계층에 실제 기재를 세운다 — 엔진은 항공사 계층을 알지 못한다.
       if (o.inHouse) {
+        // 자기 자회사에 넘긴 대수는 시장에서 이긴 것이 아니다. 세면 자기한테 팔아
+        // 점유율과 인도 점수를 만들 수 있다(통합 모드의 `operatingScore` 가 뺀다).
+        //
+        // **프로그램별로도 센다.** 인도 점수는 급별 가중(리저널 0.7 · 협동체 1.2 ·
+        // 광동체 3.2)이라, 총계만 두고 협동체로 가정해 빼면 광동체를 자회사에 넘길수록
+        // 덜 빼진다 — 가중이 큰 급일수록 자기한테 파는 값이 커진다.
+        s.stats.inHouseDelivered = (s.stats.inHouseDelivered || 0) + n;
+        p.inHouseDelivered = (p.inHouseDelivered || 0) + n;
         if (!report.inHouse) report.inHouse = [];
         // 항공사가 낼 잔금은 **총액 기준**이다 — 금융 조건·로열티·관세는 제조사 쪽
         // 사정이지 계열 항공사가 치르는 값이 아니다. 착수금과 합해 정가가 된다.
@@ -4938,9 +4943,20 @@
    */
   function operatingScore(s) {
     const ownership = 1 - (s.equityDilution || 0);
-    return Math.round(
-      (deliveredScore(s) + marketShare(s) * 4000 + s.reputation * 12) * ownership * (s.scoreMult || 1),
+    // **자회사에 넘긴 대수는 뺀다.** 시장에서 이긴 것이 아니라 왼손이 오른손에 준
+    // 것이다 — 안 빼면 자기한테 팔아 점유율과 인도 점수를 만들 수 있다.
+    const inHouse = (s.stats && s.stats.inHouseDelivered) || 0;
+    const mine = Math.max(0, s.stats.delivered - govDelivered(s) - inHouse);
+    const total = mine + s.stats.rivalDelivered;
+    const share = total > 0 ? mine / total : 0;
+    // 급별 가중이 다르므로 프로그램마다 그 프로그램의 가중으로 뺀다.
+    const delivered = s.programs.reduce(
+      (acc, p) =>
+        acc +
+        Math.max(0, (p.delivered || 0) - (p.inHouseDelivered || 0)) * (DELIVERED_SCORE_WEIGHT[p.segment] ?? 1.2),
+      0,
     );
+    return Math.round((delivered + share * 4000 + s.reputation * 12) * ownership * (s.scoreMult || 1));
   }
 
   function finalScore(s, bankrupt) {
@@ -5130,7 +5146,6 @@
     placeInHouseOrder,
     inHouseQuote,
     operatingScore,
-    stampStartWorth,
     dropAirlineRfps,
     cancelInHouseOrders,
     PLAYABLE_COMPANIES,
