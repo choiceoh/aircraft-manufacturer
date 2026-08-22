@@ -85,7 +85,7 @@
     const a = St.airline(s, airlineId);
     if (!a || !a.alive) return fail('없는 항공사입니다.');
     if (!Cities.get(city)) return fail('알 수 없는 공항입니다.');
-    if (count < 1) return fail('한 자리 이상이어야 합니다.');
+    if (!Number.isInteger(count) || count < 1) return fail('한 자리 이상의 정수여야 합니다.');
     if (unsoldSlots(s, city) < count) return fail(`${Cities.name(city)}에 남은 슬롯이 ${unsoldSlots(s, city)}자리뿐입니다.`);
     const cost = slotCost(s, airlineId, city, count);
     if (a.cash < cost) return fail('슬롯 매입비가 부족합니다.');
@@ -99,7 +99,7 @@
     const a = St.airline(s, airlineId);
     if (!a || !a.alive) return fail('없는 항공사입니다.');
     const free = freeSlots(s, airlineId, city);
-    if (count < 1) return fail('한 자리 이상이어야 합니다.');
+    if (!Number.isInteger(count) || count < 1) return fail('한 자리 이상의 정수여야 합니다.');
     if (free < count) return fail(`쓰지 않는 슬롯이 ${free}자리뿐입니다.`);
     a.slots[city] = St.slotsAt(a, city) - count;
     if (a.slots[city] <= 0) delete a.slots[city];
@@ -123,7 +123,7 @@
     if (s.routes.some((r) => r.airlineId === airlineId && r.active && Cities.pairKey(r.from, r.to) === key)) {
       return fail('이미 같은 구간에 노선이 있습니다.');
     }
-    if (freq < 1) return fail('주간 편수는 1 이상이어야 합니다.');
+    if (!Number.isInteger(freq) || freq < 1) return fail('주간 편수는 1 이상의 정수여야 합니다.');
     if (!planeIds || !planeIds.length) return fail('투입할 기재를 고르세요.');
 
     const dist = Cities.distance(from, to);
@@ -175,14 +175,21 @@
 
   const clampFare = (v) => Math.min(FARE_MAX_MUL, Math.max(FARE_MIN_MUL, v));
 
+  /**
+   * 운임·편수·서비스를 한꺼번에 조정한다.
+   *
+   * **전부 검사한 뒤에 하나라도 바꾼다.** 순서대로 적용하면 편수가 막혔을 때
+   * `{ ok: false }` 를 돌려주면서 운임 변경은 남아, 화면은 "실패"라고 말하는데 값은
+   * 이미 바뀌어 있다. 명령이 실패하면 상태는 손대지 않은 그대로여야 한다.
+   */
   function tuneRoute(s, airlineId, routeId, opts) {
     const r = s.routes.find((x) => x.id === routeId && x.airlineId === airlineId);
     if (!r || !r.active) return fail('없는 노선입니다.');
     const o = opts || {};
-    if (o.fareMul !== undefined) r.fareMul = clampFare(o.fareMul);
-    if (o.serviceExtra !== undefined) r.serviceExtra = Math.min(2, Math.max(0, o.serviceExtra));
+    if (o.fareMul !== undefined && !Number.isFinite(o.fareMul)) return fail('운임 배수가 수가 아닙니다.');
+    if (o.serviceExtra !== undefined && !Number.isFinite(o.serviceExtra)) return fail('서비스 등급이 수가 아닙니다.');
     if (o.freq !== undefined) {
-      if (o.freq < 1) return fail('주간 편수는 1 이상이어야 합니다.');
+      if (!Number.isInteger(o.freq) || o.freq < 1) return fail('주간 편수는 1 이상의 정수여야 합니다.');
       const dist = Cities.distance(r.from, r.to);
       const cap = Econ.capacity(St.flyingOn(s, r.id), dist, (t) => s.types[t]);
       if (o.freq > cap.maxFreq) return fail(`지금 기재로는 주 ${cap.maxFreq}왕복이 한계입니다.`);
@@ -190,8 +197,10 @@
       if (extra > 0 && (freeSlots(s, airlineId, r.from) < extra || freeSlots(s, airlineId, r.to) < extra)) {
         return fail('슬롯이 부족합니다.');
       }
-      r.freq = o.freq;
     }
+    if (o.fareMul !== undefined) r.fareMul = clampFare(o.fareMul);
+    if (o.serviceExtra !== undefined) r.serviceExtra = Math.min(2, Math.max(0, Math.round(o.serviceExtra)));
+    if (o.freq !== undefined) r.freq = o.freq;
     return done('노선을 조정했습니다.');
   }
 
@@ -229,7 +238,8 @@
     const year = St.yearFracOf(s);
     if (t.eis > year) return fail(`${t.name}은(는) ${Math.floor(t.eis)}년 ${Math.floor((t.eis % 1) * 4) + 1}분기부터 인도됩니다.`);
     if (t.end && t.end <= year) return fail(`${t.name}은(는) 단종됐습니다.`);
-    if (count < 1) return fail('한 대 이상이어야 합니다.');
+    // 소수 대수를 받으면 값은 1.1대 어치만 받고 인도 루프는 두 대를 만든다.
+    if (!Number.isInteger(count) || count < 1) return fail('한 대 이상의 정수여야 합니다.');
     const cost = t.price * count;
     if (a.cash < cost) return fail('발주 대금이 부족합니다.');
     a.cash -= cost;

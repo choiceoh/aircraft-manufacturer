@@ -955,6 +955,13 @@ test('명령: 실패하면 상태를 건드리지 않는다', () => {
   ];
   for (const f of bad) assert.strictEqual(f().ok, false, '막혀야 하는 명령이 통과했다');
   assert.strictEqual(JSON.stringify([a.cash, a.slots, s.routes.length, s.planes.map((p) => p.routeId)]), before, '실패한 명령이 상태를 바꿨다');
+
+  // 여러 항목을 한 번에 조정할 때가 특히 위험하다 — 순서대로 적용하면 편수에서 막혀도
+  // 운임은 이미 바뀌어 있어, 화면은 "실패"라 말하는데 값은 달라져 있다.
+  const r = St.routesOf(s, a.id)[0];
+  const snap = JSON.stringify([r.fareMul, r.freq, r.serviceExtra]);
+  assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { fareMul: 1.4, serviceExtra: 2, freq: 99999 }).ok, false);
+  assert.strictEqual(JSON.stringify([r.fareMul, r.freq, r.serviceExtra]), snap, '실패했는데 운임·서비스가 바뀌었다');
 });
 
 test('명령: 슬롯값은 한 자리마다 다시 매긴다', () => {
@@ -1228,4 +1235,199 @@ test('화면: 값을 재는 것만으로 상태가 바뀌지 않는다', () => {
   Act.slotCost(s, me.id, 'saopaulo', 8);
   SP.openCandidates(s, me.id);
   assert.strictEqual(JSON.stringify([me.slots, me.cash]), before, '조회가 상태를 바꿨다');
+});
+
+// ── 리뷰에서 잡힌 자리 ──
+
+test('채산: 원가는 기재가 실제로 뛸 수 있는 편수까지만 청구한다', () => {
+  // 시장은 기재 한계로 잘라 좌석을 내놓는데 원가가 설정 편수 그대로 청구하면,
+  // 중정비로 기체가 빠진 분기마다 멀쩡한 노선이 적자로 뒤집힌다.
+  const s = St.newGame(1234);
+  const r = St.routesOf(s, s.airlines[0].id)[0];
+  const flying = St.flyingOn(s, r.id);
+  const dist = C.distance(r.from, r.to);
+  const cap = Econ.capacity(flying, dist, (t) => s.types[t]);
+  const cost = (freq) =>
+    Econ.routeCost(Object.assign({}, r, { freq }), flying, {
+      typeOf: (t) => s.types[t], oil: 1, inflation: 1, serviceLevel: 3, pax: 0, revenue: 0,
+    }).total;
+  assert.ok(cost(r.freq) < cost(cap.maxFreq), '한계까지는 편수를 올릴수록 비싸야 한다');
+  assert.strictEqual(cost(cap.maxFreq * 5), cost(cap.maxFreq), '한계를 넘으면 더 청구하면 안 된다');
+});
+
+test('채산: 항속이 모자란 기재는 좌석을 만들지 않는다', () => {
+  // 명령 계층이 막고 있지만, 수송력을 재는 쪽이 스스로 확인하지 않으면 그 검사를
+  // 우회한 경로(옛 세이브, 손으로 넣은 노선)가 곧바로 좌석과 수입을 만든다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  a.slots.tokyo = 20;
+  a.slots.losangeles = 20;
+  const p = St.planesOf(s, a.id).find((x) => x.routeId === null);
+  assert.ok(!Econ.canFly(s.types[p.typeId], C.distance('tokyo', 'losangeles')), '못 나는 기체여야 검사가 산다');
+  s.routes.push({ id: 9001, airlineId: a.id, from: 'tokyo', to: 'losangeles', fareMul: 1, freq: 5, serviceExtra: 0, active: true, last: null });
+  p.routeId = 9001;
+  const out = M.resolveAll(s.routes, St.marketContext(s));
+  assert.ok(!out[9001], '태평양을 못 건너는 기체가 좌석을 내놨다');
+});
+
+test('상태: 공항이 닫히면 아예 뜨지 않는다', () => {
+  // 수요만 0 으로 두면 빈 비행기가 연료·승무원·착륙료를 그대로 물며 계속 난다.
+  const s = St.newGame(1234);
+  const r = St.routesOf(s, s.airlines[0].id)[0];
+  const plane = St.assignedTo(s, r.id)[0];
+  const hours0 = plane.hoursSinceCheck;
+  s.cityState[r.to].closedUntilTurn = s.turn + 2;
+  St.advance(s);
+  assert.strictEqual(r.last.seats, 0, '좌석을 내놓으면 안 된다');
+  assert.strictEqual(r.last.cost, 0, '원가가 붙으면 안 된다');
+  assert.strictEqual(plane.hoursSinceCheck, hours0, '비행시간도 안 쌓여야 한다');
+});
+
+test('상태: 접힌 회사에 기재가 인도되지 않는다', () => {
+  // 미인도 발주를 남겨 두면 몇 분기 뒤 이미 없는 회사 앞으로 기체가 들어와,
+  // 아무도 결산하지 않고 아무도 치우지 않는 유령 기재가 된다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'b737-400', 2).ok, true);
+  a.negativeQuarters = St.BALANCE.NEGATIVE_QUARTERS_TO_FOLD;
+  a.cash = -1e9;
+  for (let i = 0; i < 4; i++) St.advance(s);
+  assert.ok(!a.alive, '접혀야 한다');
+  assert.strictEqual(St.planesOf(s, a.id).length, 0, '유령 기재가 생겼다');
+  assert.strictEqual((s.orders || []).filter((o) => o.airlineId === a.id).length, 0, '주문이 남았다');
+});
+
+test('상태: 해가 바뀌면 유가 기준선도 옮긴다', () => {
+  // 안 옮기면 1998년 값(0.21)이 20년 내내 굳어 2008년 이후의 고유가 구간이 사라진다.
+  const s = St.newGame(1234);
+  assert.ok(Math.abs(s.world.oil - St.oilFor(1998)) < 1e-9);
+  for (let i = 0; i < 48; i++) St.advance(s);
+  assert.strictEqual(St.yearOf(s), 2010);
+  assert.ok(Math.abs(s.world.oil - St.oilFor(2010)) < 1e-9, `2010년 유가가 ${s.world.oil} 이다`);
+
+  // 제조사 쪽 지수는 해가 바뀌어도 살아남아야 한다 — 두 계층이 한 세계를 산다.
+  const t = St.newGame(1234);
+  St.syncWorld(t, { market: { fuelIndex: 1.5, demandIndex: 1 } });
+  for (let i = 0; i < 4; i++) St.advance(t);
+  assert.ok(Math.abs(t.world.oil - St.oilFor(1999) * 1.5) < 1e-9, '연동 지수가 날아갔다');
+});
+
+test('상태: 시작 연도에 아직 없는 기종으로 시작하지 않는다', () => {
+  // 예전에는 음수 기령이 2분기로 잘려 1990년 판이 A330·777 을 물고 시작했다.
+  for (const year of [1990, 1998, 2010]) {
+    const s = St.newGame(1234, { startYear: year });
+    for (const p of s.planes) {
+      const t = s.types[p.typeId];
+      assert.ok(t.eis <= year, `${year}년 판이 ${t.name}(${t.eis}년 취항)을 깔았다`);
+      assert.ok(p.ageQuarters >= 2, '기령이 2분기 미만일 수 없다');
+    }
+    assert.ok(s.routes.length > 10, `${year}년 판에 창업 노선망이 있어야 한다`);
+  }
+});
+
+test('상태: 결산 기록의 잔액이 실제 잔액과 같다', () => {
+  // 급한 매각을 기록 뒤에 두면 현금이 마이너스인 채로 기록되고 실제 잔액은 플러스가
+  // 되어, 화면의 재무 기록과 상태가 어긋난다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  a.cash = -200e6;
+  St.advance(s);
+  const r = a.results[a.results.length - 1];
+  assert.ok(a.cash > 0, '매각으로 메웠어야 한다');
+  assert.ok(Math.abs(r.cash - a.cash) < 1e-6, `기록 ${Math.round(r.cash / 1e6)}M vs 실제 ${Math.round(a.cash / 1e6)}M`);
+  // 자본은 결산 시점 값이라 지금과 딱 같지는 않다 — 그 뒤에 기재가 한 분기 늙었다.
+  // 매각 전 값이 남았는지만 가린다: 그러면 자본이 매각액만큼 어긋난다.
+  assert.ok(r.equity > 0 && Math.abs(r.equity - St.equity(s, a)) < 20e6, `자본 기록 ${Math.round(r.equity / 1e6)}M 이 매각 전 값이다`);
+});
+
+test('상태: 선급 발주가 자기자본을 꺼뜨리지 않는다', () => {
+  // 인도 전까지 선급금으로 안 잡으면 대형 발주 한 번에 자본이 두 분기 동안 발주액만큼
+  // 꺼졌다가 인도와 함께 되살아난다 — 그동안 차입 한도가 깎이고 자본잠식으로 오인된다.
+  const s = St.newGame(1234);
+  const a = St.airline(s, 'carta');
+  const before = St.equity(s, a);
+  const cap = St.debtCap(s, a);
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'b747-400', 3).ok, true);
+  assert.ok(Math.abs(St.equity(s, a) - before) < 1e-6, '발주만으로 자본이 움직였다');
+  assert.ok(Math.abs(St.debtCap(s, a) - cap) < 1e-6, '차입 한도가 움직였다');
+});
+
+test('상태: 팔 수 있는 프로그램만 기종 표에 든다', () => {
+  // 개발 중이거나 심사 중인 설계는 아직 존재하지 않는 기체다 — 넣으면 항공사가
+  // 그걸 발주하고 노선에 붙인다.
+  const spec = { id: 'p1', name: '시제기', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  for (const phase of ['dev', 'cert', 'cancelled']) {
+    assert.ok(!St.typeTable([Object.assign({}, spec, { phase })]).p1, `${phase} 인데 표에 들었다`);
+  }
+  assert.ok(St.typeTable([Object.assign({}, spec, { phase: 'production' })]).p1, '양산 기종은 들어야 한다');
+});
+
+test('상태: 프로그램이 바뀌면 기종 표가 따라간다', () => {
+  // 표를 한 번 만들어 두고 잊으면, 새로 나온 기체는 typeOf 가 undefined 를 돌려주고
+  // 개량된 기체는 옛 값·옛 연비로 계속 굴러간다.
+  const spec = { id: 'p1', name: '신형', phase: 'dev', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const programs = [spec];
+  const s = St.newGame(1234, { programs });
+  assert.ok(!s.types.p1, '개발 중에는 없어야 한다');
+  spec.phase = 'production';
+  St.advance(s, { programs });
+  assert.ok(s.types.p1, '양산에 들어가면 표에 와야 한다');
+  spec.listPrice = 120;
+  St.advance(s, { programs });
+  assert.strictEqual(s.types.p1.price, 120e6, '값이 바뀌면 따라가야 한다');
+
+  // 이미 굴러다니는 기재의 기종은 표에서 빠져도 남는다 — 단종은 "새로 못 산다"이지
+  // "하늘에서 사라진다"가 아니다.
+  s.planes.push({ id: 99999, typeId: 'p1', airlineId: s.airlines[0].id, ageQuarters: 4, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  spec.phase = 'cancelled';
+  St.refreshTypes(s, programs);
+  assert.ok(s.types.p1, '굴러다니는 기체의 기종이 사라졌다');
+});
+
+test('기종: 정비 편의 설계가 항공사 계층에서도 값을 한다', () => {
+  // 입찰 점수는 이미 운항원가에 0.88 을 걸고 개발비·기체값을 더 받는다. 여기서
+  // 빠뜨리면 항공사 계층에서만 그 대가가 공짜가 된다.
+  const base = { id: 'x', name: '시험기', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const plain = T.fromProgram(Object.assign({}, base, { maintainable: false }), '회사');
+  const maint = T.fromProgram(Object.assign({}, base, { maintainable: true }), '회사');
+  assert.ok(maint.maint < plain.maint, '정비비가 싸야 한다');
+  assert.ok(maint.turn < plain.turn, '지상조업이 짧아야 한다');
+  assert.strictEqual(maint.seats, plain.seats, '제원까지 달라지면 안 된다');
+});
+
+test('기종: 우리 터보프롭 설계도 제트기 속도로 날지 않는다', () => {
+  // 급별 상수만 쓰면 1998년 리저널 설계가 기본으로 다는 PW127 터보프롭이 815km/h 로
+  // 날아, 같은 엔진을 단 ATR 보다 훨씬 많은 편을 뛴다.
+  const base = { id: 'x', name: '시험기', segment: 'regional', seats: 70, range: 1800, efficiency: 55, listPrice: 30 };
+  const prop = T.fromProgram(Object.assign({}, base, { engine: 'pw127' }), '회사');
+  const jet = T.fromProgram(Object.assign({}, base, { engine: 'cf34' }), '회사');
+  assert.ok(prop.speed < jet.speed, `터보프롭이 느려야 한다 (${prop.speed} vs ${jet.speed})`);
+  assert.ok(prop.speed < T.SPEED.regional, '리저널 제트 상수보다 느려야 한다');
+  const d = C.distance('seoul', 'tokyo');
+  assert.ok(Econ.roundTripHours(prop, d) > Econ.roundTripHours(jet, d), '한 바퀴가 더 길어야 한다');
+});
+
+test('환승: 실제로 뜬 편수로 매력을 잰다', () => {
+  // 중정비로 기재가 빠져 주 2회밖에 못 뜨는 노선이 주 100회짜리 매력으로 환승 수요를
+  // 끌어가면, 남은 빈자리에 감당 못 할 손님이 몰린다.
+  const s = St.newGame(1234);
+  const out = M.resolveAll(s.routes, St.marketContext(s));
+  for (const r of s.routes) {
+    if (!out[r.id]) continue;
+    const dist = C.distance(r.from, r.to);
+    const cap = Econ.capacity(St.flyingOn(s, r.id), dist, (t) => s.types[t]);
+    assert.strictEqual(out[r.id].freq, Math.min(r.freq, cap.maxFreq), `${r.from}–${r.to}: 시장이 내놓은 편수가 한계와 다르다`);
+  }
+});
+
+test('명령: 수가 아닌 값과 소수를 막는다', () => {
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const r = St.routesOf(s, a.id)[0];
+  // 소수 대수를 받으면 값은 1.1대 어치만 받고 인도 루프는 두 대를 만든다.
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'b737-400', 1.1).ok, false, '소수 대수');
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'b737-400', NaN).ok, false, 'NaN 대수');
+  assert.strictEqual(Act.buySlots(s, a.id, a.home, 1.5).ok, false, '소수 슬롯');
+  assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { freq: 2.5 }).ok, false, '소수 편수');
+  assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { fareMul: NaN }).ok, false, 'NaN 운임');
 });

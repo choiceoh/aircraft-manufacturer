@@ -18,11 +18,13 @@
    * devMult   : 개발비 배수 (통합 난이도)
    * timeMult  : 개발기간 배수
    * comfort   : 객실 쾌적성 가산 (터보프롭은 느리고 시끄러워 마이너스)
+   * cruise    : 순항속도 (km/h). 적어 둔 엔진만 — 나머지는 급별 기본값을 쓴다
+   *             (터보프롭은 제트기의 3분의 2 속도라 가동률과 노선 공급이 통째로 다르다)
    * eis/end   : 신규 채택 가능 구간, 소수 연도
    */
   const ENGINES = [
     // ── 리저널 ──
-    { id: 'pw127', maker: 'P&W 캐나다', name: 'PW127 (터보프롭)', segments: ['regional'], eis: 1988, end: null, eff: 9, costMult: 0.9, riskMult: 0.85, devMult: 0.95, timeMult: 0.95, comfort: -9 },
+    { id: 'pw127', maker: 'P&W 캐나다', name: 'PW127 (터보프롭)', segments: ['regional'], eis: 1988, end: null, eff: 9, costMult: 0.9, riskMult: 0.85, devMult: 0.95, timeMult: 0.95, comfort: -9, cruise: 540 },
     { id: 'cf34-3', maker: 'GE', name: 'CF34-3', segments: ['regional'], eis: 1992, end: 2008, eff: -2, costMult: 0.96, riskMult: 0.95, devMult: 1.0, timeMult: 1.0, comfort: 0 },
     { id: 'ae3007', maker: '롤스로이스', name: 'AE 3007', segments: ['regional'], eis: 1996, end: 2016, eff: 1, costMult: 0.98, riskMult: 1.0, devMult: 1.0, timeMult: 1.0, comfort: 0 },
     { id: 'cf34-8', maker: 'GE', name: 'CF34-8', segments: ['regional'], eis: 2001, end: null, eff: 3, costMult: 1.0, riskMult: 1.0, devMult: 1.02, timeMult: 1.0, comfort: 1 },

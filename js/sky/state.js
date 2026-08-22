@@ -133,12 +133,36 @@
     return n;
   }
 
-  /** 기종 표 — 경쟁 카탈로그와 플레이어 프로그램을 한 모양으로 모은다. */
+  /**
+   * 기종 표 — 경쟁 카탈로그와 플레이어 프로그램을 한 모양으로 모은다.
+   *
+   * 프로그램은 **팔 수 있는 것만** 넣는다. 개발 중이거나 형식증명 심사 중인 설계는
+   * 아직 존재하지 않는 기체다 — 넣으면 항공사가 그걸 발주하고 노선에 붙인다.
+   */
+  const SELLABLE_PHASES = new Set(['production', 'sold']);
+  const sellable = (p) => !p.phase || SELLABLE_PHASES.has(p.phase);
+
   function typeTable(programs) {
     const out = {};
     for (const a of Fleet.AIRCRAFT) out[a.id] = Types.fromRival(a, Design.evaluate);
-    for (const p of programs || []) out[p.id] = Types.fromProgram(p);
+    for (const p of programs || []) if (sellable(p)) out[p.id] = Types.fromProgram(p);
     return out;
+  }
+
+  /**
+   * 프로그램이 바뀌었으면 기종 표를 다시 만든다.
+   *
+   * 제조사 계층은 분기마다 프로그램을 띄우고 인증하고 개량한다. 표를 한 번 만들어 두고
+   * 잊으면, 새로 나온 기체는 `typeOf` 가 `undefined` 를 돌려주고(발주·노선이 그 자리에서
+   * 깨진다) 개량된 기체는 옛 값·옛 연비로 계속 굴러간다. 이미 굴러다니는 기재가 참조하는
+   * 기종은 표에서 빠져도 남겨 둔다 — 단종은 "새로 못 산다"이지 "하늘에서 사라진다"가 아니다.
+   */
+  function refreshTypes(s, programs) {
+    if (programs) s.programs = programs;
+    const next = typeTable(s.programs);
+    for (const p of s.planes) if (!next[p.typeId] && s.types[p.typeId]) next[p.typeId] = s.types[p.typeId];
+    s.types = next;
+    return s;
   }
 
   /** 시장·채산이 상태를 읽는 통로. 두 계층이 만나는 자리는 여기 하나다. */
@@ -152,6 +176,7 @@
       totalSlots: (city) => totalSlots(s, city),
       feedCount: (aid, city, selfRouteId) => feedCount(s, aid, city, selfRouteId),
       demand: (a, b) => demandFor(s, a, b),
+      closed: (city) => isClosed(s.cityState[city] || {}, s.turn),
       inflation: s.world.inflation,
       oil: s.world.oil,
     };
@@ -177,6 +202,11 @@
     let v = 1;
     for (const e of cs.effects || []) if (turn <= e.untilTurn) v *= e.mult;
     return Math.min(3, Math.max(0.2, v));
+  }
+
+  /** 양끝 중 한 곳이라도 닫혔으면 이 노선은 이번 분기에 안 뜬다. */
+  function routeClosed(s, r) {
+    return isClosed(s.cityState[r.from] || {}, s.turn) || isClosed(s.cityState[r.to] || {}, s.turn);
   }
 
   // ── 회계 ──
@@ -222,14 +252,23 @@
       .reduce((sum, p) => sum + types[p.typeId].price / B.DEPRECIATION_QUARTERS, 0);
   }
 
-  /** 자기자본 = 현금 + 기재 + 슬롯 권리금 − 부채. 슬롯은 임차라 자산이 아니다. */
+  /**
+   * 자기자본 = 현금 + 기재 + 슬롯 권리금 + **선급 발주** − 부채. 슬롯은 임차라 자산이 아니다.
+   *
+   * 발주 대금은 이미 현금에서 빠져나갔다. 인도 전까지 선급금으로 잡아 주지 않으면 대형
+   * 발주 한 번에 자기자본이 두 분기 동안 발주액만큼 꺼졌다가 인도와 함께 되살아난다 —
+   * 그동안 차입 한도가 깎이고 자본잠식으로 오인된다(3대 발주에 자본 2,724M → 1,558M).
+   */
   function equity(s, a) {
     let slots = 0;
     for (const city of Object.keys(a.slots || {})) {
       const c = Cities.get(city);
       slots += a.slots[city] * B.SLOT_BASE_PRICE * ((c.standing + c.tour) / 100) * s.world.inflation * 0.5 * Econ.BALANCE.FARE_SCALE;
     }
-    return a.cash + fleetValue(s, planesOf(s, a.id)) + slots - a.debt;
+    const prepaid = (s.orders || [])
+      .filter((o) => o.airlineId === a.id)
+      .reduce((x, o) => x + (s.types[o.typeId] ? s.types[o.typeId].price * o.count : 0), 0);
+    return a.cash + fleetValue(s, planesOf(s, a.id)) + slots + prepaid - a.debt;
   }
 
   function interestRate(s, a) {
@@ -304,7 +343,11 @@
 
     for (const seed2 of Data.AIRLINES) {
       for (const typeId of Object.keys(seed2.startFleet)) {
-        const t = types[typeId];
+        const t = eraEquivalent(types, typeId, startYear);
+        // 시작 연도에 아직 안 나온 기종은 깔 수 없다. 예전에는 음수 기령이 2분기로
+        // 잘려 1990년 판이 A330·777 을 물고 시작했다. 같은 급에서 그 시절에 있던
+        // 기체로 바꿔 주고, 그런 것도 없으면 그 회사는 그만큼 작게 시작한다.
+        if (!t) continue;
         // 취항 전에 만들어진 기체는 없다 — 1998년에 1996년 취항 기종을 6년 된 것으로
         // 깔면 정비비는 부풀고 자산가치는 깎인다.
         const oldest = Math.max(2, Math.min(26, Math.round((startYear - t.eis) * 4)));
@@ -312,7 +355,7 @@
           const age = rng.int(2, oldest);
           planes.push({
             id: nextId++,
-            typeId,
+            typeId: t.id,
             airlineId: seed2.id,
             ageQuarters: age,
             routeId: null,
@@ -365,6 +408,25 @@
     bootstrapRoutes(s, rng);
     s.rngState = rng.getState();
     return s;
+  }
+
+  /**
+   * 그 시절에 실제로 있던 같은 급 기체를 고른다.
+   *
+   * 창업 기단은 1998년을 보고 적어 둔 것이라, 시나리오 시작 연도를 앞당기면 아직 나오지
+   * 않은 기종이 섞인다. 같은 급에서 그 시점에 살 수 있는 것 중 **가장 최신**을 쓴다 —
+   * 창업 기단은 그 회사가 최근까지 사들인 기체라는 뜻이기 때문이다.
+   */
+  function eraEquivalent(types, typeId, year) {
+    const want = types[typeId];
+    if (!want) return null;
+    const inService = (t) => t.eis <= year && (!t.end || t.end > year);
+    if (inService(want)) return want;
+    const alt = Object.keys(types)
+      .map((id) => types[id])
+      .filter((t) => t.segment === want.segment && !t.own && inService(t))
+      .sort((x, y) => y.eis - x.eis || (x.id < y.id ? -1 : 1));
+    return alt[0] || null;
   }
 
   /**
@@ -426,15 +488,20 @@
   function advance(s, opts) {
     const o = opts || {};
     const rng = createRng(s.rngState);
+    // 제조사 계층이 이번 분기에 무엇을 인증했는지 먼저 반영한다.
+    refreshTypes(s, o.programs);
     scheduleChecks(s);
     if (o.beforeMarket) o.beforeMarket(s, rng);
 
     const outcomes = Market.resolveAll(s.routes, marketContext(s));
     settle(s, outcomes);
+    // **기록을 남기기 전에** 급한 매각을 끝낸다. 뒤에 두면 현금이 마이너스인 채로
+    // 기록되고 실제 잔액은 플러스가 되어, 화면의 재무 기록과 상태가 어긋난다.
+    resolveDistress(s);
+    snapshotBalances(s);
 
     ageFleet(s);
     deliverOrders(s);
-    resolveDistress(s);
 
     // 해가 바뀌는 경계에서 물가·성장·여행지수를 올린다 — 새해 첫 화면부터 새 값이 보이도록.
     if (s.turn + 1 < s.totalTurns && (s.turn + 1) % 4 === 0) yearTick(s);
@@ -462,15 +529,14 @@
           continue;
         }
         const dist = Cities.distance(r.from, r.to);
-        const cap = Econ.capacity(flying, dist, (t) => s.types[t]);
-        const effective = Object.assign({}, r, { freq: Math.min(r.freq, cap.maxFreq) });
-        const rc = Econ.routeCost(effective, flying, {
+        const rc = Econ.routeCost(r, flying, {
           typeOf: (t) => s.types[t],
           oil: s.world.oil,
           inflation: s.world.inflation,
           serviceLevel: a.serviceLevel,
           pax: out.pax,
           revenue: out.revenue,
+          closed: routeClosed(s, r),
         });
 
         // 이 노선이 물고 있는 슬롯의 임차료를 노선 손익에 얹는다. 임차료는 회사 단위로
@@ -478,6 +544,7 @@
         // 실제로는 슬롯값이 그보다 커서 회사를 갉아먹는데도. 주간 왕복 1회에 양 끝
         // 슬롯이 하나씩이므로 편수가 곧 점유 슬롯 수다.
         const occupied = r.freq * (slotRent(s, a.id, r.from) + slotRent(s, a.id, r.to));
+
 
         for (const k of Object.keys(cost)) cost[k] += rc[k] || 0;
         pax += out.pax;
@@ -537,6 +604,22 @@
     }
   }
 
+  /**
+   * 급한 매각까지 끝난 뒤의 잔액을 이번 분기 기록에 다시 새긴다.
+   *
+   * 손익 항목(수입·연료·세금…)은 매각과 무관하니 그대로 두고, **잔액만** 고친다.
+   * 매각 대금을 순익에 넣으면 노선이 돈을 번 것으로 보인다.
+   */
+  function snapshotBalances(s) {
+    for (const a of living(s)) {
+      const r = a.results[a.results.length - 1];
+      if (!r || r.turn !== s.turn) continue;
+      r.cash = a.cash;
+      r.debt = a.debt;
+      r.equity = equity(s, a);
+    }
+  }
+
   function ageFleet(s) {
     for (const p of s.planes) {
       p.ageQuarters += 1;
@@ -549,8 +632,8 @@
       if (!Econ.canFly(t, dist)) continue;
       // 실제로 굴린 만큼만 시계가 돈다 — 세워 둔 기체는 달력으로만 늙는다.
       const flying = flyingOn(s, r.id);
-      const cap = Econ.capacity(flying, dist, (x) => s.types[x]);
-      const hours = Econ.blockHoursByPlane(flying, Math.min(r.freq, cap.maxFreq), dist, (x) => s.types[x]);
+      const freq = Econ.effectiveFreq(r, flying, dist, (x) => s.types[x], routeClosed(s, r));
+      const hours = Econ.blockHoursByPlane(flying, freq, dist, (x) => s.types[x]);
       p.hoursSinceCheck += hours[p.id] || 0;
     }
   }
@@ -567,6 +650,9 @@
     const due = s.orders.filter((o) => o.deliverTurn <= s.turn + 1);
     if (!due.length) return;
     for (const o of due) {
+      // 죽은 회사에는 인도하지 않는다 (fold 가 지우지 못한 경로가 있어도 여기서 막힌다).
+      const a = airline(s, o.airlineId);
+      if (!a || !a.alive) continue;
       for (let i = 0; i < o.count; i++) {
         s.planes.push({
           id: s.nextId++,
@@ -622,6 +708,9 @@
     a.slots = {};
     s.routes = s.routes.filter((r) => r.airlineId !== a.id);
     s.planes = s.planes.filter((p) => p.airlineId !== a.id);
+    // 미인도 발주도 함께 지운다. 남겨 두면 몇 분기 뒤 이미 없는 회사 앞으로 기체가
+    // 들어와, 아무도 결산하지 않고 아무도 치우지 않는 유령 기재가 된다.
+    if (s.orders) s.orders = s.orders.filter((o) => o.airlineId !== a.id);
   }
 
   /** 해가 바뀔 때 — 물가·도시 성장·여행 보급이 한 칸씩 오른다. */
@@ -629,6 +718,11 @@
     const nextYear = s.startYear + Math.floor((s.turn + 1) / 4);
     s.world.inflation = inflationFor(nextYear);
     s.world.travelIndex = root.AirlinerDemand.travelIndex(nextYear);
+    // 유가 기준선도 함께 옮긴다. 안 옮기면 1998년 값(0.21)이 20년 내내 굳어
+    // 2008년 이후의 고유가 구간이 통째로 사라진다. 제조사 쪽에서 받아 온 지수는
+    // 그대로 얹는다 — 두 계층이 한 세계를 살아야 한다.
+    const mul = s.world.oil / oilFor(yearOf(s));
+    s.world.oil = oilFor(nextYear) * (Number.isFinite(mul) && mul > 0 ? mul : 1);
     for (const c of Cities.CITIES) {
       const cs = s.cityState[c.id];
       if (cs) cs.dev *= c.growth;
@@ -674,10 +768,12 @@
     totalSlots,
     feedCount,
     typeTable,
+    refreshTypes,
     marketContext,
     demandFor,
     boostAt,
     isClosed,
+    routeClosed,
     overhead,
     slotRent,
     slotRentTotal,

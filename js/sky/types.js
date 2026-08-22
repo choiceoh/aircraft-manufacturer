@@ -33,6 +33,7 @@
 
   const Fleet = root.AirlinerFleet;
   const Design = root.AirlinerDesign;
+  const Engines = root.AirlinerEngines;
 
   /**
    * 순항속도 (km/h) — sky 카탈로그가 급별로 거의 상수다.
@@ -49,6 +50,13 @@
 
   /** 승무원비 = 기본 + 좌석당. 세대와 무관하다 — 사람 값은 기술로 안 준다. */
   const CREW = { regional: [250, 1.3], narrow: [250, 1.2], wide: [230, 2.1] };
+
+  /**
+   * 정비 편의 설계가 깎는 값. 입찰 점수(`js/bidding.js`)가 운항원가에 거는 0.88 과 같은
+   * 자릿수로 두되, 정비비 쪽에 무게를 싣는다 — 그게 이 설계가 실제로 사는 것이다.
+   */
+  const MAINTAINABLE_MAINT = 0.86;
+  const MAINTAINABLE_TURN = 0.94;
 
   /** 편도 지상조업 시간 = 기본 + 좌석당. 큰 기체일수록 오래 세워 둔다. */
   const TURN = { regional: [0.3, 0.0019], narrow: [0.3, 0.0019], wide: [0.45, 0.0028] };
@@ -92,9 +100,9 @@
       /** 달러. 이 게임의 정가($M)를 그대로 옮긴다 — 위 주석 참고. */
       price: o.priceMusd * 1e6,
       fuel: round3((o.seats * FUEL_PER_SEAT[seg]) / gen),
-      maint: Math.round((o.seats * MAINT_PER_SEAT[seg]) / gen),
+      maint: Math.round(((o.seats * MAINT_PER_SEAT[seg]) / gen) * (o.maintainable ? MAINTAINABLE_MAINT : 1)),
       crew: Math.round(crewBase + o.seats * crewPerSeat),
-      turn: round3(turnBase + o.seats * turnPerSeat),
+      turn: round3((turnBase + o.seats * turnPerSeat) * (o.maintainable ? MAINTAINABLE_TURN : 1)),
       prestige: prestigeOf(o.seats, wide, gen),
       /** 이 기종을 살 수 있는 구간 (소수 연도). */
       eis: o.eis,
@@ -162,6 +170,7 @@
 
   /** 플레이어가 만든 기종 → 같은 모양. 인증을 마친 프로그램만 팔 수 있다. */
   function fromProgram(p, companyName) {
+    const eng = p.engine && Engines.get ? Engines.get(p.engine) : null;
     return build({
       id: p.id,
       name: p.name,
@@ -169,8 +178,15 @@
       segment: p.segment,
       seats: p.seats,
       range: p.range,
+      // 엔진이 순항속도를 정한다. 급별 상수만 쓰면 1998년 리저널 설계가 기본으로 다는
+      // PW127 터보프롭이 815km/h 로 날아, 같은 엔진을 단 ATR 보다 훨씬 많은 편을 뛴다.
+      speed: eng && eng.cruise,
       priceMusd: p.listPrice,
       gen: programGen(p),
+      // 정비 편의 설계는 정비비와 지상조업 시간을 실제로 줄인다. 입찰 점수는 이미
+      // 운항원가에 0.88 을 걸고 개발비·기체값을 더 받는데, 여기서 빠뜨리면 항공사
+      // 계층에서만 그 대가가 공짜가 된다.
+      maintainable: !!p.maintainable,
       eis: null, // 인증 시점은 프로그램이 들고 있다 (certTurn)
       end: null,
       own: true,

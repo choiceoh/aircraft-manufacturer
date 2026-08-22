@@ -197,6 +197,9 @@
    */
   function resolvePair(a, b, routes, ctx) {
     if (!routes.length) return [];
+    // 공항이 닫혔으면 아무도 뜨지 않는다. 수요만 0 으로 두면 빈 비행기가 연료와
+    // 착륙료를 그대로 물며 계속 난다.
+    const closed = !!(ctx.closed && (ctx.closed(a.id) || ctx.closed(b.id)));
     const dist = Cities.between(a, b);
     const standard = Econ.standardFare(dist, ctx.inflation);
 
@@ -210,7 +213,9 @@
       if (!planes.length) continue;
       const cap = Econ.capacity(planes, dist, ctx.typeOf);
       if (!cap.usable) continue;
-      const freq = Math.min(r.freq, cap.maxFreq);
+      // 유효 편수는 채산과 **같은 함수**로 낸다 — 따로 세면 시장이 내놓은 좌석과
+      // 청구되는 원가가 어긋난다.
+      const freq = Econ.effectiveFreq(r, planes, dist, ctx.typeOf, closed);
       if (freq <= 0) continue;
 
       const seats = Econ.quarterlySeats(freq, cap.avgSeats);
@@ -247,6 +252,7 @@
       offers.push({
         routeId: r.id,
         airlineId: airline.id,
+        freq,
         fare,
         seats,
         remaining: seats,
@@ -279,6 +285,8 @@
     return offers.map((o) => ({
       routeId: o.routeId,
       airlineId: o.airlineId,
+      /** 이번 분기에 **실제로 뜬** 주간 왕복 편수. 환승 매력도가 이 값을 읽는다. */
+      freq: o.freq,
       bizPax: o.biz,
       leiPax: o.lei,
       pax: o.biz + o.lei,
@@ -299,11 +307,14 @@
    *
    * 편수는 **병목 구간**이 정한다. 한쪽이 주 2회면 그 여정은 주 2회짜리다.
    */
-  function connectUtility(airline, ra, rc, aId, cId, hubId, fare, direct, ctx) {
+  function connectUtility(airline, ra, rc, aId, cId, hubId, fare, direct, ctx, freqA, freqB) {
     const standard = Econ.standardFare(direct, ctx.inflation);
     const logFare = Math.log(Math.max(0.05, fare / standard));
     const service = ((airline.serviceLevel || 1) * 2 + (ra.serviceExtra || 0) + (rc.serviceExtra || 0)) / 2;
-    const freq = Math.min(ra.freq, rc.freq);
+    // **설정 편수가 아니라 이번 분기에 실제로 뜬 편수**를 쓴다. 중정비로 기재가 빠져
+    // 주 2회밖에 못 뜨는 노선이 주 100회짜리 매력으로 환승 수요를 끌어가면, 남은
+    // 빈자리에 감당 못 할 손님이 몰린다.
+    const freq = Math.min(freqA, freqB);
     const hubGrip = ctx.slotsAt(airline.id, hubId) / Math.max(1, ctx.totalSlots(hubId));
     return (
       -B.LEI_PRICE_SENS * 0.5 * logFare -
@@ -373,6 +384,9 @@
             if (aId === cId) continue;
             // 같은 항공사가 A–C 직항을 갖고 있어도 후보로 둔다. 직항은 1단계에서
             // 이미 로컬 수요를 가져갔고, 여기서 채우는 것은 그러고도 남은 좌석이다.
+            const oa = base[ra.id];
+            const ob = base[rc.id];
+            if (!oa || !ob) continue;
             const direct = Cities.distance(aId, cId);
             if (direct < 1) continue;
             const da = Cities.distance(aId, hubId);
@@ -392,7 +406,7 @@
               fare,
               distA: da,
               distB: db,
-              util: connectUtility(airline, ra, rc, aId, cId, hubId, fare, direct, ctx),
+              util: connectUtility(airline, ra, rc, aId, cId, hubId, fare, direct, ctx, oa.freq, ob.freq),
               want: 0,
               pax: 0,
             });

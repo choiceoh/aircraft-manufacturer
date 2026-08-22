@@ -87,14 +87,22 @@
     return type.range >= distanceKm * 1.05;
   }
 
-  /** 노선에 투입된 기재가 만들어내는 수송력. */
+  /**
+   * 노선에 투입된 기재가 만들어내는 수송력.
+   *
+   * **항속이 모자란 기체는 여기서 빠진다.** 명령 계층이 이미 막고 있지만, 수송력을 재는
+   * 쪽이 스스로 확인하지 않으면 그 검사를 우회한 경로(옛 세이브, 손으로 넣은 노선)가
+   * 곧바로 좌석과 수입을 만든다 — 5,950km 짜리 A321 이 8,817km 태평양에서 분기
+   * 19,240석을 내놓는 것을 실제로 봤다.
+   */
   function capacity(planes, distanceKm, typeOf) {
-    if (!planes.length) return { maxFreq: 0, avgSeats: 0, minRange: 0, avgAgeQuarters: 0, usable: false };
+    const able = planes.filter((p) => canFly(typeOf(p.typeId), distanceKm));
+    if (!able.length) return { maxFreq: 0, avgSeats: 0, minRange: 0, avgAgeQuarters: 0, usable: false };
     let freqSum = 0;
     let seatWeighted = 0;
     let minRange = Infinity;
     let ageSum = 0;
-    for (const p of planes) {
+    for (const p of able) {
       const t = typeOf(p.typeId);
       const perPlane = B.MAX_WEEKLY_HOURS / roundTripHours(t, distanceKm);
       freqSum += perPlane;
@@ -107,9 +115,24 @@
       maxFreq,
       avgSeats: freqSum <= 0 ? 0 : seatWeighted / freqSum,
       minRange: minRange === Infinity ? 0 : minRange,
-      avgAgeQuarters: ageSum / planes.length,
+      avgAgeQuarters: ageSum / able.length,
       usable: maxFreq > 0,
     };
+  }
+
+  /**
+   * 이 노선이 **이번 분기에 실제로 뜨는** 주간 왕복 편수.
+   *
+   * 시장·원가·정비시간이 각자 이 값을 다시 세면 서로 어긋난다. 실제로 어긋났다: 시장은
+   * 기재 한계로 잘라 좌석을 내놓는데 원가는 설정된 편수 그대로 청구해, 중정비로 기체가
+   * 빠진 분기마다 멀쩡한 노선이 적자로 뒤집혔다. 한 군데서 답한다.
+   *
+   * `closed` 는 양끝 공항 중 하나라도 폐쇄된 경우다 — 그때는 아예 안 뜬다. 수요만 0 으로
+   * 두면 빈 비행기가 연료·승무원·착륙료를 그대로 물며 계속 난다.
+   */
+  function effectiveFreq(route, planes, distanceKm, typeOf, closed) {
+    if (closed || !route.active || route.freq <= 0 || !planes.length) return 0;
+    return Math.min(route.freq, capacity(planes, distanceKm, typeOf).maxFreq);
   }
 
   /** 분기 총 공급 좌석 (편도 편수 × 좌석). */
@@ -158,7 +181,11 @@
     const from = Cities.get(route.from);
     const to = Cities.get(route.to);
     const dist = Cities.distance(route.from, route.to);
-    const legs = quarterlyLegs(route.freq);
+    // **여기서 스스로 자른다.** 부르는 쪽이 자르기를 기대하면 언젠가 한 곳이 빠뜨리고,
+    // 그러면 시장이 내놓지도 않은 편에 연료와 승무원 값이 붙는다.
+    const freq = effectiveFreq(route, planes, dist, ctx.typeOf, ctx.closed);
+    if (freq <= 0) return zeroCost();
+    const legs = quarterlyLegs(freq);
     const inflation = ctx.inflation === undefined ? 1 : ctx.inflation;
     const oil = ctx.oil === undefined ? 1 : ctx.oil;
     const shares = legShares(planes, dist, ctx.typeOf);
@@ -220,5 +247,6 @@
     legShares,
     blockHoursByPlane,
     routeCost,
+    effectiveFreq,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
