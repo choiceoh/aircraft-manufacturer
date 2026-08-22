@@ -45,6 +45,9 @@
   // ─────────────────────────────── 렌더 ───────────────────────────────
 
   function render() {
+    // 통합 모드에서 항공사 화면을 보고 있는 동안 제조사 쪽이 그리면 남의 패널을 덮는다.
+    // 상태는 이미 갱신돼 있으니, 다시 이 계층으로 돌아올 때 껍데기가 render 를 부른다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('maker')) return;
     const s = ui.state;
     const anim = ui.animate;
     ui.animate = null;
@@ -213,6 +216,9 @@
   }
 
   function toast(text, tone) {
+    // 토스트도 공용 DOM 이다. 화면을 안 잡은 계층이 띄우면 남의 화면에 남의 소식이 뜬다
+    // (항공사 화면에 "제조사 경영을 시작한다"가 떴다).
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('maker')) return;
     const el = document.getElementById('toast');
     el.className = 'toast show ' + (tone || '');
     // 결정 결과·엔진 오류 문구에는 플레이어가 지은 프로그램 이름이 그대로 끼어든다.
@@ -287,6 +293,14 @@
   }
 
   function onClick(ev) {
+    // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 화면을 안 잡은 쪽이
+    // 남의 클릭까지 처리하면 없는 판을 읽고 터진다 — 자기 차례일 때만 듣는다.
+    //
+    // **다만 모달 안은 예외다.** 모달은 연 쪽의 것이다. 항공사 화면에서 분기를
+    // 넘기면 제조사의 확인창(응찰 안 한 공고·답 안 한 결정)이 뜨는데, 그 확인 콜백은
+    // 이 핸들러가 돌린다. 여기서 막으면 "그대로 분기 종료"를 눌러도 아무 일이 없고
+    // 같은 창이 영원히 다시 뜬다 — 실제로 그랬다.
+    if (root.AirlinerShell && !ev.target.closest('#modal') && !root.AirlinerShell.isActive('maker')) return;
     // 접었다 편 자리는 기억해 둔다 — 후보를 고르면 패널을 통째로 다시 그리는데,
     // 그때마다 방금 펼쳐 읽던 공고 배경이 도로 접히면 같은 곳을 계속 다시 연다.
     const sum = ev.target.closest('summary[data-fold]');
@@ -665,6 +679,9 @@
    * 라벨과 해당 미리보기 영역만 직접 갱신한다.
    */
   function onInput(ev) {
+    // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 화면을 안 잡은 쪽이
+    // 남의 클릭까지 처리하면 없는 판을 읽고 터진다 — 자기 차례일 때만 듣는다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('maker')) return;
     const el = ev.target.closest('[data-action]');
     if (!el) return;
     if (lockedAfterEnd(el.dataset.action)) return;
@@ -731,6 +748,9 @@
 
   /** 모달이 열려 있으면 Esc 로 닫고, Tab 포커스를 모달 안에 가둔다. */
   function onKeydown(ev) {
+    // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 화면을 안 잡은 쪽이
+    // 남의 클릭까지 처리하면 없는 판을 읽고 터진다 — 자기 차례일 때만 듣는다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('maker')) return;
     const modal = document.getElementById('modal');
     if (!modal || !modal.classList.contains('show')) return;
     if (ev.key === 'Escape') {
@@ -753,6 +773,9 @@
 
   /** 슬라이더에서 손을 뗐을 때 파생 표시(완료 예상 등)를 최신화한다. */
   function onChange(ev) {
+    // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 화면을 안 잡은 쪽이
+    // 남의 클릭까지 처리하면 없는 판을 읽고 터진다 — 자기 차례일 때만 듣는다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('maker')) return;
     const el = ev.target.closest('[data-action]');
     if (!el) return;
     if (lockedAfterEnd(el.dataset.action)) return;
@@ -806,7 +829,10 @@
       return;
     }
 
-    endTurnNow();
+    // 통합 모드에서는 껍데기가 두 계층을 정해진 순서로 넘긴다. 여기서 바로
+    // `endTurnNow` 를 부르면 제조사만 한 분기 앞서간다.
+    if (root.AirlinerShell) root.AirlinerShell.turn();
+    else endTurnNow();
   }
 
   function endTurnNow() {
@@ -814,7 +840,7 @@
     const r = E.endTurn(s);
     if (!r.ok) {
       toast(r.error, 'bad');
-      return;
+      return null;
     }
 
     const rep = r.report;
@@ -832,6 +858,8 @@
     // 정산 결과는 개요 맨 위 결산 카드에 남는다. 스크롤이 아래에 있으면 그걸 못 본다.
     scrollTop();
     if (s.gameOver) showGameOver(s);
+    // 통합 모드의 껍데기가 이 리포트에서 자체 발주 인도분을 읽는다.
+    return rep;
   }
 
   function showGameOver(s) {
@@ -906,6 +934,15 @@
       localStorage.setItem(SAVE_KEY, JSON.stringify(ui.state));
     } catch (e) {
       /* 저장 실패는 게임 진행을 막지 않는다 (시크릿 모드 등) */
+    }
+  }
+
+  /** 이 계층의 세이브를 지운다 — 껍데기가 통합 판을 새로 열 때 쓴다. */
+  function clearSave() {
+    try {
+      localStorage.removeItem(SAVE_KEY);
+    } catch (e) {
+      /* 지우지 못해도 게임은 굴러간다 */
     }
   }
 
@@ -1028,8 +1065,12 @@
     }
   }
 
-  root.AirlinerUI = { boot, ui };
-  if (typeof document !== 'undefined') {
+  root.AirlinerUI = { boot, ui, render, turn: endTurnNow };
+
+  // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
+  if (root.AirlinerShell) {
+    root.AirlinerShell.register('maker', { boot, render, turn: endTurnNow, askTurn: nextTurn, save, clearSave, state: () => ui.state });
+  } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();
   }

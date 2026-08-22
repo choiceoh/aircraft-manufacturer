@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>에어라이너 — 항공사 경영</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛫</text></svg>"
+    />
+  </head>
+  <body>
+    <div class="topbar">
+      <header id="hud" class="hud"></header>
+      <nav id="tabs" class="tabs"></nav>
+    </div>
+    <main id="panel" class="panel"></main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+    <footer id="foot" class="foot"></footer>
+
+    <!-- 순서 중요: 아래로 갈수록 위 모듈에 의존한다 (전역 네임스페이스 IIFE).
+         제조사 쪽 모듈을 그대로 쓴다 — 기체 값·설계 평가기가 거기 있고,
+         두 게임이 같은 기체를 같은 자로 재야 하기 때문이다. -->
+    <script src="js/rng.js"></script>
+    <script src="js/fleet.js"></script>
+    <script src="js/engines.js"></script>
+    <script src="js/airframe.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/decisions.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/design.js"></script>
+    <script src="js/bidding.js"></script>
+    <script src="js/engine.js"></script>
+    <script src="js/panels.js"></script>
+
+    <script src="js/sky/cities.js"></script>
+    <script src="js/sky/demand.js"></script>
+    <script src="js/sky/types.js"></script>
+    <script src="js/sky/economics.js"></script>
+    <script src="js/sky/market.js"></script>
+    <script src="js/sky/state.js"></script>
+    <script src="js/sky/actions.js"></script>
+    <script src="js/sky/ai.js"></script>
+    <script src="js/sky/panels.js"></script>
+    <script src="js/sky/ui.js"></script>
+  </body>
+</html>
