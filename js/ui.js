@@ -349,6 +349,34 @@
         break;
       }
 
+      case 'airshow': {
+        const kind = btn.dataset.kind;
+        const r = E.commitAirshow(s, kind);
+        act(r, r.ok ? (kind === 'reveal' ? '신형 발표를 걸었다.' : kind === 'booth' ? '대형 부스를 걸었다.' : '비공개 상담을 걸었다.') : null);
+        break;
+      }
+
+      case 'campaign': {
+        const r = E.startCampaign(s, btn.dataset.airline, btn.dataset.id);
+        act(r, r.ok ? '수주 캠페인에 착수했다.' : null);
+        break;
+      }
+
+      case 'first-flight': {
+        const r = E.stageFirstFlight(s, btn.dataset.id, btn.dataset.kind);
+        act(
+          r,
+          r.ok
+            ? btn.dataset.kind === 'demo'
+              ? '공개 시범비행을 열었다.'
+              : btn.dataset.kind === 'invite'
+                ? '초도비행에 항공사를 초청했다.'
+                : '초도비행을 비공개로 치렀다.'
+            : null,
+        );
+        break;
+      }
+
       case 'test-aircraft': {
         const r = E.addTestAircraft(s, btn.dataset.id);
         if (act(r)) toast(`시험기를 한 대 더 띄웠다. 제작비 ${P.money(r.cost)}.`, 'good');

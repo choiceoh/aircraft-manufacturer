@@ -1215,6 +1215,25 @@ h3.sub {
   margin: 8px 0 4px;
 }
 
+/* ── 업계의 계절 (에어쇼 달력 · 수주 캠페인) ── */
+.card.season {
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(180deg, #152433, var(--card));
+}
+.card.season .sub {
+  margin: 14px 0 8px;
+}
+.flight {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #15202c;
+}
+.flight p {
+  margin: 0 0 8px;
+}
+
 /* ── 서비스 사업 태그 ── */
 .tag {
   display: inline-block;

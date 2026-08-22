@@ -155,6 +155,12 @@
     if (!s || s.gameOver) return [];
     const out = [];
     if (s.decision) out.push({ tab: 'overview', text: `"${s.decision.name}" 결정에 답하지 않았다` });
+    for (const f of E.seasonStatus(s).firstFlights) {
+      out.push({
+        tab: 'programs',
+        text: `${f.name} 초도비행 형식을 정하지 않았다${f.left ? ` · ${f.left}분기 뒤 비공개로 치른다` : ''}`,
+      });
+    }
 
     // 응찰 가능한 공고만 센다 — 엔진의 무응찰 감점과 같은 기준이다. 초반처럼 고를 기종이
     // 없는 공고까지 세면 매 분기 손댈 수 없는 할 일이 배지에 남는다.
@@ -385,6 +391,7 @@
       ${scenarioCard(s)}
       ${mandateCard(s)}
       ${decisionCard(s)}
+      ${seasonCard(s, folds)}
       ${settlementCard(last, prev)}
 
       ${houseCard(s, folds)}
@@ -465,6 +472,107 @@
    * 이사회 목표 카드 — 5년짜리 눈금.
    * 최종 점수 하나로만 재면 중간이 없다. 남은 분기와 진행률을 늘 보이게 둔다.
    */
+  function seasonCard(s, folds) {
+    const st = E.seasonStatus(s);
+    const show = st.show;
+    const showBody = show
+      ? st.committed
+        ? `<p>${esc(show.name)} · ${esc(st.plan.kindLabel)}로 나간다${
+            st.plan.programId
+              ? ` · ${(s.programs.find((p) => p.id === st.plan.programId) || {}).name || ''}`
+              : ''
+          }${show.left === 0 ? ' — <b>이번 분기</b>' : ` · ${show.left}분기 뒤`}</p>
+           <p class="hint">출품은 이미 걸었다. 쇼가 열리면 후광과 발주 타진이 따라온다.</p>`
+        : st.open
+          ? `<p>${esc(show.year)}년 ${esc(show.month)} · ${esc(show.venue)} · ${
+              show.left === 0 ? '<b class="accent">이번 분기</b>' : `<b>${show.left}분기 뒤</b>`
+            }</p>
+             <p class="muted">나가지 않아도 된다. 나가면 값이 있고, 발표한 신형이 안 뜨면 그 값이 나중에 돌아온다.</p>
+             <div class="decision-options">
+               <button class="decision-opt" data-action="airshow" data-kind="reveal" ${st.canReveal && s.cash >= st.costs.reveal ? '' : 'disabled'}>
+                 <b>신형 발표 · ${money(st.costs.reveal)}</b>
+                 <span class="muted">후광 +${st.bonus.halo}점 ${E.SEASON.airshowHaloQuarters}분기. 취항이 늦으면 평판이 깎인다</span>
+               </button>
+               <button class="decision-opt" data-action="airshow" data-kind="booth" ${st.canBooth && s.cash >= st.costs.booth ? '' : 'disabled'}>
+                 <b>대형 부스 · ${money(st.costs.booth)}</b>
+                 <span class="muted">모든 항공사 관계 ↑ · 다음 분기 쇼 발주 타진</span>
+               </button>
+               <button class="decision-opt" data-action="airshow" data-kind="private" ${st.canPrivate && s.cash >= st.costs.private ? '' : 'disabled'}>
+                 <b>비공개 상담 · ${money(st.costs.private)}</b>
+                 <span class="muted">최대 고객과만 만난다. 값은 한 곳에 몰린다</span>
+               </button>
+             </div>`
+          : `<p class="muted">${esc(show.year)}년 ${esc(show.month)} ${esc(show.name)}까지 ${show.left}분기. 출품 창은 ${E.SEASON.airshowWindow}분기 전에 열린다.</p>`
+      : '<p class="muted">남은 에어쇼가 없다. 20년의 달력이 끝났다.</p>';
+
+    const camp = st.campaign
+      ? `<p><b>${esc(st.campaign.airlineName)}</b> ← ${esc(st.campaign.programName)} · <b>${st.campaign.left}분기 남음</b></p>
+         <p class="hint">그 항공사 수주전에 +${st.bonus.campaign}점. 캠페인이 끝나면 관계에 따라 발주·온기·이용만 당함 중 하나가 온다.</p>`
+      : st.campaignOptions.length
+        ? `<p class="muted">한 항공사만 집중해서 판다. ${money(st.costs.campaign)} · 4분기. 동시에 둘은 못 한다.</p>
+           <div class="row wrap">${st.campaignOptions
+             .slice(0, 6)
+             .map(
+               (o) =>
+                 `<button data-action="campaign" data-airline="${esc(o.airlineId)}" data-id="${esc(o.programId)}" ${
+                   s.cash >= st.costs.campaign ? '' : 'disabled'
+                 }>${esc(o.airlineName)} · ${esc(o.programName)} <span class="muted">관계 ${o.relation}</span></button>`,
+             )
+             .join('')}</div>`
+        : '<p class="muted">캠페인을 걸 기종이 없다. 그 항공사 노선에 맞는 기체가 개발 40%를 넘어야 한다.</p>';
+
+    const halo = st.halo
+      ? `<p class="hint good">${esc((s.programs.find((p) => p.id === st.halo.programId) || {}).name || '발표 기종')} 후광 +${st.halo.bonus} · ${st.halo.untilTurn - s.turn}분기 남음</p>`
+      : '';
+
+    const title = show ? `${esc(show.name)}` : '에어쇼 달력';
+    const value = show ? (st.committed ? esc(st.plan.kindLabel) : show.left === 0 ? '이번 분기' : `${show.left}분기 뒤`) : '종료';
+    const inner = `${showBody}${halo}<h3 class="sub">수주 캠페인</h3>${camp}`;
+    const live = st.open || st.committed || !!st.campaign || st.firstFlights.length;
+    if (!live) {
+      return foldCard(folds, 'ov-season', '업계의 계절', value, inner, false);
+    }
+    return `
+      <section class="card season">
+        <div class="row between">
+          <h3>업계의 계절 · ${title}</h3>
+          <span class="muted">${value}</span>
+        </div>
+        ${inner}
+      </section>`;
+  }
+
+  function firstFlightBlock(s, p) {
+    if (p.firstFlight === 'private') {
+      return '<p class="hint">초도비행을 비공개로 치렀다.</p>';
+    }
+    if (p.firstFlight === 'invite') {
+      return '<p class="hint good">초도비행에 항공사를 초청했다. 그들이 본 것이 수주전 점수다.</p>';
+    }
+    if (p.firstFlight === 'demo') {
+      return `<p class="hint good">공개 시범비행을 열었다.${p.flightShame ? ' 심사 지적이 객석에 보였다.' : ' 심사가 깨끗하면 평판이 한 번 더 오른다.'}</p>`;
+    }
+    const st = E.seasonStatus(s);
+    const due = typeof p.firstFlightDue === 'number' ? Math.max(0, p.firstFlightDue - s.turn) : 0;
+    return `<div class="flight">
+      <p>초도비행을 어떻게 치르겠나. 고르지 않으면 ${due}분기 뒤 <b>비공개</b>로 치른다.</p>
+      <div class="decision-options">
+        <button class="decision-opt" data-action="first-flight" data-id="${p.id}" data-kind="private">
+          <b>비공개</b>
+          <span class="muted">값은 없다. 객석도 없다</span>
+        </button>
+        <button class="decision-opt" data-action="first-flight" data-id="${p.id}" data-kind="invite" ${s.cash >= st.costs.invite ? '' : 'disabled'}>
+          <b>초청 · ${money(st.costs.invite)}</b>
+          <span class="muted">두 항공사 관계 ↑ · 그 수주전 +${st.bonus.invite}. 지적이 나오면 그들이 본다</span>
+        </button>
+        <button class="decision-opt" data-action="first-flight" data-id="${p.id}" data-kind="demo" ${s.cash >= st.costs.demo ? '' : 'disabled'}>
+          <b>공개 시범 · ${money(st.costs.demo)}</b>
+          <span class="muted">평판과 급 전체 관계. 지적 없이 취항하면 한 번 더, 나오면 더 크게 깎인다</span>
+        </button>
+      </div>
+    </div>`;
+  }
+
   function mandateCard(s) {
     const m = E.mandateStatus(s);
     if (!m) return '';
@@ -971,6 +1079,7 @@
             <p class="cert">시험비행 <b>${num(flown)} / ${num(need)}시간</b> — 시험기 ${p.testFleet || 0}대로 남은 ${isFinite(left) ? left + '분기' : '—'}</p>
             ${bar(need > 0 ? (flown / need) * 100 : 0)}
             ${p.findings ? `<p class="hint">심사 지적 ${p.findings}건 — 재시험이 얹혔다.</p>` : ''}
+            ${firstFlightBlock(s, p)}
             <div class="row">
               <button data-action="test-aircraft" data-id="${p.id}" ${maxed ? 'disabled' : ''}>
                 시험기 추가 (${p.testFleet || 0}/6) · ${money(nextCost)}
@@ -1458,6 +1567,10 @@
         }${
           sc.homeBias
             ? ` <span class="${sc.homeBias > 0 ? 'good' : 'bad'}">(${sc.homeBias > 0 ? '본국 +' : '낯선 시장 '}${sc.homeBias})</span>`
+            : ''
+        }${
+          sc.courtship
+            ? ` <span class="good">(영업 +${sc.courtship})</span>`
             : ''
         }</td></tr>
         <tr><th>대당 가격</th><td>${money(sc.price)} <span class="muted">(정가 ${money(p.listPrice)})</span></td></tr>
