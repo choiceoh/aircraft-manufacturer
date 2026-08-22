@@ -2944,6 +2944,10 @@ test('통합: 재고가 있으면 라인이 없어도 온다고 읽는다', () =
   globalThis.AirlinerShell = { shell: { mode: 'group' } };
   globalThis.AirlinerUI = { ui: { state: mfg } };
   try {
+    // 남의 주문이 재고를 선점하지 않는 상태에서 먼저 본다.
+    const others = mfg.backlog.filter((o) => !o.inHouse);
+    mfg.backlog = mfg.backlog.filter((o) => o.inHouse);
+
     prog.stock = 5;
     const plenty = SP.groupCard(sky, meId);
     assert.ok(plenty, '카드가 그려져야 검사가 산다');
@@ -2956,8 +2960,96 @@ test('통합: 재고가 있으면 라인이 없어도 온다고 읽는다', () =
 
     prog.stock = 0;
     assert.ok(/<b>3기<\/b>/.test(SP.groupCard(sky, meId)), '재고 0 이면 3기 전부여야 한다');
+
+    // **남의 주문이 앞에 서 있으면 그만큼은 내 몫이 아니다.** `runDeliveries` 가 수주
+    // 장부를 우선순위·수주 시점으로 훑으므로 앞선 외부 주문이 재고를 먼저 가져간다.
+    prog.stock = 5;
+    mfg.backlog = mfg.backlog.concat(others.slice(0, 1).map((o) => ({ ...o, programId: prog.id, remaining: 5 })));
+    const blocked = SP.groupCard(sky, meId);
+    assert.ok(/오지 않는다/.test(blocked), '남의 주문이 재고를 다 가져가는데 안심시켰다');
+    assert.ok(/<b>3기<\/b>/.test(blocked), '선점당한 재고를 내 몫으로 셌다');
   } finally {
     globalThis.AirlinerShell = savedShell;
     globalThis.AirlinerUI = savedUi;
+  }
+});
+
+test('통합: 자체 이전은 그룹 자본을 움직이지 않는다 — 원가가 곧 장부가다', () => {
+  // 제조사 순자산은 재고를 `unitCostBase` 로 센다. 그 값 그대로 넘기면 나가는 값과
+  // 항공사가 잡는 값이 같아 합산이 0 이다. 실제 생산원가와 base 의 차이는 **생산 시점**에
+  // 흡수되고, 그건 자회사든 외부 고객이든 똑같이 겪는 기존 관행이다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  G.beforeTurns(mfg, sky, meId);
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  const q = E.inHouseQuote(mfg, { programId: prog.id, qty: 4 });
+  assert.strictEqual(q.unitPrice, prog.unitCostBase, '이전 단가가 장부가와 달라졌다');
+
+  // 이미 만들어 둔 재고로 인도시킨다 — 생산 단계를 섞지 않아야 이전만 잰다.
+  prog.stock = 10;
+  const before = G.combinedEquity(mfg, sky, meId).total;
+  prog.stock -= 4;
+  mfg.cash += q.balance;
+  G.receiveDeliveries(
+    mfg, sky,
+    { inHouse: [{ airlineId: meId, programId: prog.id, qty: 4, unitPrice: q.unitPrice, balance: q.balance }] },
+    meId,
+  );
+
+  assert.strictEqual(St.planesOf(sky, meId).filter((p) => p.typeId === prog.id).length, 4, '기체가 안 섰다');
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(
+    Math.abs(after - before) < 1,
+    `이전만으로 그룹 자본이 ${Math.round((after - before) / 1e6)}M 움직였다`,
+  );
+});
+
+test('통합: 그룹 자본에도 회사 환산 배수가 걸린다', () => {
+  // 운영 항목에만 걸고 정작 더 큰 자본 항목을 빼 두면, 거인을 고르는 것만으로 보정 없는
+  // 수백 점을 얻는다 — 등급이 난이도표가 아니라 회사 선택표가 된다.
+  const { mfg, sky, meId } = groupGame();
+  const base = G.groupScore(mfg, sky, meId).rows.find((r) => r.label === '그룹 자본');
+  assert.ok(base && base.points > 0, '자본 점수가 있어야 검사가 산다');
+
+  mfg.scoreMult = 0.45; // 보잉 눈금
+  const scaled = G.groupScore(mfg, sky, meId).rows.find((r) => r.label === '그룹 자본');
+  assert.ok(Math.abs(scaled.points - base.points * 0.45) <= 1, `×0.45 인데 ${scaled.points} (원래 ${base.points})`);
+  assert.ok(/회사 환산/.test(scaled.detail), '무엇이 걸렸는지 화면에 안 적혔다');
+});
+
+test('통합: 끝난 판도 옛 자체 인도 이력을 옮긴다', () => {
+  // 이관은 `beforeTurns` 에서 도는데 끝난 판은 분기를 더 안 넘긴다 — 그 자리가 영영
+  // 안 오면 성적표에 옛 자체 인도분이 시장 성과로 남는다.
+  const { mfg, sky, meId, prog } = groupGame();
+  delete mfg.stats.inHouseDelivered;
+  delete prog.inHouseDelivered;
+  delete mfg.inHouseMigrated;
+  prog.delivered = 200;
+  for (let i = 0; i < 3; i++) {
+    sky.planes.push({ id: sky.nextId++, typeId: prog.id, airlineId: meId, paid: 50e6, ageQuarters: 4, routeId: null, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  }
+  // 판이 끝났다 — `beforeTurns` 는 다시 돌지 않는다.
+  sky.turn = sky.totalTurns;
+
+  G.groupScore(mfg, sky, meId);
+  assert.strictEqual(mfg.stats.inHouseDelivered, 3, '성적을 낼 때도 이력을 옮겨야 한다');
+  assert.strictEqual(prog.inHouseDelivered, 3);
+});
+
+test('통합: 바로 직전 이름으로 저장된 판도 결정 본문이 맞춰진다', () => {
+  // `kosmo` 는 두 번 개명됐다(코스모항공 → 에어아스타나 → 아에로플로트). 옛 이름을
+  // 하나만 두면 직전 이름으로 저장된 판이 제목엔 옛 이름, memo 엔 새 이름으로 열린다.
+  for (const old of ['코스모항공', '에어아스타나']) {
+    const s = E.newGame(1234);
+    s.decision = {
+      id: 'test', name: `${old}의 제안`, text: `${old}이(가) 대량 발주를 제안했다.`,
+      memo: { airline: 'kosmo', airlineName: old }, options: [],
+    };
+    E.ensureShape(s);
+    assert.ok(!s.decision.name.includes(old), `제목에 '${old}' 가 남았다: ${s.decision.name}`);
+    assert.ok(!s.decision.text.includes(old), `본문에 '${old}' 가 남았다`);
+    assert.ok(s.decision.name.includes('아에로플로트'), '새 이름으로 안 바뀌었다');
+    assert.strictEqual(s.decision.memo.airlineName, '아에로플로트');
   }
 });

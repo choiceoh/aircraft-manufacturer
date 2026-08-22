@@ -589,13 +589,17 @@
   }
 
   /**
-   * 실명 교체(2026) 이전 세이브가 쓰던 가상 표기 — 열려 있는 결정 사건의 본문은
-   * memo 에 이름을 안 남기는 사건도 있어, id 로 못 찾고 이 사전으로 훑는다.
+   * 옛 세이브가 쓰던 표기 — 열려 있는 결정 사건의 본문은 memo 에 이름을 안 남기는
+   * 사건도 있어, id 로 못 찾고 이 사전으로 훑는다.
+   *
+   * **한 회사에 옛 이름이 여럿일 수 있다.** `kosmo` 는 가상 표기(코스모항공) → 에어아스타나
+   * → 아에로플로트로 두 번 바뀌었다. 하나만 두면 바로 직전 이름으로 저장된 판이
+   * 제목엔 옛 이름, memo 엔 새 이름으로 열려 서로 다른 회사를 말한다.
    */
   const LEGACY_AIRLINE_NAMES = {
-    hanul: '한울항공', carta: '카르타 에어', nordic: '노르딕윙스', panamer: '판아메르 항공',
-    asialink: '아시아링크', albion: '알비온 항공', meridian: '메리디안 항공', sahara: '사하라 에어',
-    oceanic: '오세아닉', kosmo: '코스모항공', lumen: '루멘 에어라인', vertex: '버텍스 제트',
+    hanul: ['한울항공'], carta: ['카르타 에어'], nordic: ['노르딕윙스'], panamer: ['판아메르 항공'],
+    asialink: ['아시아링크'], albion: ['알비온 항공'], meridian: ['메리디안 항공'], sahara: ['사하라 에어'],
+    oceanic: ['오세아닉'], kosmo: ['코스모항공', '에어아스타나'], lumen: ['루멘 에어라인'], vertex: ['버텍스 제트'],
   };
 
   function ensureShape(s) {
@@ -697,12 +701,12 @@
     const d = s.decision;
     if (d && d.memo && d.memo.airline) {
       const a = AIRLINES.find((x) => x.id === d.memo.airline);
-      const old = LEGACY_AIRLINE_NAMES[d.memo.airline];
-      // 어느 기체의 이름이 그 옛 표기를 품고 있으면 본문 치환을 통째로 건너뛴다 —
-      // 문자열만으로는 항공사와 기체를 구분할 수 없고, 플레이어가 지은 이름을
-      // 덮어쓰는 쪽이 옛 항공사 이름이 카드에 한 번 더 보이는 쪽보다 나쁘다.
-      const collides = s.programs.some((p) => typeof p.name === 'string' && old && p.name.includes(old));
-      if (a && old && a.name !== old && !collides) {
+      for (const old of LEGACY_AIRLINE_NAMES[d.memo.airline] || []) {
+        if (!a || !old || a.name === old) continue;
+        // 어느 기체의 이름이 그 옛 표기를 품고 있으면 본문 치환을 통째로 건너뛴다 —
+        // 문자열만으로는 항공사와 기체를 구분할 수 없고, 플레이어가 지은 이름을
+        // 덮어쓰는 쪽이 옛 항공사 이름이 카드에 한 번 더 보이는 쪽보다 나쁘다.
+        if (s.programs.some((p) => typeof p.name === 'string' && p.name.includes(old))) continue;
         if (typeof d.text === 'string' && d.text.includes(old)) d.text = d.text.split(old).join(a.name);
         if (typeof d.name === 'string' && d.name.includes(old)) d.name = d.name.split(old).join(a.name);
       }

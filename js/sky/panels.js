@@ -156,9 +156,18 @@
     // **이미 만들어 둔 재고는 라인 없이도 나간다.** `runDeliveries` 는 재고를 그냥
     // 꺼내 쓴다 — 라인이 없다고 "영영 안 온다"고 말하면, 다음 분기면 올 기체 때문에
     // 비싼 라인을 새로 세우게 만든다. 재고로 못 덮는 몫만 경고한다.
+    //
+    // **남의 주문이 먼저 가져갈 몫은 빼고 센다.** `runDeliveries` 는 수주 장부 전체를
+    // 우선순위와 수주 시점으로 정렬해 훑으므로, 앞선 외부 주문이 재고를 다 쓰면 자체
+    // 발주 차례에는 아무것도 안 남는다. 재고를 통째로 내 몫으로 치면 "막힌 기체 0" 이라고
+    // 안심시켜 놓고 실제로는 안 온다 — 보수적으로 남의 잔고를 먼저 뺀다.
     const stockOf = (id) => {
       const p = (mfg.programs || []).find((x) => x.id === id);
-      return p ? p.stock || 0 : 0;
+      if (!p) return 0;
+      const claimed = (mfg.backlog || [])
+        .filter((o) => o.programId === id && o.remaining > 0 && !o.inHouse)
+        .reduce((x, o) => x + o.remaining, 0);
+      return Math.max(0, (p.stock || 0) - claimed);
     };
     const lineState = (id) => {
       const ls = (mfg.lines || []).filter((l) => l.programId === id);

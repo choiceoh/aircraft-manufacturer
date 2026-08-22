@@ -319,19 +319,29 @@
     const a = St.airline(sky, airlineId);
     if (!a) return null;
 
+    // **여기서도 이력을 옮긴다.** 이관은 `beforeTurns` 에서 도는데, 이미 끝난 판(마지막
+    // 분기이거나 한쪽이 파산한 판)은 분기를 더 넘기지 않으므로 그 자리가 영영 안 온다 —
+    // 옛 세이브의 자체 인도분이 성적표에 그대로 시장 성과로 남는다. 표식이 있어 두 번
+    // 돌지는 않는다.
+    migrateInHouseCounters(mfg, sky, airlineId);
     const eq = combinedEquity(mfg, sky, airlineId);
     const alive = !!a.alive && !(mfg.gameOver && mfg.gameOver.reason === 'bankrupt');
     // 증자로 불린 자본은 그만큼 우리 몫이 아니다 — 제조사 점수가 이미 쓰는 규칙이다.
     // 안 걸면 "성적을 깎는다"고 안내된 증자가 그룹 점수를 되레 올린다.
     const ownership = 1 - (mfg.equityDilution || 0);
+    // **회사 환산 배수도 건다.** 제조사 게임이 순자산 항목에 거는 그 배수다(보잉 0.45 ·
+    // 엠브라에르 1.5) — 물려받은 대차대조표가 회사마다 판이하니 그대로 재면 등급이
+    // 난이도표가 아니라 회사 선택표가 된다. 운영 항목에만 걸고 정작 더 큰 자본 항목을
+    // 빼 두면, 거인을 고르는 것만으로 보정 없는 수백 점을 얻는다.
+    const mult = mfg.scoreMult || 1;
 
     const rows = [
       {
         label: '그룹 자본',
         detail: `${Math.round(eq.total / MUSD)}M × ${GROUP_EQUITY_RATE}${
           ownership < 1 ? ` · 우리 몫 ${(ownership * 100).toFixed(0)}%` : ''
-        }${eq.internal ? ' · 계열 상계 후' : ''}`,
-        points: Math.round((Math.max(0, eq.total) / MUSD) * GROUP_EQUITY_RATE * ownership),
+        }${mult !== 1 ? ` · 회사 환산 ×${mult}` : ''}${eq.internal ? ' · 계열 상계 후' : ''}`,
+        points: Math.round((Math.max(0, eq.total) / MUSD) * GROUP_EQUITY_RATE * ownership * mult),
       },
     ];
     rows.push({
