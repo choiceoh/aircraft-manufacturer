@@ -119,7 +119,7 @@
    * 입찰을 조용히 포기하고 결정이 기본값으로 처리된다.
    */
   function requestTurn() {
-    if (turning) return;
+    if (turning || groupOver()) return;
     const maker = parts.maker;
     if (has('maker') && maker && typeof maker.askTurn === 'function') maker.askTurn();
     else turn();
@@ -133,6 +133,9 @@
    */
   function turn() {
     if (turning) return;
+    // 끝난 판은 더 넘기지 않는다. 두 계층이 각자 자기만 보고 판단하므로 여기서 한 번
+    // 막지 않으면 한쪽만 앞서간다.
+    if (groupOver()) return;
     turning = true;
     try {
       const group = shell.mode === 'group' ? root.AirlinerSkyGroup : null;
@@ -160,7 +163,13 @@
     } finally {
       turning = false;
     }
-    if (shell.mode === 'group') renderLayerBar();
+    if (shell.mode === 'group') {
+      renderLayerBar();
+      // **다시 그린다.** 제조사 화면에서 넘기면 `maker.turn()` 이 그리는 시점은 아직
+      // 자회사 정산 전이라, 자회사 카드가 지난 분기 손익과 "제조사는 잔금을 받았는데
+      // 항공사는 아직 안 낸" 있을 수 없는 중간 자본을 보여준 채 굳는다.
+      reveal(shell.layer);
+    }
   }
 
   // ─────────────────────────────── 화면 ───────────────────────────────
@@ -226,6 +235,23 @@
 
   function calendarsAligned() {
     return turnOf('maker') === turnOf('airline');
+  }
+
+  /**
+   * 통합 판이 끝났는가 — **한쪽만 끝나도 끝이다.**
+   *
+   * 그룹 성적은 한쪽이 무너지면 F 로 정해진다. 그런데 각 컨트롤러는 자기 계층만 보고
+   * "아직 할 수 있다"고 판단하므로, 제조사가 파산한 뒤에도 항공사 버튼이 살아 있고
+   * 그걸 누르면 항공사만 한 분기를 더 간다 — 결과가 이미 정해진 판에서 두 달력이
+   * 갈라지고 세이브가 어긋난다. 반대 방향도 같다.
+   */
+  function groupOver() {
+    if (shell.mode !== 'group') return false;
+    for (const layer of ['maker', 'airline']) {
+      const p = parts[layer];
+      if (p && typeof p.isOver === 'function' && p.isOver()) return true;
+    }
+    return false;
   }
 
   /** 달력이 어긋났을 때 — 새 통합 판을 열 것인지 묻는다. 판을 임의로 지우지 않는다. */
@@ -346,7 +372,7 @@
     }
   }
 
-  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, choose, reset, showLayer, boot };
+  root.AirlinerShell = { MODES, shell, register, has, isActive, turn, requestTurn, groupOver, choose, reset, showLayer, boot };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

@@ -144,6 +144,18 @@
   function isOver(s) {
     if (!s) return true;
     const me = St.airline(s, ui.meId);
+    if (s.turn >= s.totalTurns || !me || !me.alive) return true;
+    // 통합 판에서는 제조사가 무너져도 끝이다 — 그룹 성적이 이미 F 로 정해졌는데
+    // 여기만 계속 굴리면 두 달력이 갈라진다.
+    const Shell = root.AirlinerShell;
+    return !!(Shell && Shell.shell.mode === 'group' && Shell.groupOver());
+  }
+
+  /** 껍데기가 묻는 종료 여부 — 자기 계층 기준만 답한다(그룹 판정은 껍데기가 모은다). */
+  function ownIsOver() {
+    const s = ui.state;
+    if (!s) return false;
+    const me = St.airline(s, ui.meId);
     return s.turn >= s.totalTurns || !me || !me.alive;
   }
 
@@ -469,7 +481,7 @@
 
   // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
   if (root.AirlinerShell) {
-    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, save, clearSave, state: () => ui.state, meId: () => ui.meId });
+    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn, save, clearSave, isOver: ownIsOver, state: () => ui.state, meId: () => ui.meId });
   } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();

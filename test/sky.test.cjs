@@ -2887,3 +2887,77 @@ test('통합: 옛 세이브의 자체 인도 이력을 옮긴다', () => {
   G.migrateInHouseCounters(m2, s2, s2.airlines[0].id);
   assert.strictEqual(m2.stats.inHouseDelivered, 1, '인도한 적 없는 대수까지 뺐다');
 });
+
+test('통합: 자체 인도는 평판 이정표도 만들지 않는다', () => {
+  // 첫 인도·100/300/500기 문턱이 평판을 올린다. 주문 완납 평판만 막아 두면 이 길로
+  // 여전히 자기한테 팔아 점수를 만들 수 있다.
+  //
+  // 같은 상태를 둘 만들어 **한쪽만 `inHouse`** 로 두고 실제로 인도시킨다 — 소스를
+  // 읽어 확인하는 검사는 구현이 바뀌면 그대로 통과해 버린다.
+  //
+  // **주문을 일부러 다 못 채운다.** 완납하면 주문 완납 평판(+1)이 따로 붙어서, 그
+  // 차이가 이정표를 가린다 — 처음에 그렇게 썼다가 되돌려도 통과하는 검사를 만들었다.
+  // 재고를 모자라게 두면 남는 것은 이정표뿐이다.
+  const build = (inHouse) => {
+    const s = E.newGame(1234);
+    const p = s.programs[0];
+    p.legacy = false;
+    p.delivered = 0;
+    p.stock = 2;
+    // 라인을 빼야 이번 분기에 재고가 더 생기지 않는다 — 안 그러면 생산이 5기를 채워
+    // 주문이 완납되고, 완납 평판이 다시 이정표를 가린다.
+    s.lines = s.lines.filter((l) => l.programId !== p.id);
+    s.milestones = [];
+    s.backlog = [
+      {
+        id: 'o1', airlineId: 'hanul', airlineName: '대한항공', programId: p.id, programName: p.name,
+        qty: 5, remaining: 5, unitPrice: 80, wonTurn: s.turn, depositRate: 0.15, inHouse,
+      },
+    ];
+    return s;
+  };
+  const outside = build(false);
+  const inside = build(true);
+  E.endTurn(outside);
+  E.endTurn(inside);
+
+  assert.ok(outside.programs[0].delivered > 0, '인도가 실제로 일어나야 검사가 산다');
+  assert.strictEqual(inside.programs[0].delivered, outside.programs[0].delivered, '인도 대수 자체는 같아야 한다');
+  assert.ok(outside.backlog.some((o) => o.remaining > 0), '완납되면 주문 완납 평판이 섞인다');
+
+  const mark = (s) => (s.milestones || []).filter((m) => /첫 인도|기 인도/.test(m.text)).length;
+  assert.ok(mark(outside) > 0, '남에게 판 인도는 이정표를 남겨야 한다');
+  assert.strictEqual(mark(inside), 0, `자체 인도가 이정표 ${mark(inside)}건을 남겼다`);
+});
+
+test('통합: 재고가 있으면 라인이 없어도 온다고 읽는다', () => {
+  // `runDeliveries` 는 재고를 그냥 꺼내 쓴다. 라인이 없다고 "영영 안 온다"고 말하면
+  // 다음 분기면 올 기체 때문에 비싼 라인을 세우게 만든다.
+  const { mfg, sky, meId, prog } = groupGame();
+  St.airline(sky, meId).cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 3).ok, true);
+  mfg.lines = mfg.lines.filter((l) => l.programId !== prog.id);
+
+  // 모회사 카드는 껍데기가 있어야 그린다 — 없으면 빈 문자열이라 검사가 죽는다.
+  const savedShell = globalThis.AirlinerShell;
+  const savedUi = globalThis.AirlinerUI;
+  globalThis.AirlinerShell = { shell: { mode: 'group' } };
+  globalThis.AirlinerUI = { ui: { state: mfg } };
+  try {
+    prog.stock = 5;
+    const plenty = SP.groupCard(sky, meId);
+    assert.ok(plenty, '카드가 그려져야 검사가 산다');
+    assert.ok(!/오지 않는다/.test(plenty), '재고 5기인데 경고가 떴다');
+
+    prog.stock = 1;
+    const short = SP.groupCard(sky, meId);
+    assert.ok(/오지 않는다/.test(short), '재고로 못 덮는데 경고가 없다');
+    assert.ok(/<b>2기<\/b>/.test(short), `재고로 못 덮는 2기를 안 세었다`);
+
+    prog.stock = 0;
+    assert.ok(/<b>3기<\/b>/.test(SP.groupCard(sky, meId)), '재고 0 이면 3기 전부여야 한다');
+  } finally {
+    globalThis.AirlinerShell = savedShell;
+    globalThis.AirlinerUI = savedUi;
+  }
+});

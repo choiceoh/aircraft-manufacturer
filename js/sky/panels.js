@@ -153,9 +153,16 @@
     // **만들 수 있는 기종인지 함께 본다.** 조립 라인이 없으면 재고가 안 나오고, 재고가
     // 없으면 인도가 영영 안 된다 — 발주는 받아 주면서 아무 말도 안 하면 플레이어는
     // 몇 해를 기다리다 "인도가 안 된다"고 읽는다. 실제로 그렇게 됐다.
+    // **이미 만들어 둔 재고는 라인 없이도 나간다.** `runDeliveries` 는 재고를 그냥
+    // 꺼내 쓴다 — 라인이 없다고 "영영 안 온다"고 말하면, 다음 분기면 올 기체 때문에
+    // 비싼 라인을 새로 세우게 만든다. 재고로 못 덮는 몫만 경고한다.
+    const stockOf = (id) => {
+      const p = (mfg.programs || []).find((x) => x.id === id);
+      return p ? p.stock || 0 : 0;
+    };
     const lineState = (id) => {
       const ls = (mfg.lines || []).filter((l) => l.programId === id);
-      if (!ls.length) return { ok: false, why: '조립 라인 없음 — 세우기 전에는 한 대도 못 만든다' };
+      if (!ls.length) return { ok: false, why: '조립 라인 없음 — 재고를 다 쓰면 더 못 만든다' };
       if (ls.every((l) => l.idle)) return { ok: false, why: '조립 라인이 모두 가동 중지 상태다' };
       return { ok: true, why: '' };
     };
@@ -219,12 +226,19 @@
       ${
         pending.length
           ? (() => {
-              const stuck = pending.filter((o) => !lineState(o.typeId).ok);
               const n = pending.reduce((x, o) => x + o.count, 0);
+              // 기종마다 "재고로 못 덮고 만들 라인도 없는" 대수만 센다.
+              const byType = {};
+              for (const o of pending) byType[o.typeId] = (byType[o.typeId] || 0) + o.count;
+              let stuck = 0;
+              for (const id of Object.keys(byType)) {
+                if (lineState(id).ok) continue;
+                stuck += Math.max(0, byType[id] - stockOf(id));
+              }
               return `<p class="muted">인도 대기 ${n}기 · 선급금 ${money(pending.reduce((x, o) => x + o.paid, 0))}</p>
                 ${
-                  stuck.length
-                    ? `<p class="order-warn">발주해 둔 ${stuck.reduce((x, o) => x + o.count, 0)}기는 <b>만들 라인이 없어 오지 않는다</b>.
+                  stuck
+                    ? `<p class="order-warn">그중 <b>${stuck}기</b>는 재고로도 못 덮고 만들 라인도 없어 오지 않는다.
                        제조사 화면 <b>생산</b> 탭에서 라인을 세워야 한다.</p>`
                     : ''
                 }`;

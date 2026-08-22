@@ -3103,7 +3103,9 @@
           balance: n * o.unitPrice * (1 - rate),
         });
       }
-      recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
+      // **자체 인도는 이정표도 아니다.** 첫 인도·100/300/500기 문턱이 평판을 올리는데,
+      // 주문 완납 평판만 막아 두면 이 길로 여전히 자기한테 팔아 점수를 만들 수 있다.
+      if (!o.inHouse) recordDeliveryMilestones(s, p, o, progBefore, companyBefore);
       // 엔진 공급사 관계 — 그 공급사 엔진을 단 인도가 쌓일수록 협상 테이블이 생긴다.
       // 이중화 기체는 항공사가 선호하는 쪽 엔진을 달아 나간다 — A330 이 그랬다.
       const primMaker = (root.AirlinerEngines.get(p.engine) || {}).maker;
