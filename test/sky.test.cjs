@@ -1944,3 +1944,77 @@ test('명령: 기재 목록이 배열이 아니면 예외 대신 실패를 돌�
     assert.strictEqual(Act.openRoute(s, a.id, a.home, 'shanghai', bad, 5, 1).ok, false, `취항 ${JSON.stringify(bad)}`);
   }
 });
+
+test('명령: 중정비로 한 대가 빠져도 시간표는 배속 기재 기준으로 조정된다', () => {
+  // 시간표는 계속 가져갈 값이라 **배속 목록 전체**로 검사한다. 이번 분기에 뜨는 기재로
+  // 재면 중정비가 걸린 분기에 −1 조차 막혀(한계가 반토막이라 19 > 10 으로 거절) 화면의
+  // 편수 조정이 통째로 죽는다. 이번 분기의 감편은 `effectiveFreq` 가 따로 맡는다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const r = St.routesOf(s, a.id).find((x) => x.active);
+  const dist = C.distance(r.from, r.to);
+  a.slots[r.from] = 300;
+  a.slots[r.to] = 300;
+  const spares = St.planesOf(s, a.id).filter((x) => x.routeId === null && Econ.canFly(s.types[x.typeId], dist));
+  assert.ok(spares.length >= 1, '예비기가 있어야 검사가 산다');
+  Act.assignPlanes(s, a.id, r.id, St.assignedTo(s, r.id).map((x) => x.id).concat([spares[0].id]));
+
+  const assigned = St.assignedTo(s, r.id);
+  assert.ok(assigned.length >= 2, `배속 ${assigned.length}대 — 두 대는 있어야 한다`);
+  const full = Econ.capacity(assigned, dist, (t) => s.types[t]).maxFreq;
+  assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { freq: full }).ok, true, '배속 한계까지는 올라가야 한다');
+
+  // 한 대를 중정비로 세운다.
+  assigned[0].checkUntilTurn = s.turn;
+  const flying = Econ.capacity(St.flyingOn(s, r.id), dist, (t) => s.types[t]).maxFreq;
+  assert.ok(flying < full - 1, `이번 분기 한계 ${flying} 가 ${full - 1} 보다 낮아야 검사가 산다`);
+
+  // 이 −1 이 옛 코드에서는 `full - 1 > flying` 이라 거절됐다.
+  assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { freq: full - 1 }).ok, true, '−1 이 막히면 편수 조정이 죽는다');
+  assert.strictEqual(r.freq, full - 1);
+  // 그래도 이번 분기에 실제로 뜨는 편수는 줄어든 채여야 한다.
+  const eff = Econ.effectiveFreq(r, St.flyingOn(s, r.id), dist, (t) => s.types[t], false);
+  assert.ok(eff <= flying, `이번 분기 ${eff} 편이 뜨는 기재의 한계 ${flying} 를 넘는다`);
+  assert.ok(eff < r.freq, '중정비 손실이 이번 분기에 반영되지 않았다');
+  // 배속 한계를 넘는 값은 여전히 거절된다.
+  assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { freq: full + 1 }).ok, false, '배속 한계는 지켜야 한다');
+});
+
+test('상태: 달력이 끝나면 날짜가 마지막 정산 분기에 머문다', () => {
+  // 마지막 정산 뒤 `advance` 는 `s.turn` 을 `totalTurns` 까지 올린다. 계기판이 그 값을
+  // 그대로 찍으면 1998–2017 판이 2018년 1분기로 뜨는데, 하단 문구와 성적표는 2017년
+  // 이라고 말한다 — 한 화면이 서로 다른 해를 가리킨다.
+  const s = St.newGame(1234);
+  s.turn = s.totalTurns;
+  const shown = Math.min(s.turn, s.totalTurns - 1);
+  const footer = s.startYear + Math.floor((s.totalTurns - 1) / 4);
+
+  assert.strictEqual(St.yearOf(s, shown), footer, '계기판과 하단 문구가 다른 해를 말한다');
+  assert.strictEqual(St.yearOf(s, shown), 2017);
+  assert.strictEqual(St.quarterOf(s, shown), 4, 'turn 을 넘겨도 무시되면 1분기로 뜬다');
+  // 판이 도는 동안에는 지금 분기를 그대로 보여준다.
+  s.turn = 5;
+  assert.strictEqual(St.yearOf(s, Math.min(s.turn, s.totalTurns - 1)), 1999);
+  assert.strictEqual(St.quarterOf(s, Math.min(s.turn, s.totalTurns - 1)), 2);
+  assert.strictEqual(St.quarterOf(s), 2, '인자를 안 주면 지금 분기다');
+});
+
+test('명령: 처분으로 들어오는 돈은 잔존가가 아니라 잔존가 × 매각률이다', () => {
+  // 화면은 처분 단추 옆에 이 금액을 적는다. 상수가 안 나가 있으면 화면이 잔존가를
+  // 그대로 적게 되고, 플레이어는 100M 을 보고 팔아 85M 을 받는다.
+  assert.strictEqual(typeof Act.RESALE_RATE, 'number', '화면이 쓸 수 있게 내보내야 한다');
+  assert.ok(Act.RESALE_RATE > 0 && Act.RESALE_RATE < 1, `매각률 ${Act.RESALE_RATE}`);
+
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const p = St.planesOf(s, a.id).find((x) => x.routeId === null && x.checkUntilTurn !== s.turn);
+  assert.ok(p, '유휴기가 있어야 검사가 산다');
+  const res = St.residual(s.types[p.typeId], p.ageQuarters, p.paid);
+  assert.ok(res > 0);
+
+  const before = a.cash;
+  assert.strictEqual(Act.sellAircraft(s, a.id, p.id).ok, true);
+  const got = a.cash - before;
+  assert.ok(Math.abs(got - res * Act.RESALE_RATE) < 1e-6, `${Math.round(got)} vs ${Math.round(res * Act.RESALE_RATE)}`);
+  assert.ok(got < res, '잔존가를 그대로 주면 화면 표기와 어긋날 일도 없다 — 검사가 죽었다');
+});

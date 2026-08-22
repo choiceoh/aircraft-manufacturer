@@ -388,7 +388,9 @@
           const t = s.types[p.typeId];
           const fits = routes.filter((r) => Econ.canFly(t, Cities.distance(r.from, r.to)));
           return `<li>
-            <b>${esc(t.name)}</b> <span class="muted">${(p.ageQuarters / 4).toFixed(1)}년 · 잔존 ${money(St.residual(t, p.ageQuarters, p.paid))}</span>
+            <b>${esc(t.name)}</b> <span class="muted">${(p.ageQuarters / 4).toFixed(1)}년 · 잔존 ${money(
+              St.residual(t, p.ageQuarters, p.paid),
+            )} · 처분가 ${money(St.residual(t, p.ageQuarters, p.paid) * A.RESALE_RATE)}</span>
             ${
               fits.length
                 ? `<select data-action="assign" data-plane="${p.id}">

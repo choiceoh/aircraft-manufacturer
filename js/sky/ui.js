@@ -101,10 +101,15 @@
     const me = St.airline(s, ui.meId);
     const last = me.results[me.results.length - 1];
     const eq = St.equity(s, me);
+    // 마지막 정산이 끝나면 `advance` 가 `s.turn` 을 `totalTurns` 까지 올린다. 그대로
+    // 찍으면 1998–2017 판이 계기판에서만 2018년 1분기로 뜬다 — 하단 문구도 성적표도
+    // 2017년이라고 말하는데 날짜만 한 해 앞선다. 달력이 끝났으면 마지막으로 정산한
+    // 분기를 그대로 둔다.
+    const shown = Math.min(s.turn, s.totalTurns - 1);
     document.getElementById('hud').innerHTML = `
       <div class="hud-left">
         <div class="hud-company">${P.esc(me.name)}</div>
-        <div class="hud-date">${St.yearOf(s)}년 ${St.quarterOf(s)}분기 · ${P.esc(Cities.name(me.home))}</div>
+        <div class="hud-date">${St.yearOf(s, shown)}년 ${St.quarterOf(s, shown)}분기 · ${P.esc(Cities.name(me.home))}</div>
       </div>
       <div class="hud-stats">
         <div class="hud-stat"><span>현금</span><b>${SP.money(me.cash)}</b></div>

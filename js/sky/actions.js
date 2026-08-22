@@ -200,8 +200,13 @@
     if (o.freq !== undefined) {
       if (!Number.isInteger(o.freq) || o.freq < 1) return fail('주간 편수는 1 이상의 정수여야 합니다.');
       const dist = Cities.distance(r.from, r.to);
-      const cap = Econ.capacity(St.flyingOn(s, r.id), dist, (t) => s.types[t]);
-      if (o.freq > cap.maxFreq) return fail(`지금 기재로는 주 ${cap.maxFreq}왕복이 한계입니다.`);
+      // **배속 목록 전체로 잰다.** 이번 분기에 뜨는 기재로 재면 중정비로 한 대가 빠진
+      // 분기에 주 10왕복짜리 시간표를 9로 내리는 것조차 막힌다 — 한계가 5로 잡히니
+      // 9 > 5 로 거절이고, 화면의 −1 단추가 죽는다. 여기서 정하는 것은 **계속 가져갈
+      // 시간표**이고, 이번 분기의 일시적 감편은 `effectiveFreq` 가 따로 처리한다.
+      // `assignPlanes` 가 같은 이유로 같은 목록을 본다.
+      const cap = Econ.capacity(St.assignedTo(s, r.id), dist, (t) => s.types[t]);
+      if (o.freq > cap.maxFreq) return fail(`배속 기재로는 주 ${cap.maxFreq}왕복이 한계입니다.`);
       const extra = o.freq - r.freq;
       if (extra > 0 && (freeSlots(s, airlineId, r.from) < extra || freeSlots(s, airlineId, r.to) < extra)) {
         return fail('슬롯이 부족합니다.');
@@ -308,6 +313,7 @@
     FARE_MIN_MUL,
     FARE_MAX_MUL,
     ORDER_QUARTERS,
+    RESALE_RATE,
     usedSlots,
     freeSlots,
     unsoldSlots,

@@ -99,7 +99,7 @@
   // ── 조회 ──
 
   const yearOf = (s, turn) => s.startYear + Math.floor((turn === undefined ? s.turn : turn) / 4);
-  const quarterOf = (s) => (s.turn % 4) + 1;
+  const quarterOf = (s, turn) => ((turn === undefined ? s.turn : turn) % 4) + 1;
   /**
    * 소수 연도. 카탈로그의 취항·단종 시점이 분기 단위(1998.25 = 1998년 2분기)라,
    * 정수 연도로 재면 그 해 2분기 취항 기종을 1분기에도 못 사거나 살 수 있게 된다.
