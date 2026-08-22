@@ -264,7 +264,10 @@
       inflation: s.world.inflation,
       dev: (id) => (s.cityState[id] || {}).dev || 1,
     };
-    const cap = Econ.capacity([{ typeId: type.id }], dist, () => type);
+    // **기령까지 적어 준다.** 아직 사지도 않은 기체를 가정하는 자리라 0 이 맞고,
+    // 안 적으면 `capacity` 가 기령 합을 내다 `avgAgeQuarters: NaN` 을 돌려준다 —
+    // 지금 그 칸을 안 쓸 뿐이지, 쓰는 순간 조용히 번진다.
+    const cap = Econ.capacity([{ typeId: type.id, ageQuarters: 0 }], dist, () => type);
     if (cap.maxFreq < 1) return 0;
     const freq = Math.min(cap.maxFreq, 7);
     const legs = Econ.quarterlyLegs(freq);

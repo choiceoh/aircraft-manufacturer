@@ -3479,3 +3479,35 @@ test('화물: 광동체 장거리가 협동체 단거리보다 화물 비중이 
   );
   assert.ok(ctx.economy === 1, '이 검사는 세계 상태를 안 건드린다');
 });
+
+test('경제: 아직 사지 않은 기체로 물어도 값이 성하다', () => {
+  // 자동조종은 취항 후보를 잴 때 **가정한 기체**로 이 함수를 부른다 — 기령이 없다.
+  // 그때 `undefined` 를 더하면 합이 NaN 이 되어 돌려주는 값이 통째로 오염된다.
+  // 던지지도 않고 조용히 번지는 종류라, 쓰는 칸이 늘어나는 순간 터진다.
+  const s = St.newGame(1234);
+  const type = Object.values(s.types).find((t) => t.range > 3000);
+  assert.ok(type, '기종이 없으면 검사가 아무것도 안 잰다');
+
+  const bare = Econ.capacity([{ typeId: type.id }], 3000, (t) => s.types[t]);
+  for (const k of Object.keys(bare)) {
+    if (typeof bare[k] === 'number') assert.ok(Number.isFinite(bare[k]), `기령 없이 물었더니 capacity.${k} 가 ${bare[k]} 다`);
+  }
+  // 기령을 적어 준 것과 같은 답이어야 한다 — 0 으로 읽는다는 뜻이다.
+  const aged = Econ.capacity([{ typeId: type.id, ageQuarters: 0 }], 3000, (t) => s.types[t]);
+  assert.deepStrictEqual(bare, aged, '없는 기령을 0 이 아닌 다른 값으로 읽었다');
+});
+
+test('화물: 취항 점수가 NaN 을 만들지 않는다', () => {
+  // 화물 항이 `capacity` 를 가정 기체로 부른다. 위 검사가 그 뿌리를 막고, 이 검사는
+  // 실제 경로에서 값이 성하게 나오는지를 본다.
+  const s = playedWithAi(1234, 8);
+  const a = s.airlines.find((x) => x.alive);
+  const from = C.get(a.home);
+  const to = C.CITIES.find((c) => c.id !== a.home);
+  const type = Object.values(s.types).find((t) => t.range > C.distance(from.id, to.id));
+  assert.ok(type, '이 거리를 날 기종이 없으면 검사가 아무것도 안 잰다');
+
+  const score = Ai.attractiveness(s, a.id, from, to, type);
+  assert.ok(Number.isFinite(score), `취항 점수가 ${score} 다`);
+  assert.ok(score > 0, '점수가 0 이하면 화물 항이 실렸는지 알 수 없다');
+});

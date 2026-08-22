@@ -131,7 +131,11 @@
       freqSum += perPlane;
       seatWeighted += perPlane * t.seats;
       if (t.range < minRange) minRange = t.range;
-      ageSum += p.ageQuarters;
+      // **없는 기령은 0 으로 읽는다.** 이 함수는 "이 기체들로 뭘 할 수 있나"를 묻는
+      // 자리라, 아직 사지도 않은 기체를 가정해 부르는 것이 정상 용법이다(자동조종이
+      // 취항 후보를 재는 자리가 그렇다). 그때 `undefined` 를 그대로 더하면 합이 NaN 이
+      // 되어 돌려주는 값이 통째로 오염된다 — 던지지도 않고 조용히 번지는 종류다.
+      ageSum += p.ageQuarters || 0;
     }
     const maxFreq = Math.floor(freqSum);
     return {

@@ -842,7 +842,7 @@
       ${chartCard(C, '현금', me.results.map((r) => r.cash), labels, asMoney)}
       ${chartCard(C, '분기 승객', me.results.map((r) => r.pax), labels, num)}
       <div class="card full"><h3>최근 분기</h3>
-        <table class="tbl"><thead><tr><th>분기</th><th class="r">수입</th><th class="r">화물</th><th class="r">순익</th><th class="r">승객</th><th class="r">탑승률</th></tr></thead><tbody>
+        <table class="tbl"><thead><tr><th>분기</th><th class="r">여객</th><th class="r">화물</th><th class="r">순익</th><th class="r">승객</th><th class="r">탑승률</th></tr></thead><tbody>
         ${me.results
           .slice(-12)
           .reverse()
