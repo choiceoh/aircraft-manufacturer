@@ -483,12 +483,28 @@
     });
     const mine = St.routesOf(s, meId).filter((r) => r.active);
     const others = s.routes.filter((r) => r.active && r.airlineId !== meId);
+    const seg = (cls, x1, y1, x2, y2) =>
+      `<line class="${cls}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" />`;
+
+    /**
+     * 노선 한 줄.
+     *
+     * 날짜변경선을 넘는 구간(상하이–LA, 오클랜드–LA…)은 그냥 이으면 지도를 통째로
+     * 되돌아 긋는다. 그렇다고 안 그리면 **개수에는 세면서 화면에는 없는** 노선이 된다 —
+     * 태평양 노선망이 통째로 보이지 않는데 "전체 305개"라고 적히는 식이다. 지도 양끝에서
+     * 잘라 두 토막으로 그린다.
+     */
     const line = (r, cls) => {
       const a = xy(Cities.get(r.from));
       const b = xy(Cities.get(r.to));
-      // 태평양을 가로지르는 선이 지도를 통째로 되돌아 긋는 것을 막는다.
-      if (Math.abs(a.x - b.x) > W / 2) return '';
-      return `<line class="${cls}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" />`;
+      const dx = b.x - a.x;
+      if (Math.abs(dx) <= W / 2) return seg(cls, a.x, a.y, b.x, b.y);
+      // 짧은 쪽으로 돌아간다 — 넘어가는 방향이 반대다.
+      const wrapped = dx > 0 ? dx - W : dx + W;
+      const edge = wrapped < 0 ? 0 : W;
+      const t = (edge - a.x) / wrapped;
+      const yc = a.y + (b.y - a.y) * t;
+      return seg(cls, a.x, a.y, edge, yc) + seg(cls, W - edge, yc, b.x, b.y);
     };
     const dots = Cities.CITIES.map((c) => {
       const p = xy(c);

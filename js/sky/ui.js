@@ -123,19 +123,21 @@
   }
 
   /**
-   * 판이 끝났는가 — 마지막 분기를 넘겼거나 우리 회사가 접혔거나.
+   * 판이 끝났는가 — 마지막 분기를 넘겼거나, 우리 회사가 접혔거나, 아직 안 골랐거나.
    *
-   * 둘을 함께 봐야 한다. 달력만 보면, 회사가 5년째에 접혀도 남은 60분기를 계속 넘겨야
-   * "새 게임" 버튼이 나온다. 그 사이 명령은 전부 실패하므로 할 수 있는 일이 없다.
+   * 셋을 함께 봐야 한다. 달력만 보면 회사가 5년째에 접혀도 남은 60분기를 계속 넘겨야
+   * "새 게임" 버튼이 나오고, 그 사이 명령은 전부 실패하므로 할 수 있는 일이 없다.
+   * 회사 선택 화면에서는 아직 판이 없으므로 `s` 가 비어 있다.
    */
   function isOver(s) {
+    if (!s) return true;
     const me = St.airline(s, ui.meId);
     return s.turn >= s.totalTurns || !me || !me.alive;
   }
 
   function renderFoot(s) {
     const foot = document.getElementById('foot');
-    if (!foot) return;
+    if (!foot || !s) return;
     if (isOver(s)) {
       const me = St.airline(s, ui.meId);
       const why = me && !me.alive ? `${P.esc(me.name)} · 파산` : `${s.startYear + Math.floor((s.totalTurns - 1) / 4)}년 · 경영 종료`;
@@ -200,11 +202,14 @@
     // 끝난 판에서는 화면을 둘러보는 것만 된다. 안 막으면 마지막 분기를 넘긴 뒤에도
     // 기재를 사고팔아 저장된 최종 성적과 순위가 바뀐다.
     if (isOver(s) && !VIEW_ONLY.has(d.action)) {
-      toast('경영이 끝났다. 기록만 볼 수 있다.', 'bad');
+      if (s) toast('경영이 끝났다. 기록만 볼 수 있다.', 'bad');
       return;
     }
 
     switch (d.action) {
+      case 'pick':
+        newGame(d.id);
+        break;
       case 'tab':
         ui.tab = d.tab;
         ui.animate = 'tab';
@@ -214,7 +219,9 @@
         nextTurn();
         break;
       case 'new-game':
-        newGame();
+        // 회사 선택으로 돌아간다. 그냥 `newGame()` 을 부르면 `airlines[0]`(대한항공)이
+        // 잠자코 배정되어, 다른 회사를 고른 플레이어가 다음 판을 남의 회사로 시작한다.
+        chooseCompany();
         break;
       case 'fare': {
         const r = s.routes.find((x) => x.id === +d.route);
@@ -314,6 +321,7 @@
   function newGame(meId) {
     const seed = (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
     ui.state = St.newGame(seed);
+    // 부르는 쪽이 회사를 정해야 한다. 기본값을 두면 "누구를 맡았는지"가 조용히 갈린다.
     ui.meId = meId || ui.state.airlines[0].id;
     ui.tab = 'overview';
     ui.folds = new Set();
@@ -323,7 +331,11 @@
   /** 어느 회사를 맡을지 고른다. 판을 열기 전에 한 번만 묻는다. */
   function chooseCompany() {
     const s = St.newGame((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
+    // 지난 판을 놓는다. 안 놓으면 `isOver` 가 그 판을 보고 선택 버튼까지 얼린다
+    // (끝난 판의 화면을 얼리는 `.panel.over` 가 그대로 남아 클릭이 안 먹었다).
+    ui.state = null;
     const panel = document.getElementById('panel');
+    panel.className = 'panel';
     document.getElementById('hud').innerHTML = '<div class="hud-left"><div class="hud-company">에어라이너 — 항공사</div></div>';
     document.getElementById('tabs').innerHTML = '';
     document.getElementById('foot').innerHTML = '<span class="muted">회사를 고르면 시작한다</span>';
@@ -340,14 +352,6 @@
         })
         .join('')}</ul>
     </div></section>`;
-    panel.addEventListener(
-      'click',
-      (e) => {
-        const b = e.target.closest('[data-action="pick"]');
-        if (b) newGame(b.dataset.id);
-      },
-      { once: false },
-    );
   }
 
   function boot() {

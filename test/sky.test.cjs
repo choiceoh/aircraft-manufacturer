@@ -1521,3 +1521,30 @@ test('상태: 노선을 접어도 슬롯은 남고, 반납은 따로 한다', ()
   assert.strictEqual(Act.sellSlots(s, a.id, r.to, held).ok, true);
   assert.strictEqual(St.slotsAt(a, r.to), 0);
 });
+
+test('화면: 날짜변경선을 넘는 노선도 그린다', () => {
+  // 안 그리면 개수에는 세면서 화면에는 없는 노선이 된다 — 태평양 노선망이 통째로
+  // 안 보이는데 "전체 305개"라고 적히는 식이다.
+  const s = playedWithAi(1234, 80);
+  const me = s.airlines.find((a) => a.alive).id;
+  const html = SP.renderMap(s, me, new Set());
+  const drawn = (html.match(/<line /g) || []).length;
+  const active = s.routes.filter((r) => r.active).length;
+  const wrapped = s.routes.filter((r) => {
+    if (!r.active) return false;
+    const x1 = C.project(C.get(r.from).lat, C.get(r.from).lon).x;
+    const x2 = C.project(C.get(r.to).lat, C.get(r.to).lon).x;
+    return Math.abs(x1 - x2) > 0.5;
+  }).length;
+  assert.ok(wrapped > 0, '넘는 노선이 있어야 검사가 산다');
+  // 넘는 노선은 지도 양끝에서 잘려 두 토막이 된다.
+  assert.strictEqual(drawn, active + wrapped, `선 ${drawn}개, 노선 ${active}개(넘는 것 ${wrapped}개)`);
+
+  // 좌표가 지도 밖으로 나가거나 NaN 이 되면 안 된다.
+  for (const m of html.matchAll(/x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"/g)) {
+    for (const v of m.slice(1)) {
+      const n = Number(v);
+      assert.ok(Number.isFinite(n) && n >= -1 && n <= 1001, `지도 밖 좌표 ${v}`);
+    }
+  }
+});
