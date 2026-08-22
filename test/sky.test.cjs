@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
 // 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js']) {
   require(path.join(JS, f));
 }
 
@@ -313,4 +313,168 @@ test('수요: 항공여행 보급 지수가 기준연도와 성장률에 묶여 
   assert.ok(Math.abs(D.travelIndex(1971) - 1.02) < 1e-9, '연 2% 성장이다');
   assert.ok(Math.abs(D.travelIndex(1998) - Math.pow(1.02, 28)) < 1e-9);
   assert.ok(D.travelIndex(2017) > D.travelIndex(1998), '시대를 타야 한다');
+});
+
+// ─────────────────────── 시장 점유 · 노선 채산 ───────────────────────
+
+const Econ = globalThis.AirlinerSkyEconomics;
+const M = globalThis.AirlinerSkyMarket;
+
+/** 기종 표 — 경쟁 카탈로그를 항공사 계층이 쓰는 모양으로. */
+const TYPES = {};
+for (const a of Fleet.AIRCRAFT) TYPES[a.id] = T.fromRival(a, Design.evaluate);
+
+/** 노선 하나를 굴려 결과와 원가를 낸다. */
+function fly(opts) {
+  const { from, to, typeId, planes: n, freq, fareMul = 1, rivals = [], home = from, feed = 0 } = opts;
+  const airlines = [
+    { id: 'me', name: 'me', home, brand: 40, serviceLevel: 3, safety: 1, alive: true, slots: { [from]: freq, [to]: freq } },
+  ];
+  const routes = [{ id: 1, airlineId: 'me', from, to, freq, fareMul, active: true, serviceExtra: 0 }];
+  const planes = Array.from({ length: n }, (_, i) => ({ id: i + 1, typeId, airlineId: 'me', routeId: 1, ageQuarters: 8 }));
+  rivals.forEach((r, k) => {
+    const id = `r${k}`;
+    airlines.push({ id, name: id, home: r.home || to, brand: 40, serviceLevel: 3, safety: 1, alive: true, slots: { [from]: r.freq, [to]: r.freq } });
+    routes.push({ id: 10 + k, airlineId: id, from, to, freq: r.freq, fareMul: r.fareMul || 1, active: true, serviceExtra: 0 });
+    for (let i = 0; i < r.planes; i++) {
+      planes.push({ id: 100 + k * 10 + i, typeId: r.typeId || typeId, airlineId: id, routeId: 10 + k, ageQuarters: 8 });
+    }
+  });
+  const ctx = {
+    airlineOf: (id) => airlines.find((a) => a.id === id),
+    planesOn: (rid) => planes.filter((p) => p.routeId === rid),
+    typeOf: (t) => TYPES[t],
+    slotsAt: (aid, c) => (airlines.find((a) => a.id === aid).slots || {})[c] || 0,
+    totalSlots: (c) => C.get(c).slots,
+    feedCount: (aid) => (aid === 'me' ? feed : 0),
+    demand: (a, b) => D.quarterly(a, b, { quarter: 1, travelIndex: D.travelIndex(1998) }),
+    inflation: 1,
+    oil: 1,
+  };
+  const outs = M.resolvePair(C.get(from), C.get(to), routes, ctx);
+  const mine = outs.find((o) => o.airlineId === 'me');
+  const cost = Econ.routeCost(routes[0], planes.filter((p) => p.routeId === 1), {
+    typeOf: (t) => TYPES[t], oil: 1, inflation: 1, serviceLevel: 3, pax: mine ? mine.pax : 0, revenue: mine ? mine.revenue : 0,
+  });
+  return { out: mine, all: outs, cost, margin: mine && mine.revenue > 0 ? (mine.revenue - cost.total) / mine.revenue : 0 };
+}
+
+test('시장: 로컬 편차가 종 모양이고 도시쌍마다 고정이다', () => {
+  // 분기마다 다시 굴리면 탑승률이 이유 없이 출렁여 경영 판단이 잡음에 묻힌다.
+  const vals = C.pairs().map(([a, b]) => M.bellDeviate(C.pairKey(a.id, b.id)));
+  const mean = vals.reduce((x, y) => x + y, 0) / vals.length;
+  const sd = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+  assert.ok(Math.abs(mean) < 0.15, `평균이 0 근처여야 한다 (${mean.toFixed(3)})`);
+  assert.ok(Math.abs(sd - 1) < 0.15, `표준편차가 1 근처여야 한다 (${sd.toFixed(3)})`);
+  assert.strictEqual(M.bellDeviate('seoul|tokyo'), M.bellDeviate('seoul|tokyo'), '같은 키는 같은 값이다');
+
+  // 3단계 표시가 대략 3:4:3 으로 갈려야 "어디를 뚫을지"가 판단거리가 된다.
+  const counts = { 강함: 0, 보통: 0, 약함: 0 };
+  for (const [a, b] of C.pairs()) counts[M.localStrengthLabel(a, b)]++;
+  for (const k of Object.keys(counts)) {
+    const share = counts[k] / 990;
+    assert.ok(share > 0.2 && share < 0.45, `${k} 가 ${(share * 100).toFixed(0)}% 다 — 한쪽으로 몰렸다`);
+  }
+});
+
+test('시장: 로컬은 멀수록 약해진다', () => {
+  // 거리에 무관하게 세게 두면 도쿄–LA 같은 간판 간선이 독점인데도 반도 못 찬다.
+  const near = M.localStrength(C.get('seoul'), C.get('tokyo'));
+  const far = M.localStrength(C.get('tokyo'), C.get('losangeles'));
+  assert.ok(far < near, `먼 구간의 로컬이 약해야 한다 (${near.toFixed(2)} → ${far.toFixed(2)})`);
+});
+
+test('시장: 독점 간선의 마진이 확장할 맛이 나는 자리에 있다', () => {
+  // sky-tycoon 의 목표 밴드 — 너무 낮으면 아무도 안 열고, 너무 높으면 무엇을 해도 남는다.
+  for (const c of [
+    { from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14 },
+    { from: 'newyork', to: 'chicago', typeId: 'b737-800', planes: 4, freq: 18 },
+  ]) {
+    const r = fly(c);
+    assert.ok(r.margin > 0.12 && r.margin < 0.55, `${c.from}–${c.to}: 마진 ${(r.margin * 100).toFixed(0)}%`);
+  }
+});
+
+test('시장: 경쟁이 붙으면 마진과 탑승률이 확실히 깎인다', () => {
+  const solo = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14 });
+  const duo = fly({
+    from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14,
+    rivals: [{ planes: 3, freq: 14 }],
+  });
+  assert.ok(duo.margin < solo.margin - 0.1, `마진이 깎여야 한다 (${(solo.margin * 100).toFixed(0)}% → ${(duo.margin * 100).toFixed(0)}%)`);
+  assert.ok(duo.out.loadFactor < solo.out.loadFactor - 0.1, '탑승률도 떨어져야 한다');
+});
+
+test('시장: 운임을 올리면 승객을 뺏긴다', () => {
+  const base = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14, rivals: [{ planes: 3, freq: 14 }] });
+  const dear = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14, fareMul: 1.3, rivals: [{ planes: 3, freq: 14 }] });
+  assert.ok(dear.out.share < base.out.share, `점유가 떨어져야 한다 (${(base.out.share * 100).toFixed(0)}% → ${(dear.out.share * 100).toFixed(0)}%)`);
+  assert.ok(dear.out.loadFactor < base.out.loadFactor, '탑승률도 떨어진다');
+});
+
+test('시장: 독점이어도 100% 가 아니다 — 로컬이 늘 함께 겨룬다', () => {
+  // 점유율 분모가 로컬 몫까지 포함한 시장 전체다. 모델 안 회사끼리만 나누면
+  // 혼자 취항한 구간이 언제나 100% 로 뜬다.
+  const r = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14 });
+  assert.ok(r.out.share < 0.95, `독점 점유가 ${(r.out.share * 100).toFixed(0)}% 다 — 로컬이 사라졌다`);
+  assert.ok(r.out.share > 0.3, '그렇다고 로컬이 다 가져가도 안 된다');
+});
+
+test('시장: 연고와 환승편이 있는 쪽이 확실히 더 채운다', () => {
+  // 같은 기재·운임·편수라도 네트워크와 연고가 있는 쪽이 더 채워야 한다.
+  const away = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14, home: 'london', rivals: [{ planes: 3, freq: 14, home: 'seoul' }] });
+  const homeSide = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14, home: 'seoul', rivals: [{ planes: 3, freq: 14, home: 'london' }] });
+  assert.ok(homeSide.out.share > away.out.share, '연고가 있는 쪽이 더 가져간다');
+
+  const bare = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14, rivals: [{ planes: 3, freq: 14 }] });
+  const hubbed = fly({ from: 'seoul', to: 'tokyo', typeId: 'b737-800', planes: 3, freq: 14, feed: 2, rivals: [{ planes: 3, freq: 14 }] });
+  assert.ok(hubbed.out.share > bare.out.share, '연결편이 있는 쪽이 더 가져간다');
+});
+
+test('시장: 뜨는 기재가 없으면 아예 시장에 못 들어간다', () => {
+  // 중정비로 기재가 전부 빠진 노선이 좌석을 내놓으면 안 된다.
+  const routes = [{ id: 1, airlineId: 'me', from: 'seoul', to: 'tokyo', freq: 14, fareMul: 1, active: true }];
+  const ctx = {
+    airlineOf: () => ({ id: 'me', home: 'seoul', brand: 40, serviceLevel: 3, safety: 1, alive: true }),
+    planesOn: () => [],
+    typeOf: (t) => TYPES[t],
+    slotsAt: () => 14,
+    totalSlots: (c) => C.get(c).slots,
+    feedCount: () => 0,
+    demand: (a, b) => D.quarterly(a, b, { quarter: 1 }),
+  };
+  assert.deepStrictEqual(M.resolvePair(C.get('seoul'), C.get('tokyo'), routes, ctx), []);
+});
+
+test('시장: 좌석이 모자라 흘린 몫만 다시 돌린다', () => {
+  // 로컬을 택한 손님까지 다시 돌리면 라운드를 거듭할수록 바깥 선택지가 무력해져
+  // (50% 가 93.75% 가 된다) 이 모델이 통째로 무너진다.
+  const offers = [{ remaining: 100, seats: 100 }];
+  const plenty = M.allocate(offers.map((o) => ({ ...o })), 1000, 0, () => 0);
+  // 로컬 효용 0, 우리 효용 0 → 절반이 우리에게 온다. 좌석이 100 뿐이라 나머지는 흘린다.
+  assert.ok(plenty.taken[0] <= 100 + 1e-9, '좌석보다 많이 태울 수 없다');
+  assert.ok(plenty.unmet > 0, '못 태운 몫이 남아야 한다');
+
+  // 좌석이 넉넉하면 로컬 몫은 끝까지 로컬에 남는다.
+  const roomy = M.allocate([{ remaining: 1e9, seats: 1e9 }], 1000, 0, () => 0);
+  assert.ok(roomy.taken[0] < 900, `로컬 몫이 살아 있어야 한다 (${roomy.taken[0].toFixed(0)}/1000)`);
+});
+
+test('채산: 거리를 안 타는 원가가 있어 단거리는 편수를 욕심내면 적자다', () => {
+  // 기본요금이 없으면 짧은 노선일수록 고정비를 못 건진다 — 그래서 표준운임에
+  // 0km 기본요금이 있고, 편수를 최대로 밀면 좌석이 로컬에 밀려 남지 않는다.
+  const sane = fly({ from: 'london', to: 'paris', typeId: 'b737-800', planes: 3, freq: 20 });
+  const greedy = fly({ from: 'london', to: 'paris', typeId: 'b737-800', planes: 12, freq: 80 });
+  assert.ok(sane.margin > 0, '적당한 편수는 남아야 한다');
+  assert.ok(greedy.margin < sane.margin, `편수를 밀면 마진이 나빠져야 한다 (${(sane.margin * 100).toFixed(0)}% → ${(greedy.margin * 100).toFixed(0)}%)`);
+  assert.ok(greedy.out.loadFactor < sane.out.loadFactor, '좌석을 깔수록 로컬에 밀린다');
+});
+
+test('채산: 큰 기체가 한 바퀴에 더 오래 묶인다', () => {
+  const narrow = TYPES['b737-800'];
+  const wide = TYPES['b747-400'];
+  const d = C.distance('tokyo', 'losangeles');
+  assert.ok(Econ.roundTripHours(wide, d) > Econ.roundTripHours(narrow, d), '조업시간이 길다');
+  assert.ok(!Econ.canFly(narrow, d), '협동체로는 태평양을 못 건넌다');
+  assert.ok(Econ.canFly(wide, d), '광동체는 건넌다');
 });
