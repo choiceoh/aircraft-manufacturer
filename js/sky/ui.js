@@ -42,6 +42,8 @@
   // ─────────────────────────────── 렌더 ───────────────────────────────
 
   function render() {
+    // 통합 모드에서 제조사 화면을 보고 있는 동안 항공사 쪽이 그리면 남의 패널을 덮는다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('airline')) return;
     const s = ui.state;
     const anim = ui.animate;
     ui.animate = null;
@@ -159,6 +161,8 @@
   }
 
   function toast(text, kind) {
+    // 토스트도 공용 DOM 이다 — 화면을 안 잡은 계층이 띄우면 남의 화면에 남의 소식이 뜬다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('airline')) return;
     const el = document.getElementById('toast');
     el.className = 'toast show ' + (kind || '');
     el.textContent = text;
@@ -199,6 +203,8 @@
   }
 
   function onClick(e) {
+    // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 자기 차례일 때만 듣는다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('airline')) return;
     const summary = e.target.closest('summary[data-fold]');
     if (summary) {
       const id = summary.dataset.fold;
@@ -229,7 +235,10 @@
         render();
         break;
       case 'next-turn':
-        nextTurn();
+        // 통합 모드에서는 껍데기가 제조사 → 항공사 순서로 넘긴다. 여기서 바로
+        // `nextTurn` 을 부르면 누른 버튼에 따라 정산 순서가 갈린다.
+        if (root.AirlinerShell) root.AirlinerShell.turn();
+        else nextTurn();
         break;
       case 'new-game':
         // 회사 선택으로 돌아간다. 그냥 `newGame()` 을 부르면 `airlines[0]`(대한항공)이
@@ -303,6 +312,8 @@
   }
 
   function onChange(e) {
+    // 통합 모드에서는 두 컨트롤러가 다 `document` 를 듣는다. 자기 차례일 때만 듣는다.
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('airline')) return;
     // 취항 후보의 기재 선택은 상태를 바꾸지 않는다 — 누를 때 쓰려고 기억만 해 둔다.
     // 여기서 다시 그리면 셀렉트가 초기화되어 고른 것이 날아간다.
     const pick = e.target.closest('select[data-action="pick-plane"]');
@@ -398,14 +409,29 @@
   function boot() {
     document.addEventListener('click', onClick);
     document.addEventListener('change', onChange);
-    if (load()) render();
+    load();
+    show();
+  }
+
+  /**
+   * 이 계층이 화면을 잡을 때 부른다.
+   *
+   * 회사 선택을 **부팅이 아니라 여기서** 묻는다. 통합 모드에서는 제조사 계층이 먼저
+   * 화면을 잡으므로, 부팅 시점에 물으면 남의 패널을 덮어쓴다.
+   */
+  function show() {
+    if (root.AirlinerShell && !root.AirlinerShell.isActive('airline')) return;
+    if (ui.state) render();
     else chooseCompany();
   }
 
-  if (typeof document !== 'undefined') {
+  root.AirlinerSkyUi = { ui, TABS, render, show, nextTurn, newGame, save, load, boot };
+
+  // 껍데기가 있으면 어느 모드에서 도는지는 껍데기가 정한다. 없으면(옛 진입점) 그대로 켠다.
+  if (root.AirlinerShell) {
+    root.AirlinerShell.register('airline', { boot, render, show, turn: nextTurn });
+  } else if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();
   }
-
-  root.AirlinerSkyUi = { ui, TABS, render, nextTurn, newGame, save, load };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

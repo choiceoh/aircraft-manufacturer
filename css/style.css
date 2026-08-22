@@ -1782,3 +1782,75 @@ details.fold > table:first-of-type {
   border: 1px solid transparent;
   line-height: 1.2;
 }
+
+/* ── 껍데기: 모드 선택과 계층 전환 ────────────────────────────────── */
+
+/* 탭 위에 얇게 깔린다. 탭과 같은 굵기로 보이면 어느 것이 상위인지 알 수 없으므로
+   더 작고 흐리게 둔다 — 여기는 하루에 한 번 누르는 자리다. */
+.layers {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 18px 0;
+  overflow-x: auto;
+}
+.layers[hidden] {
+  display: none;
+}
+.layer {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.layer.on {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+/* 모드 되돌아가기는 계층 전환과 같은 줄에 있지만 같은 일이 아니다 — 오른쪽 끝으로 민다. */
+.layer.alt {
+  margin-left: auto;
+  border-style: dashed;
+}
+.layer-name {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 모드 선택 카드. 고르는 순간 20년이 정해지므로 한 줄 설명으로 끝내지 않는다. */
+.modes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.mode {
+  display: block;
+  text-align: left;
+  padding: 14px 16px;
+  line-height: 1.5;
+}
+.mode b {
+  display: block;
+  font-size: 16px;
+}
+.mode-icon {
+  margin-right: 6px;
+}
+.mode .mode-line {
+  display: block;
+  color: var(--accent);
+  font-size: 13px;
+  margin: 2px 0 4px;
+}
+.mode .muted {
+  display: block;
+  font-size: 13px;
+}

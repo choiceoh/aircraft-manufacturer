@@ -17,6 +17,8 @@
          달라져 탭의 top 값을 맞출 수 없다. -->
     <div class="topbar">
       <header id="hud" class="hud"></header>
+      <!-- 통합 모드에서만 보이는 계층 전환(제조사 ↔ 항공사). 다른 모드에서는 비어 있다. -->
+      <nav id="layers" class="layers" hidden></nav>
       <nav id="tabs" class="tabs"></nav>
     </div>
     <main id="panel" class="panel"></main>
@@ -31,7 +33,10 @@
     <!-- 하단 액션 바 — 엄지가 닿는 자리. 내용은 ui.js 가 그린다(할 일 배지가 상태를 탄다). -->
     <footer id="foot" class="foot"></footer>
 
-    <!-- 순서 중요: 아래로 갈수록 위 모듈에 의존한다 (전역 네임스페이스 IIFE) -->
+    <!-- 순서 중요: 아래로 갈수록 위 모듈에 의존한다 (전역 네임스페이스 IIFE).
+         `shell.js` 가 가장 먼저다 — 두 컨트롤러가 자동으로 켜지는 대신 껍데기에
+         등록하도록, 그들이 파싱될 때 이미 `AirlinerShell` 이 있어야 한다. -->
+    <script src="js/shell.js"></script>
     <script src="js/rng.js"></script>
     <script src="js/fleet.js"></script>
     <script src="js/engines.js"></script>
@@ -43,6 +48,20 @@
     <script src="js/bidding.js"></script>
     <script src="js/engine.js"></script>
     <script src="js/panels.js"></script>
+
+    <!-- 항공사 계층. 제조사 모드에서는 껍데기가 켜지 않으므로 값을 치르지 않는다. -->
+    <script src="js/sky/cities.js"></script>
+    <script src="js/sky/demand.js"></script>
+    <script src="js/sky/types.js"></script>
+    <script src="js/sky/economics.js"></script>
+    <script src="js/sky/market.js"></script>
+    <script src="js/sky/state.js"></script>
+    <script src="js/sky/actions.js"></script>
+    <script src="js/sky/ai.js"></script>
+    <script src="js/sky/panels.js"></script>
+
+    <!-- 두 컨트롤러는 마지막이다. 둘 다 껍데기에 등록만 하고, 켜는 것은 껍데기가 정한다. -->
     <script src="js/ui.js"></script>
+    <script src="js/sky/ui.js"></script>
   </body>
 </html>
