@@ -1,0 +1,670 @@
+/*
+ * 항공사 계층의 상태 — 회사·노선·기재, 그리고 분기 정산.
+ *
+ * 이 게임의 본체(제조사)와 같은 규약을 따른다. 상태는 평범한 객체이고, 이 모듈은
+ * DOM 을 모르며, 같은 시드에 같은 조작이면 같은 결과가 난다. 두 계층은 **한 세계**를
+ * 공유한다 — 유가와 경기는 제조사 쪽 `s.market` 에서 받아 온다(`syncWorld`).
+ *
+ * sky-tycoon 에서 옮기면서 잘라낸 것: 화물·주식과 인수전·리스·객실 등급·부대사업·
+ * 광고·공항 확장. 남긴 것은 **없으면 게임이 무너지는 것**이다 — 슬롯 임차료(놀려도
+ * 나가는 고정비), 중정비 입고(예비기 한 대를 놀리는 값), 감가상각과 이자.
+ */
+(function (root) {
+  'use strict';
+
+  const Cities = root.AirlinerCities;
+  const Types = root.AirlinerSkyTypes;
+  const Econ = root.AirlinerSkyEconomics;
+  const Market = root.AirlinerSkyMarket;
+  const Fleet = root.AirlinerFleet;
+  const Design = root.AirlinerDesign;
+  const Data = root.AirlinerData;
+  const createRng = root.AirlinerRng.createRng;
+
+  const B = {
+    /** 회사 유지 간접비 */
+    OVERHEAD_FIXED: 1.6e6,
+    OVERHEAD_PER_AIRCRAFT: 120000,
+    OVERHEAD_PER_ROUTE: 18000,
+    SERVICE_OPEX_PER_LEVEL_PER_PLANE: 32000,
+
+    /** 기재는 15년(60분기)에 걸쳐 턴다 */
+    DEPRECIATION_QUARTERS: 60,
+    TAX_RATE: 0.4,
+
+    /** 슬롯은 매입이 아니라 임차다 — 놀려도 매 분기 나간다 */
+    SLOT_RENT_PER_QUARTER: 0.012e6,
+    SLOT_BASE_PRICE: 0.12e6,
+    SLOT_HOME_DISCOUNT: 0.6,
+
+    BASE_INTEREST: 0.07,
+    /** 자기자본 대비 차입 한도 */
+    DEBT_CAP_EQUITY: 2.2,
+
+    // ── 중정비 ──
+    /** 비행시간 주기 */
+    CHECK_INTERVAL_HOURS: 10000,
+    /** 덜 굴려도 이 분기를 넘기면 들어간다 */
+    CHECK_MAX_QUARTERS: 20,
+    CHECK_MIN_QUARTERS: 5,
+    /** 늙을수록 주기가 짧아진다 */
+    CHECK_INTERVAL_AGE_DECAY: 0.0055,
+    CHECK_INTERVAL_MIN_RATIO: 0.45,
+    /** 한 번 값 = 정가 × 이 비율, 기령이 얹는다 */
+    CHECK_COST_RATE: 0.06,
+    CHECK_COST_AGE_SLOPE: 0.02,
+    CHECK_WARN_RATIO: 0.82,
+
+    /** 자본잠식이 이만큼 이어지면 접는다 */
+    NEGATIVE_QUARTERS_TO_FOLD: 8,
+  };
+
+  /**
+   * 1970년을 1.0 으로 두는 물가 지수.
+   *
+   * sky-tycoon 의 운임·원가 상수가 전부 1970년 명목가라 그 기준을 그대로 쓴다. 여기서
+   * 1 부터 다시 세면 착륙료 $1,000 같은 1970년 값이 1998년에 그대로 청구되어 원가가
+   * 3.8배 싸진다. 기체 값과의 척도 차이는 `FARE_SCALE` 하나로 맞춘다.
+   */
+  function inflationFor(year) {
+    let v = 1;
+    for (let y = 1970; y < year; y++) {
+      v *= y < 1980 ? 1.07 : y < 1990 ? 1.045 : y < 2000 ? 1.028 : y < 2010 ? 1.025 : 1.02;
+    }
+    return v;
+  }
+
+  /** 항공유 가격 (USD/L, 명목). 제조사 쪽 유가 지수가 이 값을 흔든다. */
+  function oilFor(year) {
+    if (year < 1974) return 0.03;
+    if (year < 1979) return 0.092;
+    if (year < 1986) return 0.26;
+    if (year < 1990) return 0.155;
+    if (year < 2000) return 0.21;
+    if (year < 2008) return 0.48;
+    return 0.8;
+  }
+
+  // ── 조회 ──
+
+  const yearOf = (s, turn) => s.startYear + Math.floor((turn === undefined ? s.turn : turn) / 4);
+  const quarterOf = (s) => (s.turn % 4) + 1;
+  const airline = (s, id) => s.airlines.find((a) => a.id === id) || null;
+  const living = (s) => s.airlines.filter((a) => a.alive);
+  const routesOf = (s, id) => s.routes.filter((r) => r.airlineId === id);
+  const planesOf = (s, id) => s.planes.filter((p) => p.airlineId === id);
+  /** 이 노선에 배속된 기재 — 중정비로 묶인 것까지 (배속 화면용). */
+  const assignedTo = (s, routeId) => s.planes.filter((p) => p.routeId === routeId);
+  /** 그중 **이번 분기에 실제로 뜨는** 기재. 좌석도 원가도 이 목록으로 센다. */
+  const flyingOn = (s, routeId) => assignedTo(s, routeId).filter((p) => p.checkUntilTurn !== s.turn);
+  const slotsAt = (a, city) => (a.slots || {})[city] || 0;
+
+  /** 이 회사가 이 도시에서 **다른 어디로 더 갈 수 있는가** — 환승 매력의 근거. */
+  function feedCount(s, airlineId, city, selfRouteId) {
+    let n = 0;
+    for (const r of s.routes) {
+      if (r.airlineId !== airlineId || !r.active || r.id === selfRouteId) continue;
+      if (r.from === city || r.to === city) n++;
+    }
+    return n;
+  }
+
+  /** 기종 표 — 경쟁 카탈로그와 플레이어 프로그램을 한 모양으로 모은다. */
+  function typeTable(programs) {
+    const out = {};
+    for (const a of Fleet.AIRCRAFT) out[a.id] = Types.fromRival(a, Design.evaluate);
+    for (const p of programs || []) out[p.id] = Types.fromProgram(p);
+    return out;
+  }
+
+  /** 시장·채산이 상태를 읽는 통로. 두 계층이 만나는 자리는 여기 하나다. */
+  function marketContext(s) {
+    const types = s.types || typeTable(s.programs);
+    return {
+      airlineOf: (id) => airline(s, id),
+      planesOn: (routeId) => flyingOn(s, routeId),
+      typeOf: (id) => types[id],
+      slotsAt: (aid, city) => slotsAt(airline(s, aid) || {}, city),
+      totalSlots: (city) => Cities.get(city).slots,
+      feedCount: (aid, city, selfRouteId) => feedCount(s, aid, city, selfRouteId),
+      demand: (a, b) => demandFor(s, a, b),
+      inflation: s.world.inflation,
+      oil: s.world.oil,
+    };
+  }
+
+  /** 도시 성장·경기·일시 효과를 얹은 분기 수요. */
+  function demandFor(s, a, b) {
+    const ca = s.cityState[a.id] || {};
+    const cb = s.cityState[b.id] || {};
+    return root.AirlinerDemand.quarterly(a, b, {
+      quarter: quarterOf(s),
+      travelIndex: s.world.travelIndex,
+      economy: s.world.economy,
+      dev: { [a.id]: ca.dev, [b.id]: cb.dev },
+      boost: { [a.id]: boostAt(ca, s.turn), [b.id]: boostAt(cb, s.turn) },
+      closed: { [a.id]: isClosed(ca, s.turn), [b.id]: isClosed(cb, s.turn) },
+    });
+  }
+
+  const isClosed = (cs, turn) => turn <= (cs.closedUntilTurn === undefined ? -1 : cs.closedUntilTurn);
+
+  function boostAt(cs, turn) {
+    let v = 1;
+    for (const e of cs.effects || []) if (turn <= e.untilTurn) v *= e.mult;
+    return Math.min(3, Math.max(0.2, v));
+  }
+
+  // ── 회계 ──
+
+  function overhead(s, a) {
+    const fleet = planesOf(s, a.id).length;
+    const routes = routesOf(s, a.id).filter((r) => r.active).length;
+    const base = B.OVERHEAD_FIXED + fleet * B.OVERHEAD_PER_AIRCRAFT + routes * B.OVERHEAD_PER_ROUTE;
+    const service = fleet * a.serviceLevel * B.SERVICE_OPEX_PER_LEVEL_PER_PLANE;
+    return (base + service) * s.world.inflation;
+  }
+
+  /** 슬롯 한 자리의 분기 임차료. 큰 공항일수록, 남의 안방일수록 비싸다. */
+  function slotRent(s, airlineId, cityId) {
+    const c = Cities.get(cityId);
+    const size = (c.standing + c.tour) / 100;
+    const a = airline(s, airlineId);
+    const home = a && a.home === cityId ? B.SLOT_HOME_DISCOUNT : 1;
+    return B.SLOT_RENT_PER_QUARTER * size * c.fee * home * s.world.inflation;
+  }
+
+  function slotRentTotal(s, a) {
+    let sum = 0;
+    for (const city of Object.keys(a.slots || {})) sum += a.slots[city] * slotRent(s, a.id, city);
+    return sum;
+  }
+
+  /** 기체 잔존가치 — 15년에 걸쳐 정가의 20% 까지 내려간다. */
+  function residual(type, ageQuarters) {
+    const left = Math.max(0, 1 - ageQuarters / B.DEPRECIATION_QUARTERS);
+    return type.price * (0.2 + 0.8 * left);
+  }
+
+  function fleetValue(s, planes) {
+    const types = s.types || typeTable(s.programs);
+    return planes.reduce((sum, p) => sum + residual(types[p.typeId], p.ageQuarters), 0);
+  }
+
+  function depreciation(s, planes) {
+    const types = s.types || typeTable(s.programs);
+    return planes
+      .filter((p) => p.ageQuarters < B.DEPRECIATION_QUARTERS)
+      .reduce((sum, p) => sum + types[p.typeId].price / B.DEPRECIATION_QUARTERS, 0);
+  }
+
+  /** 자기자본 = 현금 + 기재 + 슬롯 권리금 − 부채. 슬롯은 임차라 자산이 아니다. */
+  function equity(s, a) {
+    let slots = 0;
+    for (const city of Object.keys(a.slots || {})) {
+      const c = Cities.get(city);
+      slots += a.slots[city] * B.SLOT_BASE_PRICE * ((c.standing + c.tour) / 100) * s.world.inflation * 0.5;
+    }
+    return a.cash + fleetValue(s, planesOf(s, a.id)) + slots - a.debt;
+  }
+
+  function interestRate(s, a) {
+    const eq = Math.max(1, equity(s, a));
+    const lev = Math.min(3, a.debt / eq);
+    return s.world.interest + 0.012 + lev * 0.015;
+  }
+
+  function debtCap(s, a) {
+    return Math.max(0, equity(s, a) * B.DEBT_CAP_EQUITY);
+  }
+
+  // ── 중정비 ──
+
+  const shrink = (age) => Math.max(B.CHECK_INTERVAL_MIN_RATIO, 1 - age * B.CHECK_INTERVAL_AGE_DECAY);
+  const intervalHours = (age) => B.CHECK_INTERVAL_HOURS * shrink(age);
+  const intervalQuarters = (age) => Math.max(B.CHECK_MIN_QUARTERS, Math.floor(B.CHECK_MAX_QUARTERS * shrink(age)));
+
+  /** 다음 입고까지 얼마나 왔나 (1.0 이면 입고). 비행시간과 달력 중 먼저 차는 쪽이다. */
+  function checkProgress(p) {
+    return Math.max(0, Math.max(p.hoursSinceCheck / intervalHours(p.ageQuarters), p.quartersSinceCheck / intervalQuarters(p.ageQuarters)));
+  }
+
+  const checkDue = (p) => checkProgress(p) >= 1;
+  const checkSoon = (p) => !checkDue(p) && checkProgress(p) >= B.CHECK_WARN_RATIO;
+
+  function checkCost(s, p) {
+    const types = s.types || typeTable(s.programs);
+    return types[p.typeId].price * B.CHECK_COST_RATE * (1 + p.ageQuarters * B.CHECK_COST_AGE_SLOPE);
+  }
+
+  /**
+   * 이번 분기에 입고할 기재를 정한다. **시장이 열리기 전에** 불러야 한다 — 좌석이
+   * 그만큼 줄어든 채로 분기가 굴러가야 하기 때문이다.
+   */
+  function scheduleChecks(s) {
+    for (const p of s.planes) {
+      if (p.checkUntilTurn === s.turn) continue;
+      if (!checkDue(p)) continue;
+      p.checkUntilTurn = s.turn;
+      p.hoursSinceCheck = 0;
+      p.quartersSinceCheck = 0;
+    }
+  }
+
+
+  // ── 새 판 ──
+
+  /**
+   * 새 판을 연다. 12개 항공사가 모기지에서 짧은 노선망을 굴리고 있는 채로 시작한다 —
+   * 첫 분기부터 판단할 거리가 있어야 하기 때문이다.
+   *
+   * 창업 설정(모기지·기단·슬롯)은 `js/data.js` 의 `AIRLINES` 에 있다. 제조사 게임이
+   * 쓰는 그 표에 얹어 두어, 한 항공사가 두 계층에서 같은 회사이도록 했다.
+   */
+  function newGame(seed, opts) {
+    const o = opts || {};
+    const rng = createRng(seed);
+    const startYear = o.startYear || 1998;
+    const totalTurns = o.totalTurns || 80;
+    const inflation = inflationFor(startYear);
+
+    const cityState = {};
+    for (const c of Cities.CITIES) {
+      cityState[c.id] = { dev: Math.pow(c.growth, startYear - 1970), effects: [], closedUntilTurn: -1 };
+    }
+
+    const types = typeTable(o.programs);
+    const airlines = [];
+    const planes = [];
+    let nextId = 1;
+
+    for (const seed2 of Data.AIRLINES) {
+      for (const typeId of Object.keys(seed2.startFleet)) {
+        const t = types[typeId];
+        // 취항 전에 만들어진 기체는 없다 — 1998년에 1996년 취항 기종을 6년 된 것으로
+        // 깔면 정비비는 부풀고 자산가치는 깎인다.
+        const oldest = Math.max(2, Math.min(26, Math.round((startYear - t.eis) * 4)));
+        for (let i = 0; i < seed2.startFleet[typeId]; i++) {
+          const age = rng.int(2, oldest);
+          planes.push({
+            id: nextId++,
+            typeId,
+            airlineId: seed2.id,
+            ageQuarters: age,
+            routeId: null,
+            // 정비 시계를 흩어 놓는다. 전부 0 에서 출발하면 창업 기단이 통째로 같은
+            // 분기에 입고돼 몇 해 뒤 노선망이 한꺼번에 주저앉는다.
+            hoursSinceCheck: intervalHours(age) * rng.next() * 0.9,
+            quartersSinceCheck: rng.int(0, intervalQuarters(age) - 1),
+            checkUntilTurn: -1,
+          });
+        }
+      }
+      airlines.push({
+        id: seed2.id,
+        name: seed2.name,
+        home: seed2.hub,
+        // 위신이 곧 브랜드다 — 제조사 게임이 이미 매겨 둔 값을 그대로 쓴다.
+        brand: Math.round(seed2.prestige * 34),
+        serviceLevel: seed2.prestige >= 1 ? 4 : 3,
+        safety: 1,
+        cash: Math.round(300e6 * seed2.prestige * inflation),
+        debt: 0,
+        slots: Object.assign({}, seed2.startSlots),
+        alive: true,
+        negativeQuarters: 0,
+        results: [],
+      });
+    }
+
+    const s = {
+      seed,
+      rngState: rng.getState(),
+      turn: 0,
+      startYear,
+      totalTurns,
+      world: {
+        oil: oilFor(startYear),
+        economy: 1,
+        interest: B.BASE_INTEREST,
+        travelIndex: root.AirlinerDemand.travelIndex(startYear),
+        inflation,
+      },
+      cityState,
+      airlines,
+      routes: [],
+      planes,
+      nextId,
+      programs: o.programs || [],
+      types,
+    };
+    bootstrapRoutes(s, rng);
+    s.rngState = rng.getState();
+    return s;
+  }
+
+  /**
+   * 창업 노선망 — 슬롯을 가진 도시로 모기지에서 노선을 편다.
+   *
+   * 가까운 곳부터 붙인다. 멀리부터 붙이면 광동체 한 대가 태평양에 묶여 나머지 슬롯이
+   * 통째로 놀고, 회사가 첫 분기부터 간접비만 태운다.
+   */
+  function bootstrapRoutes(s, rng) {
+    for (const a of s.airlines) {
+      const pool = planesOf(s, a.id).slice();
+      const targets = Object.keys(a.slots)
+        .filter((c) => c !== a.home)
+        .sort((x, y) => Cities.distance(a.home, x) - Cities.distance(a.home, y));
+
+      for (const dest of targets) {
+        if (!pool.length) break;
+        const dist = Cities.distance(a.home, dest);
+        const idx = pool.findIndex((p) => s.types[p.typeId].range >= dist * 1.05);
+        if (idx < 0) continue;
+        const plane = pool[idx];
+        const cap = Econ.capacity([plane], dist, (t) => s.types[t]);
+        if (!cap.usable) continue;
+        const usedHome = s.routes
+          .filter((r) => r.airlineId === a.id && (r.from === a.home || r.to === a.home))
+          .reduce((x, r) => x + r.freq, 0);
+        const usedDest = s.routes
+          .filter((r) => r.airlineId === a.id && (r.from === dest || r.to === dest))
+          .reduce((x, r) => x + r.freq, 0);
+        const freq = Math.min(cap.maxFreq, slotsAt(a, a.home) - usedHome, slotsAt(a, dest) - usedDest, 10);
+        if (freq <= 0) continue;
+        pool.splice(idx, 1);
+        const id = s.nextId++;
+        plane.routeId = id;
+        s.routes.push({
+          id,
+          airlineId: a.id,
+          from: a.home,
+          to: dest,
+          fareMul: 1,
+          freq,
+          serviceExtra: 0,
+          active: true,
+          last: null,
+        });
+      }
+    }
+  }
+
+
+  // ── 분기 정산 ──
+
+  /**
+   * 한 분기를 굴린다.
+   *
+   * 순서에 뜻이 있다. **중정비 입고를 시장보다 먼저** 정한다 — 좌석이 줄어든 채로
+   * 분기가 굴러가야 하고, AI 와 플레이어가 같은 정보를 보고 판단해야 하기 때문이다.
+   */
+  function advance(s, opts) {
+    const o = opts || {};
+    const rng = createRng(s.rngState);
+    scheduleChecks(s);
+    if (o.beforeMarket) o.beforeMarket(s, rng);
+
+    const outcomes = Market.resolveAll(s.routes, marketContext(s));
+    settle(s, outcomes);
+
+    ageFleet(s);
+    deliverOrders(s);
+    resolveDistress(s);
+
+    // 해가 바뀌는 경계에서 물가·성장·여행지수를 올린다 — 새해 첫 화면부터 새 값이 보이도록.
+    if (s.turn + 1 < s.totalTurns && (s.turn + 1) % 4 === 0) yearTick(s);
+    pruneEffects(s);
+    s.turn += 1;
+    s.rngState = rng.getState();
+    return s;
+  }
+
+  function settle(s, outcomes) {
+    for (const r of s.routes) r.last = null;
+
+    for (const a of living(s)) {
+      const planes = planesOf(s, a.id);
+      let pax = 0;
+      let seats = 0;
+      let revenue = 0;
+      const cost = { fuel: 0, crew: 0, maint: 0, landing: 0, nav: 0, paxService: 0, distribution: 0, total: 0 };
+
+      for (const r of routesOf(s, a.id)) {
+        const out = outcomes[r.id];
+        const flying = flyingOn(s, r.id);
+        if (!out || !flying.length) {
+          r.last = { pax: 0, seats: 0, revenue: 0, cost: 0, share: 0, loadFactor: 0 };
+          continue;
+        }
+        const dist = Cities.distance(r.from, r.to);
+        const cap = Econ.capacity(flying, dist, (t) => s.types[t]);
+        const effective = Object.assign({}, r, { freq: Math.min(r.freq, cap.maxFreq) });
+        const rc = Econ.routeCost(effective, flying, {
+          typeOf: (t) => s.types[t],
+          oil: s.world.oil,
+          inflation: s.world.inflation,
+          serviceLevel: a.serviceLevel,
+          pax: out.pax,
+          revenue: out.revenue,
+        });
+
+        // 이 노선이 물고 있는 슬롯의 임차료를 노선 손익에 얹는다. 임차료는 회사 단위로
+        // 걷히지만 노선에 안 실으면 화면에도 AI 에게도 "조금 남는 노선"으로 보인다 —
+        // 실제로는 슬롯값이 그보다 커서 회사를 갉아먹는데도. 주간 왕복 1회에 양 끝
+        // 슬롯이 하나씩이므로 편수가 곧 점유 슬롯 수다.
+        const occupied = r.freq * (slotRent(s, a.id, r.from) + slotRent(s, a.id, r.to));
+
+        for (const k of Object.keys(cost)) cost[k] += rc[k] || 0;
+        pax += out.pax;
+        seats += out.seats;
+        revenue += out.revenue;
+        r.last = {
+          pax: out.pax,
+          seats: out.seats,
+          revenue: out.revenue,
+          cost: rc.total + occupied,
+          share: out.share,
+          loadFactor: out.loadFactor,
+          connectPax: out.connectPax || 0,
+        };
+      }
+
+      const checks = planes.filter((p) => p.checkUntilTurn === s.turn);
+      const checkCostTotal = checks.reduce((x, p) => x + checkCost(s, p), 0);
+      const over = overhead(s, a);
+      // 슬롯은 임차라 매 분기 나간다 — 놀리는 슬롯도 그대로 청구된다.
+      const rent = slotRentTotal(s, a);
+      const dep = depreciation(s, planes);
+      const interest = (a.debt * interestRate(s, a)) / 4;
+
+      const pretax = revenue - cost.total - over - rent - dep - interest - checkCostTotal;
+      const tax = pretax > 0 ? pretax * B.TAX_RATE : 0;
+      const net = pretax - tax;
+      // 감가상각은 현금이 나가지 않는다.
+      a.cash += net + dep;
+
+      const eq = equity(s, a);
+      a.negativeQuarters = eq < 0 ? a.negativeQuarters + 1 : 0;
+      a.results.push({
+        turn: s.turn,
+        revenue,
+        fuel: cost.fuel,
+        crew: cost.crew,
+        maint: cost.maint,
+        landing: cost.landing + cost.nav,
+        paxService: cost.paxService,
+        distribution: cost.distribution,
+        checkCost: checkCostTotal,
+        overhead: over,
+        slotRent: rent,
+        depreciation: dep,
+        interest,
+        tax,
+        net,
+        pax,
+        seats,
+        cash: a.cash,
+        debt: a.debt,
+        equity: eq,
+        oil: s.world.oil,
+      });
+      if (a.results.length > 80) a.results.shift();
+    }
+  }
+
+  function ageFleet(s) {
+    for (const p of s.planes) {
+      p.ageQuarters += 1;
+      if (p.checkUntilTurn === s.turn) continue;
+      p.quartersSinceCheck += 1;
+      const r = p.routeId === null ? null : s.routes.find((x) => x.id === p.routeId);
+      if (!r || !r.active) continue;
+      const dist = Cities.distance(r.from, r.to);
+      const t = s.types[p.typeId];
+      if (!Econ.canFly(t, dist)) continue;
+      // 실제로 굴린 만큼만 시계가 돈다 — 세워 둔 기체는 달력으로만 늙는다.
+      const flying = flyingOn(s, r.id);
+      const cap = Econ.capacity(flying, dist, (x) => s.types[x]);
+      const hours = Econ.blockHoursByPlane(flying, Math.min(r.freq, cap.maxFreq), dist, (x) => s.types[x]);
+      p.hoursSinceCheck += hours[p.id] || 0;
+    }
+  }
+
+  /** 발주 인도. 발주 자체는 5단계(플레이어 명령)에서 붙는다. */
+  function deliverOrders(s) {
+    if (!s.orders || !s.orders.length) return;
+    const due = s.orders.filter((o) => o.deliverTurn <= s.turn);
+    if (!due.length) return;
+    for (const o of due) {
+      for (let i = 0; i < o.count; i++) {
+        s.planes.push({
+          id: s.nextId++,
+          typeId: o.typeId,
+          airlineId: o.airlineId,
+          ageQuarters: 0,
+          routeId: null,
+          hoursSinceCheck: 0,
+          quartersSinceCheck: 0,
+          checkUntilTurn: -1,
+        });
+      }
+    }
+    s.orders = s.orders.filter((o) => o.deliverTurn > s.turn);
+  }
+
+  /**
+   * 현금이 마르면 기재를 판다. 그래도 자본잠식이 이어지면 접는다.
+   *
+   * 파산한 회사의 노선과 기재는 사라진다 — 남겨 두면 좌석은 내놓는데 아무도 값을
+   * 치르지 않는 유령 항공사가 시장을 계속 누른다.
+   */
+  function resolveDistress(s) {
+    for (const a of living(s)) {
+      while (a.cash < 0) {
+        const idle = planesOf(s, a.id).filter((p) => p.routeId === null);
+        const pool = idle.length ? idle : planesOf(s, a.id);
+        if (!pool.length) break;
+        // 가장 늙은 것부터 판다 — 남길 값어치가 가장 적다.
+        pool.sort((x, y) => y.ageQuarters - x.ageQuarters || x.id - y.id);
+        const p = pool[0];
+        a.cash += residual(s.types[p.typeId], p.ageQuarters) * 0.8;
+        removePlane(s, p);
+      }
+      if (a.negativeQuarters >= B.NEGATIVE_QUARTERS_TO_FOLD) fold(s, a);
+    }
+  }
+
+  function removePlane(s, p) {
+    s.planes = s.planes.filter((x) => x.id !== p.id);
+    if (p.routeId === null) return;
+    // 마지막 기재가 빠진 노선은 닫는다 — 좌석 없는 노선이 시장에 남으면 안 된다.
+    if (!assignedTo(s, p.routeId).length) {
+      const r = s.routes.find((x) => x.id === p.routeId);
+      if (r) r.active = false;
+    }
+  }
+
+  function fold(s, a) {
+    a.alive = false;
+    a.cash = 0;
+    a.debt = 0;
+    a.slots = {};
+    s.routes = s.routes.filter((r) => r.airlineId !== a.id);
+    s.planes = s.planes.filter((p) => p.airlineId !== a.id);
+  }
+
+  /** 해가 바뀔 때 — 물가·도시 성장·여행 보급이 한 칸씩 오른다. */
+  function yearTick(s) {
+    const nextYear = s.startYear + Math.floor((s.turn + 1) / 4);
+    s.world.inflation = inflationFor(nextYear);
+    s.world.travelIndex = root.AirlinerDemand.travelIndex(nextYear);
+    for (const c of Cities.CITIES) {
+      const cs = s.cityState[c.id];
+      if (cs) cs.dev *= c.growth;
+    }
+  }
+
+  /** 만료된 일시 효과를 털어낸다 — 안 그러면 20년치가 그대로 쌓인다. */
+  function pruneEffects(s) {
+    for (const id of Object.keys(s.cityState)) {
+      const cs = s.cityState[id];
+      if (!cs.effects || !cs.effects.length) continue;
+      cs.effects = cs.effects.filter((e) => s.turn <= e.untilTurn);
+    }
+  }
+
+  /**
+   * 제조사 계층의 세계를 항공사 계층에 옮긴다 — 두 계층이 한 세계를 살게 하는 자리.
+   *
+   * 유가 지수와 수요 지수는 제조사 게임이 이미 굴리고 있다. 항공사 쪽에서 따로 흔들면
+   * 같은 분기에 제조사는 호황을, 항공사는 불황을 겪는 판이 된다.
+   */
+  function syncWorld(s, mfg) {
+    if (!mfg || !mfg.market) return s;
+    s.world.oil = oilFor(yearOf(s)) * mfg.market.fuelIndex;
+    s.world.economy = mfg.market.demandIndex;
+    return s;
+  }
+
+  root.AirlinerSkyState = {
+    BALANCE: B,
+    inflationFor,
+    oilFor,
+    yearOf,
+    quarterOf,
+    airline,
+    living,
+    routesOf,
+    planesOf,
+    assignedTo,
+    flyingOn,
+    slotsAt,
+    feedCount,
+    typeTable,
+    marketContext,
+    demandFor,
+    boostAt,
+    isClosed,
+    overhead,
+    slotRent,
+    slotRentTotal,
+    residual,
+    fleetValue,
+    depreciation,
+    equity,
+    interestRate,
+    debtCap,
+    intervalHours,
+    intervalQuarters,
+    checkProgress,
+    checkDue,
+    checkSoon,
+    checkCost,
+    scheduleChecks,
+    newGame,
+    bootstrapRoutes,
+    advance,
+    syncWorld,
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
