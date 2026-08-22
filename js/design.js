@@ -11,6 +11,12 @@
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+  /**
+   * 정가가 제원을 타는 지수. `evaluate` 가 좌석·항속을 세그먼트 한계로 자르므로,
+   * 한계 밖 제원의 값을 되돌리려면 같은 지수가 필요하다 (js/sky/types.js 참고).
+   */
+  const LIST_PRICE_EXP = { seats: 0.95, range: 0.34 };
+
   /** 파생형 할인 허용 오차 — 이 범위를 벗어나면 사실상 새 기체다. */
   // wing: 날개를 손보되 새로 설계하지는 않는 범위. 실제 파생형도 윙렛을 달거나
   // 익단을 조금 늘리기는 하지만(737NG→MAX), 종횡비를 갈아엎으면 새 날개다.
@@ -307,8 +313,8 @@
     // 정가: 원가가 아니라 "시장이 값을 쳐주는 가치" 기준으로 만든다.
     const listPrice =
       seg.listPriceBase *
-      Math.pow(seatRatio, 0.95) *
-      Math.pow(rangeRatio, 0.34) *
+      Math.pow(seatRatio, LIST_PRICE_EXP.seats) *
+      Math.pow(rangeRatio, LIST_PRICE_EXP.range) *
       (1 + (tech / 100) * 0.42) *
       (1 + (fus.efficiencyBonus + wmat.efficiencyBonus + eng.eff) / 130);
 
@@ -422,5 +428,5 @@
     };
   }
 
-  root.AirlinerDesign = { evaluate, unitCostAt, defaultSpec, clamp, isCompatibleDerivative };
+  root.AirlinerDesign = { evaluate, unitCostAt, defaultSpec, clamp, isCompatibleDerivative, LIST_PRICE_EXP };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

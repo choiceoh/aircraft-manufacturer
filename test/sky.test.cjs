@@ -22,6 +22,7 @@ const D = globalThis.AirlinerDemand;
 const T = globalThis.AirlinerSkyTypes;
 const Fleet = globalThis.AirlinerFleet;
 const Design = globalThis.AirlinerDesign;
+const Data = globalThis.AirlinerData;
 const E = globalThis.AirlinerEngine;
 
 // ─────────────────────────────── 세계 ───────────────────────────────
@@ -184,10 +185,20 @@ test('수요: 한쪽만 꺾인 사건이 반대쪽의 1.0 에 가려 사라지�
 test('수요: 도쿄–LA 는 747 한 대가 내놓는 좌석을 못 채운다', () => {
   // sky-tycoon 이 허브 환승을 두는 이유 그 자체다 — 로컬 수요만으로는 장거리
   // 광동체가 애초에 안 찬다. 이 성질이 깨지면 환승 모델이 필요 없어진다.
-  const q = D.quarterly(C.get('tokyo'), C.get('losangeles'), { quarter: 1 }).total;
-  // 747-100 366석, 주3왕복(8,817km 를 한 대로 굴릴 수 있는 최대치), 분기 13주.
-  const seats = 366 * 3 * 2 * 13;
-  assert.ok(q < seats, `분기 수요 ${Math.round(q)} < 공급 ${seats} 이어야 한다`);
+  //
+  // 게임이 시작하는 1998년 기준으로 잰다. 여행지수를 빼고 1970년으로 재면 수요가
+  // 1.74배 작게 나와 통과 여부가 뒤집힌다 — 이 게임에서 쓰이지 않는 연도다.
+  const q = D.quarterly(C.get('tokyo'), C.get('losangeles'), { quarter: 1, travelIndex: D.travelIndex(1998) }).total;
+  // 공급도 손으로 적지 않고 실제 기종·채산 모형에서 낸다: 747-400 한 대를
+  // 주간 상한까지 굴렸을 때의 분기 좌석.
+  const t = TYPES['b747-400'];
+  const d = C.distance('tokyo', 'losangeles');
+  const seats = (Econ.BALANCE.MAX_WEEKLY_HOURS / Econ.roundTripHours(t, d)) * 2 * 13 * t.seats;
+  // 위아래를 함께 박는다. 위만 박으면 여행지수를 빼먹어도(1970년 = 0.52) 통과한다 —
+  // 지금 잡힌 자리가 0.90 이라, 아슬아슬하게 못 채우는 것이 이 노선의 성질이다.
+  const fill = q / seats;
+  assert.ok(fill < 1, `분기 수요 ${Math.round(q)} < 공급 ${Math.round(seats)} 이어야 한다`);
+  assert.ok(fill > 0.7, `그렇다고 절반도 못 채우면 안 된다 (${(fill * 100).toFixed(0)}%)`);
 });
 
 test('수요: 같은 입력이면 같은 값이고, 입력을 건드리지 않는다', () => {
@@ -278,6 +289,48 @@ test('기종: 값은 이 게임의 정가를 그대로 옮긴다 — 환율이 �
   const p = s.programs[0];
   const t = T.fromProgram(p, '데네브');
   assert.strictEqual(t.price, p.listPrice * 1e6, '정가에 배수가 끼면 안 된다');
+});
+
+test('기종: 급 한계를 넘는 실기종도 제 제원대로 값이 매겨진다', () => {
+  // 설계 평가기는 좌석·항속을 급별 한계로 자른 뒤 값을 낸다 — 플레이어는 한계 안에서만
+  // 설계하므로 문제가 없지만, 실존 기종은 한계를 넘는다. 되돌리지 않으면 A380 이 480석
+  // 값으로, 767-200ER 이 광동체 하한 230석 값으로 팔린다.
+  const seg = Data.SEGMENTS;
+  const over = Fleet.AIRCRAFT.filter(
+    (a) => a.seats > seg[a.segment].seats.max || a.seats < seg[a.segment].seats.min ||
+           a.range > seg[a.segment].range.max || a.range < seg[a.segment].range.min,
+  );
+  assert.ok(over.length > 0, '한계 밖 기종이 실제로 있어야 이 테스트가 의미가 있다');
+
+  for (const a of over) {
+    const clamped = Design.evaluate({
+      segment: a.segment, seats: a.seats, range: a.range,
+      tech: T.techFromEis(a.eis), material: 'aluminum', year: a.eis,
+    });
+    const price = TYPES[a.id].price / 1e6;
+    // 잘린 제원보다 큰 기체는 더 비싸고, 작은 기체는 더 싸야 한다.
+    if (a.seats > clamped.seats) assert.ok(price > clamped.listPrice, `${a.name}: ${a.seats}석인데 ${clamped.seats}석 값 이하다`);
+    if (a.seats < clamped.seats) assert.ok(price < clamped.listPrice, `${a.name}: ${a.seats}석인데 ${clamped.seats}석 값 이상이다`);
+  }
+
+  // 광동체 좌석 하한(230석) 아래인 767-200ER 181석이 같은 세대 218석 767-300ER 보다 싸야 한다.
+  assert.ok(TYPES['b767-200er'].price < TYPES['b767-300er'].price, '작은 기체가 더 싸야 한다');
+  // 좌석 상한(480석) 위인 A380 은 상한값보다 비싸야 한다.
+  assert.ok(TYPES['a380'].seats > seg.wide.seats.max, 'A380 이 상한을 넘어야 이 검사가 산다');
+});
+
+test('기종: 터보프롭은 제트기 속도로 날지 않는다', () => {
+  // 속도를 급별 상수로만 주면 ATR 72 가 815km/h 로 날아 가동률과 노선 공급이 부풀고,
+  // 터보프롭이 단거리에서 제트기와 같은 회전수를 낸다.
+  const props = Fleet.AIRCRAFT.filter((a) => a.cruise);
+  assert.ok(props.length >= 4, '카탈로그에 터보프롭이 있어야 한다');
+  for (const a of props) {
+    assert.strictEqual(TYPES[a.id].speed, a.cruise, `${a.name} 이 카탈로그 순항속도를 써야 한다`);
+    assert.ok(TYPES[a.id].speed < T.SPEED.regional, `${a.name} 이 리저널 제트보다 느려야 한다`);
+  }
+  // 같은 거리를 도는 데 실제로 더 오래 걸린다.
+  const d = C.distance('seoul', 'tokyo');
+  assert.ok(Econ.roundTripHours(TYPES['atr72-500'], d) > Econ.roundTripHours(TYPES['erj145'], d), '한 바퀴가 더 길어야 한다');
 });
 
 test('기종: 취항 연도가 늦을수록 기술 수준이 높다', () => {
@@ -468,6 +521,17 @@ test('채산: 거리를 안 타는 원가가 있어 단거리는 편수를 욕�
   assert.ok(sane.margin > 0, '적당한 편수는 남아야 한다');
   assert.ok(greedy.margin < sane.margin, `편수를 밀면 마진이 나빠져야 한다 (${(sane.margin * 100).toFixed(0)}% → ${(greedy.margin * 100).toFixed(0)}%)`);
   assert.ok(greedy.out.loadFactor < sane.out.loadFactor, '좌석을 깔수록 로컬에 밀린다');
+});
+
+test('시장: 태평양 노선은 한 대를 넘겨 키울 수가 없다', () => {
+  // 위의 수요 테스트를 시장 모형으로 다시 말한 것이다 — 로컬 수요만으로는 광동체
+  // 한 대가 상한이고, 두 대째를 넣는 순간 탑승률이 반토막 나고 적자로 뒤집힌다.
+  // 허브 환승(3b)이 이 천장을 걷어내는 장치다.
+  const one = fly({ from: 'tokyo', to: 'losangeles', typeId: 'b747-400', planes: 1, freq: 4 });
+  const two = fly({ from: 'tokyo', to: 'losangeles', typeId: 'b747-400', planes: 2, freq: 8 });
+  assert.ok(one.out.loadFactor > 0.8, `한 대는 채워져야 한다 (${(one.out.loadFactor * 100).toFixed(0)}%)`);
+  assert.ok(two.out.loadFactor < 0.6, `두 대째는 못 채운다 (${(two.out.loadFactor * 100).toFixed(0)}%)`);
+  assert.ok(one.margin > 0 && two.margin < 0, `한 대는 흑자, 두 대는 적자여야 한다 (${(one.margin * 100).toFixed(0)}% → ${(two.margin * 100).toFixed(0)}%)`);
 });
 
 test('채산: 큰 기체가 한 바퀴에 더 오래 묶인다', () => {

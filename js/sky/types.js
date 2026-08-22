@@ -32,8 +32,13 @@
   'use strict';
 
   const Fleet = root.AirlinerFleet;
+  const Design = root.AirlinerDesign;
 
-  /** 순항속도 (km/h) — sky 카탈로그가 급별로 거의 상수다. */
+  /**
+   * 순항속도 (km/h) — sky 카탈로그가 급별로 거의 상수다.
+   * 다만 터보프롭은 같은 리저널기라도 절반 가까이 느리므로, 카탈로그가 `cruise` 를
+   * 적어 둔 기종은 그 값을 쓴다 (ATR 511~556, Q400 667).
+   */
   const SPEED = { regional: 815, narrow: 840, wide: 895 };
 
   /** 좌석당 연료 (L/km). 세대 지수로 나눈다 — 좋은 엔진일수록 덜 먹는다. */
@@ -83,7 +88,7 @@
       widebody: wide,
       seats: o.seats,
       range: o.range,
-      speed: SPEED[seg],
+      speed: o.speed || SPEED[seg],
       /** 달러. 이 게임의 정가($M)를 그대로 옮긴다 — 위 주석 참고. */
       price: o.priceMusd * 1e6,
       fuel: round3((o.seats * FUEL_PER_SEAT[seg]) / gen),
@@ -125,11 +130,25 @@
       segment: a.segment,
       seats: a.seats,
       range: a.range,
-      priceMusd: ev.listPrice,
+      speed: a.cruise,
+      priceMusd: unclampPrice(ev, a.seats, a.range),
       gen: a.eff,
       eis: a.eis,
       end: a.end,
     });
+  }
+
+  /**
+   * 세그먼트 한계 밖 제원의 정가를 되돌린다.
+   *
+   * `evaluate` 는 좌석·항속을 급별 한계로 자른 뒤 값을 매긴다 — 플레이어는 그 한계 안에서만
+   * 설계하므로 문제가 없지만, 실존 기종은 한계를 넘는다(A380 525석을 480석 값으로, 767-200ER
+   * 181석을 광동체 하한 230석 값으로 매기는 식). 57개 중 12개가 그렇다. 자르기 전후의 비를
+   * 정가와 같은 지수로 되돌려, 값이 실제 제원을 따르게 한다.
+   */
+  function unclampPrice(ev, seats, range) {
+    const e = Design.LIST_PRICE_EXP;
+    return ev.listPrice * Math.pow(seats / ev.seats, e.seats) * Math.pow(range / ev.range, e.range);
   }
 
   /**

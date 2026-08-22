@@ -87,14 +87,14 @@
     { id: 'crj700', maker: 'bombardier', name: 'CRJ700', segment: 'regional', seats: 70, range: 3600, eis: 2001, end: null, power: 54, eff: 0.98 },
     { id: 'crj900', maker: 'bombardier', name: 'CRJ900', segment: 'regional', seats: 88, range: 2950, eis: 2003, end: null, power: 56, eff: 1.0 },
     { id: 'crj1000', maker: 'bombardier', name: 'CRJ1000', segment: 'regional', seats: 104, range: 3000, eis: 2010.75, end: null, power: 57, eff: 1.0 },
-    { id: 'q400', maker: 'bombardier', name: 'Dash 8 Q400', segment: 'regional', seats: 78, range: 2040, eis: 2000, end: null, power: 52, eff: 1.12 },
+    { id: 'q400', maker: 'bombardier', name: 'Dash 8 Q400', segment: 'regional', seats: 78, range: 2040, cruise: 667, eis: 2000, end: null, power: 52, eff: 1.12 },
     { id: 'cs100', maker: 'bombardier', name: 'CS100', segment: 'regional', seats: 108, range: 5460, eis: 2016.5, end: null, power: 65, eff: 1.18 },
     { id: 'cs300', maker: 'bombardier', name: 'CS300', segment: 'regional', seats: 130, range: 6110, eis: 2016.75, end: null, power: 66, eff: 1.18 },
 
     // ── ATR (터보프롭 — 연비가 무기라 유가가 오르면 존재감이 커진다) ──
-    { id: 'atr42-500', maker: 'atr', name: 'ATR 42-500', segment: 'regional', seats: 48, range: 1560, eis: 1995.75, end: null, power: 42, eff: 1.1 },
-    { id: 'atr72-500', maker: 'atr', name: 'ATR 72-500', segment: 'regional', seats: 70, range: 1650, eis: 1997.75, end: 2012, power: 48, eff: 1.15 },
-    { id: 'atr72-600', maker: 'atr', name: 'ATR 72-600', segment: 'regional', seats: 72, range: 1528, eis: 2011.5, end: null, power: 52, eff: 1.18 },
+    { id: 'atr42-500', maker: 'atr', name: 'ATR 42-500', segment: 'regional', seats: 48, range: 1560, cruise: 556, eis: 1995.75, end: null, power: 42, eff: 1.1 },
+    { id: 'atr72-500', maker: 'atr', name: 'ATR 72-500', segment: 'regional', seats: 70, range: 1650, cruise: 511, eis: 1997.75, end: 2012, power: 48, eff: 1.15 },
+    { id: 'atr72-600', maker: 'atr', name: 'ATR 72-600', segment: 'regional', seats: 72, range: 1528, cruise: 511, eis: 2011.5, end: null, power: 52, eff: 1.18 },
 
     // ── BAE 시스템스 (2003년 아브로 RJ 생산 종료로 시장에서 퇴장) ──
     { id: 'rj85', maker: 'bae', name: '아브로 RJ85', segment: 'regional', seats: 85, range: 2200, eis: 1993, end: 2003.5, power: 42, eff: 0.85 },
