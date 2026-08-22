@@ -127,6 +127,9 @@
     if (!planeIds || !planeIds.length) return fail('투입할 기재를 고르세요.');
 
     const dist = Cities.distance(from, to);
+    // 같은 기체를 두 번 적으면 수송력이 그만큼 부풀어, 한 대로 주 60왕복짜리 노선을
+    // 열고 슬롯을 82자리 잡을 수 있다. 실제로 그렇게 됐다.
+    if (new Set(planeIds).size !== planeIds.length) return fail('같은 기재를 두 번 넣을 수 없습니다.');
     const planes = [];
     for (const id of planeIds) {
       const p = s.planes.find((x) => x.id === id);
@@ -209,6 +212,7 @@
     const r = s.routes.find((x) => x.id === routeId && x.airlineId === airlineId);
     if (!r || !r.active) return fail('없는 노선입니다.');
     const dist = Cities.distance(r.from, r.to);
+    if (new Set(planeIds).size !== planeIds.length) return fail('같은 기재를 두 번 넣을 수 없습니다.');
     const planes = [];
     for (const id of planeIds) {
       const p = s.planes.find((x) => x.id === id);
@@ -244,7 +248,10 @@
     if (a.cash < cost) return fail('발주 대금이 부족합니다.');
     a.cash -= cost;
     if (!s.orders) s.orders = [];
-    s.orders.push({ id: s.nextId++, airlineId, typeId, count, deliverTurn: s.turn + ORDER_QUARTERS });
+    // **치른 값을 새겨 둔다.** 자기자본이 인도 전 선급금을 잡는데, 그걸 지금 카탈로그
+    // 값으로 다시 재면 인도 대기 중에 정가가 오른 것만으로 자본이 불어난다
+    // (90M 짜리가 120M 이 되면 대당 30M 이 공짜로 생겼다).
+    s.orders.push({ id: s.nextId++, airlineId, typeId, count, paid: cost, deliverTurn: s.turn + ORDER_QUARTERS });
     return done(`${t.name} ${count}대를 발주했습니다.`);
   }
 
@@ -264,7 +271,9 @@
   function borrow(s, airlineId, amount) {
     const a = St.airline(s, airlineId);
     if (!a || !a.alive) return fail('없는 항공사입니다.');
-    if (amount <= 0) return fail('금액이 0 이하입니다.');
+    // NaN 은 어떤 비교에도 걸리지 않아 그대로 통과한다 — 부채와 현금이 통째로 NaN 이
+    // 되고, 그 뒤 자본·결산·화면이 전부 따라 망가진다.
+    if (!Number.isFinite(amount) || amount <= 0) return fail('금액이 올바르지 않습니다.');
     const room = St.debtCap(s, a) - a.debt;
     if (amount > room) return fail(`차입 한도가 ${Math.round(Math.max(0, room) / 1e6)}M 남았습니다.`);
     a.debt += amount;
@@ -275,6 +284,7 @@
   function repay(s, airlineId, amount) {
     const a = St.airline(s, airlineId);
     if (!a || !a.alive) return fail('없는 항공사입니다.');
+    if (!Number.isFinite(amount) || amount <= 0) return fail('금액이 올바르지 않습니다.');
     const pay = Math.min(amount, a.debt, a.cash);
     if (pay <= 0) return fail('갚을 수 있는 금액이 없습니다.');
     a.debt -= pay;

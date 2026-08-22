@@ -1624,3 +1624,47 @@ test('화면: 판이 끝나면 성적표가 뜬다', () => {
   const mid = playedWithAi(1234, 8);
   assert.ok(!/sky-final/.test(SP.renderOverview(mid, me, new Set())), '아직 안 끝났는데 성적표가 떴다');
 });
+
+test('명령: 같은 기재를 두 번 넣을 수 없다', () => {
+  // 수송력이 그만큼 부풀어, 한 대로 주 60왕복짜리 노선을 열고 슬롯을 82자리 잡을 수
+  // 있었다. 실제로 열렸다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const p = St.planesOf(s, a.id).find((x) => x.routeId === null);
+  a.slots[a.home] = 200;
+  a.slots.shanghai = 200;
+  assert.strictEqual(Act.openRoute(s, a.id, a.home, 'shanghai', [p.id, p.id, p.id, p.id], 60, 1).ok, false, '취항');
+  assert.strictEqual(Act.assignPlanes(s, a.id, St.routesOf(s, a.id)[0].id, [p.id, p.id]).ok, false, '배속');
+  // 한 번만 넣으면 당연히 된다 — 한 대로 감당할 수 있는 편수까지만.
+  const dist = C.distance(a.home, 'shanghai');
+  const cap = Econ.capacity([p], dist, (t) => s.types[t]);
+  assert.strictEqual(Act.openRoute(s, a.id, a.home, 'shanghai', [p.id], cap.maxFreq, 1).ok, true);
+});
+
+test('명령: 수가 아닌 금액으로 빌리거나 갚을 수 없다', () => {
+  // NaN 은 어떤 비교에도 안 걸려 그대로 통과한다 — 부채와 현금이 통째로 NaN 이 되고,
+  // 그 뒤 자본·결산·화면이 전부 따라 망가진다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  for (const bad of [NaN, Infinity, -Infinity, 0, -100]) {
+    assert.strictEqual(Act.borrow(s, a.id, bad).ok, false, `차입 ${bad}`);
+    assert.strictEqual(Act.repay(s, a.id, bad).ok, false, `상환 ${bad}`);
+  }
+  assert.ok(Number.isFinite(a.debt) && Number.isFinite(a.cash), '잔액이 오염됐다');
+  assert.strictEqual(Act.borrow(s, a.id, 100e6).ok, true, '멀쩡한 금액은 통해야 한다');
+});
+
+test('상태: 선급금은 치른 값으로 잡는다', () => {
+  // 지금 카탈로그 값으로 다시 재면, 인도 대기 중에 정가가 오른 것만으로 자본이 불어난다
+  // (90M 짜리가 120M 이 되면 대당 30M 이 공짜로 생긴다). 차입 한도가 거기 걸린다.
+  const prog = { id: 'p1', name: '신형', phase: 'production', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const s = St.newGame(1234, { programs: [prog] });
+  const a = s.airlines[0];
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'p1', 3).ok, true);
+  const eq = St.equity(s, a);
+  const cap = St.debtCap(s, a);
+  prog.listPrice = 120;
+  St.refreshTypes(s, [prog]);
+  assert.ok(Math.abs(St.equity(s, a) - eq) < 1e-6, '정가가 올랐다고 자본이 늘었다');
+  assert.ok(Math.abs(St.debtCap(s, a) - cap) < 1e-6, '차입 한도가 따라 늘었다');
+});

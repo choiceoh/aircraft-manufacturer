@@ -269,9 +269,15 @@
       const c = Cities.get(city);
       slots += a.slots[city] * B.SLOT_BASE_PRICE * ((c.standing + c.tour) / 100) * s.world.inflation * 0.5 * Econ.BALANCE.FARE_SCALE;
     }
+    // 선급금은 **치른 값**으로 잡는다. 지금 카탈로그 값으로 다시 재면 인도 대기 중에
+    // 정가가 오른 것만으로 자본이 불어난다. 옛 세이브(값을 안 새긴 발주)는 카탈로그로 돌린다.
     const prepaid = (s.orders || [])
       .filter((o) => o.airlineId === a.id)
-      .reduce((x, o) => x + (s.types[o.typeId] ? s.types[o.typeId].price * o.count : 0), 0);
+      .reduce(
+        (x, o) =>
+          x + (typeof o.paid === 'number' ? o.paid : s.types[o.typeId] ? s.types[o.typeId].price * o.count : 0),
+        0,
+      );
     return a.cash + fleetValue(s, planesOf(s, a.id)) + slots + prepaid - a.debt;
   }
 

@@ -179,7 +179,13 @@
       toast('회사가 문을 닫았다.', 'bad');
     } else {
       const r = me.results[me.results.length - 1];
-      if (r) toast(`${St.yearOf(s)}년 ${St.quarterOf(s)}분기 — 순익 ${(r.net > 0 ? '+' : '') + SP.money(r.net)}`, r.net >= 0 ? 'good' : 'bad');
+      // **정산된 분기**를 적는다. `advance` 가 돌아오면 `s.turn` 은 이미 다음 분기라,
+      // 상태에서 날짜를 읽으면 매 분기 한 칸씩 앞서고 마지막 2017년 4분기 결산이
+      // 2018년 1분기로 뜬다. 기록 화면이 쓰는 것과 같은 값(`r.turn`)을 쓴다.
+      if (r) {
+        const label = `${s.startYear + Math.floor(r.turn / 4)}년 ${(r.turn % 4) + 1}분기`;
+        toast(`${label} — 순익 ${(r.net > 0 ? '+' : '') + SP.money(r.net)}`, r.net >= 0 ? 'good' : 'bad');
+      }
     }
     ui.animate = 'turn';
     render();
@@ -284,6 +290,14 @@
     const sel = e.target.closest('select[data-action="assign"]');
     if (!sel || !sel.value) return;
     const s = ui.state;
+    // 클릭과 **같은 문**을 지나야 한다. `.panel.over` 는 `pointer-events` 만 끄므로
+    // 탭과 방향키로는 여전히 셀렉트를 움직일 수 있고, 그러면 끝난 판의 배속이 바뀐 채
+    // 저장된다.
+    if (isOver(s)) {
+      if (s) toast('경영이 끝났다. 기록만 볼 수 있다.', 'bad');
+      render();
+      return;
+    }
     const routeId = +sel.value;
     const ids = St.assignedTo(s, routeId).map((p) => p.id).concat([+sel.dataset.plane]);
     run(A.assignPlanes(s, ui.meId, routeId, ids));
