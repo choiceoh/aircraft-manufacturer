@@ -379,9 +379,13 @@
     // 양쪽 다 슬롯을 가진 구간은 두 번 걸린다 — 목록에 같은 노선이 두 줄로 뜬다.
     const seen = new Set();
     for (const from of Object.keys(me.slots).filter((c) => me.slots[c] > 0).sort()) {
+      // 닫힌 공항은 후보에서 뺀다. 누르면 슬롯부터 사고 나서 `openRoute` 가 폐쇄를
+      // 이유로 물리므로, 노선은 못 열고 슬롯값만 치르게 된다. AI 는 이미 거른다.
+      if (St.isClosed(s.cityState[from] || {}, s.turn)) continue;
       for (const to of Cities.CITIES) {
         if (to.id === from || served.has(Cities.pairKey(from, to.id))) continue;
         if (seen.has(Cities.pairKey(from, to.id))) continue;
+        if (St.isClosed(s.cityState[to.id] || {}, s.turn)) continue;
         const dist = Cities.distance(from, to.id);
         const plane = idle
           .filter((p) => Econ.canFly(s.types[p.typeId], dist))

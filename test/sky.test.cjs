@@ -1356,10 +1356,34 @@ test('상태: 팔 수 있는 프로그램만 기종 표에 든다', () => {
   // 개발 중이거나 심사 중인 설계는 아직 존재하지 않는 기체다 — 넣으면 항공사가
   // 그걸 발주하고 노선에 붙인다.
   const spec = { id: 'p1', name: '시제기', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
-  for (const phase of ['dev', 'cert', 'cancelled']) {
+  // `sold` 는 "다 만들어 팔았다"가 아니라 **개발을 접고 도면을 넘겼다**는 뜻이다 —
+  // `sellProgram` 은 dev·cert 단계만 받는다. 완성되지도 않았고 우리 것도 아니다.
+  for (const phase of ['dev', 'cert', 'cancelled', 'sold']) {
     assert.ok(!St.typeTable([Object.assign({}, spec, { phase })]).p1, `${phase} 인데 표에 들었다`);
   }
   assert.ok(St.typeTable([Object.assign({}, spec, { phase: 'production' })]).p1, '양산 기종은 들어야 한다');
+});
+
+test('화면: 닫힌 공항은 취항 후보에 없다', () => {
+  // 누르면 슬롯부터 사고 나서 openRoute 가 폐쇄를 이유로 물린다 — 노선은 못 열고
+  // 슬롯값만 치르게 된다. AI 는 이미 거른다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  const before = SP.openCandidates(s, me.id, 500);
+  assert.ok(before.length > 0, '후보가 있어야 검사가 산다');
+  const victim = before[0].to;
+  s.cityState[victim].closedUntilTurn = s.turn + 2;
+  const after = SP.openCandidates(s, me.id, 500);
+  assert.ok(!after.some((c) => c.from === victim || c.to === victim), `${victim} 이 닫혔는데 후보에 남았다`);
+  assert.ok(after.length < before.length, '후보가 줄어야 한다');
+
+  // 출발지가 닫힌 경우도 마찬가지다.
+  s.cityState[victim].closedUntilTurn = -1;
+  s.cityState[me.home].closedUntilTurn = s.turn + 2;
+  assert.ok(
+    !SP.openCandidates(s, me.id, 500).some((c) => c.from === me.home),
+    '모기지가 닫혔는데 거기서 뜨는 후보가 남았다',
+  );
 });
 
 test('상태: 프로그램이 바뀌면 기종 표가 따라간다', () => {

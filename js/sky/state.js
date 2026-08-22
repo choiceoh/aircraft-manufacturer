@@ -136,10 +136,14 @@
   /**
    * 기종 표 — 경쟁 카탈로그와 플레이어 프로그램을 한 모양으로 모은다.
    *
-   * 프로그램은 **팔 수 있는 것만** 넣는다. 개발 중이거나 형식증명 심사 중인 설계는
+   * 프로그램은 **양산에 들어간 것만** 넣는다. 개발 중이거나 형식증명 심사 중인 설계는
    * 아직 존재하지 않는 기체다 — 넣으면 항공사가 그걸 발주하고 노선에 붙인다.
+   *
+   * `sold` 도 뺀다. 이 게임에서 `sold` 는 "다 만들어 팔았다"가 아니라 **개발을 접고
+   * 도면을 남에게 넘겼다**는 뜻이다(`sellProgram` 은 `dev`·`cert` 단계만 받는다).
+   * 완성되지도 않았고 우리 것도 아니다.
    */
-  const SELLABLE_PHASES = new Set(['production', 'sold']);
+  const SELLABLE_PHASES = new Set(['production']);
   const sellable = (p) => !p.phase || SELLABLE_PHASES.has(p.phase);
 
   function typeTable(programs) {
