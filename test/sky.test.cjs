@@ -1431,3 +1431,69 @@ test('명령: 수가 아닌 값과 소수를 막는다', () => {
   assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { freq: 2.5 }).ok, false, '소수 편수');
   assert.strictEqual(Act.tuneRoute(s, a.id, r.id, { fareMul: NaN }).ok, false, 'NaN 운임');
 });
+
+// ── 플레이어가 AI 와 같은 수를 둘 수 있는가 ──
+
+/**
+ * 화면 컨트롤러(`js/sky/ui.js`)는 브라우저가 있어야 굴러가므로, 여기서는 **화면이 그
+ * 명령을 내놓는가**를 만들어진 HTML 에서 본다. AI 는 쓰는데 화면에 버튼이 없으면
+ * 플레이어만 그 수를 못 두고, "같은 문을 쓴다"는 전제가 무너진다.
+ */
+function screenFor(render, s, me) {
+  return render(s, me, new Set());
+}
+
+test('화면: AI 가 쓰는 명령은 플레이어에게도 버튼이 있다', () => {
+  const s = playedWithAi(1234, 12);
+  const me = s.airlines.find((a) => a.alive).id;
+  // 노는 슬롯을 만들어 반납 버튼이 뜨는 조건을 세운다.
+  const a = St.airline(s, me);
+  a.slots.saopaulo = 6;
+  const overview = screenFor(SP.renderOverview, s, me);
+  assert.ok(/data-action="borrow"/.test(overview), '차입 버튼이 없다 — AI 는 Ai.finance 로 늘 쓴다');
+  assert.ok(/data-action="repay"/.test(overview), '상환 버튼이 없다');
+  assert.ok(/data-action="shed"/.test(overview), '슬롯 반납 버튼이 없다 — AI 는 shedIdleSlots 로 정리한다');
+
+  // 기재가 둘 이상 붙은 노선에는 떼기가 있어야 한다.
+  const r = St.routesOf(s, me).find((x) => x.active && St.assignedTo(s, x.id).length > 1);
+  if (r) {
+    const routes = screenFor(SP.renderRoutes, s, me);
+    assert.ok(/data-action="detach"/.test(routes), '기재 떼기가 없다 — 노선을 접었다 여는 것 말고 방법이 없어진다');
+  }
+});
+
+test('상태: 이번 분기 입고는 지난 분기 끝에 이미 정해져 있다', () => {
+  // advance 안에서 정하면 AI 는 beforeMarket 에서 그걸 보고 예비기를 붙이는데,
+  // 플레이어는 화면을 볼 때 멀쩡하던 기재로 계획을 세운 뒤라 그 분기를 손해 본다.
+  const s = St.newGame(1234);
+  let sawGrounded = false;
+  for (let q = 0; q < 20; q++) {
+    // 플레이어가 화면을 보는 시점 = advance 를 부르기 직전.
+    const known = s.planes.filter((p) => p.checkUntilTurn === s.turn).map((p) => p.id).sort().join(',');
+    let seenByAi = null;
+    St.advance(s, {
+      beforeMarket: (st) => {
+        seenByAi = st.planes.filter((p) => p.checkUntilTurn === st.turn).map((p) => p.id).sort().join(',');
+      },
+    });
+    assert.strictEqual(seenByAi, known, `분기 ${q}: AI 가 플레이어보다 늦게 알려진 입고를 봤다`);
+    if (known) sawGrounded = true;
+  }
+  assert.ok(sawGrounded, '입고가 한 번도 없으면 검사가 헛돈다');
+});
+
+test('상태: 노선을 접어도 슬롯은 남고, 반납은 따로 한다', () => {
+  // 접자마자 반납하면 다시 열 때 그 사이 오른 값을 치른다. 남기되, 노는 자리가
+  // 얼마를 먹고 있는지는 화면이 말해 줘야 한다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const r = St.routesOf(s, a.id)[0];
+  const held = St.slotsAt(a, r.to);
+  Act.closeRoute(s, a.id, r.id);
+  assert.strictEqual(St.slotsAt(a, r.to), held, '접었다고 슬롯이 사라지면 안 된다');
+  assert.strictEqual(Act.freeSlots(s, a.id, r.to), held, '전부 노는 자리가 돼야 한다');
+  const html = SP.renderOverview(s, a.id, new Set());
+  assert.ok(new RegExp(`data-action="shed" data-city="${r.to}"`).test(html), '반납할 자리가 화면에 없다');
+  assert.strictEqual(Act.sellSlots(s, a.id, r.to, held).ok, true);
+  assert.strictEqual(St.slotsAt(a, r.to), 0);
+});

@@ -406,6 +406,8 @@
       types,
     };
     bootstrapRoutes(s, rng);
+    // 첫 분기의 입고도 판을 열 때 이미 정해져 있어야 한다.
+    scheduleChecks(s);
     s.rngState = rng.getState();
     return s;
   }
@@ -482,15 +484,15 @@
   /**
    * 한 분기를 굴린다.
    *
-   * 순서에 뜻이 있다. **중정비 입고를 시장보다 먼저** 정한다 — 좌석이 줄어든 채로
-   * 분기가 굴러가야 하고, AI 와 플레이어가 같은 정보를 보고 판단해야 하기 때문이다.
+   * **이번 분기의 중정비 입고는 지난 분기 끝에 이미 정해져 있다.** 여기서 정하면 AI 는
+   * `beforeMarket` 에서 그걸 보고 예비기를 붙이는데, 플레이어는 화면을 볼 때 아직 멀쩡하던
+   * 기재로 계획을 세운 뒤라 그 분기를 통째로 손해 본다 — 같은 정보를 같은 시점에 봐야 한다.
    */
   function advance(s, opts) {
     const o = opts || {};
     const rng = createRng(s.rngState);
     // 제조사 계층이 이번 분기에 무엇을 인증했는지 먼저 반영한다.
     refreshTypes(s, o.programs);
-    scheduleChecks(s);
     if (o.beforeMarket) o.beforeMarket(s, rng);
 
     const outcomes = Market.resolveAll(s.routes, marketContext(s));
@@ -507,6 +509,9 @@
     if (s.turn + 1 < s.totalTurns && (s.turn + 1) % 4 === 0) yearTick(s);
     pruneEffects(s);
     s.turn += 1;
+    // 다음 분기 입고를 지금 정한다. 화면이 열릴 때 이미 묶여 있어야 플레이어가
+    // 예비기를 붙일 시간을 갖는다 — AI 도 같은 시점에 같은 것을 본다.
+    scheduleChecks(s);
     s.rngState = rng.getState();
     return s;
   }

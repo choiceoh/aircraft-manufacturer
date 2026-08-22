@@ -21,12 +21,19 @@
   const num = (n) => Math.round(n).toLocaleString('ko-KR');
   const pct = (v) => `${Math.round(v * 100)}%`;
 
-  /** 돈은 제조사 쪽과 같은 눈금으로 읽는다 — 두 계층이 같은 화폐를 쓴다. */
+  /**
+   * 돈은 제조사 쪽과 같은 눈금으로 읽는다 — 두 계층이 같은 화폐를 쓴다.
+   *
+   * 백만 밑으로도 눈금을 내린다. `$M` 로만 적으면 슬롯 임차료 3만 6천 달러가 `$0.0M`
+   * 으로 뜨는데, 그건 "0" 이라고 말하는 것과 같다 — 반납할지 말지를 그 숫자로 정한다.
+   */
   function money(usd) {
     const m = usd / 1e6;
-    if (Math.abs(m) >= 1000) return `$${(m / 1000).toFixed(m >= 10000 ? 0 : 1)}B`;
+    if (Math.abs(m) >= 1000) return `$${(m / 1000).toFixed(Math.abs(m) >= 10000 ? 0 : 1)}B`;
     if (Math.abs(m) >= 10) return `$${Math.round(m)}M`;
-    return `$${m.toFixed(1)}M`;
+    if (Math.abs(m) >= 1) return `$${m.toFixed(1)}M`;
+    if (Math.abs(usd) >= 1000) return `$${Math.round(usd / 1000)}k`;
+    return `$${Math.round(usd)}`;
   }
 
   const tone = (v) => (v > 0 ? 'good' : v < 0 ? 'bad' : '');
@@ -86,6 +93,8 @@
         </div>
       </div>
       ${r ? quarterCard(r) : '<div class="card"><p class="muted">첫 분기를 넘기면 실적이 나온다.</p></div>'}
+      ${financeCard(s, meId)}
+      ${slotCard(s, meId)}
       <div class="card full">
         <h3>순위</h3>
         <table class="tbl"><thead><tr><th class="r"></th><th>회사</th><th class="r">자기자본</th><th class="r">노선</th><th class="r">기재</th></tr></thead><tbody>
@@ -136,6 +145,65 @@
     </div>`;
   }
 
+  /**
+   * 차입과 상환 — AI 는 `Ai.finance` 로 늘 쓰는 수단이다.
+   *
+   * 화면에 없으면 플레이어만 한 분기 적자에 기재를 팔아 메워야 한다. 명령은 이미 있고
+   * 한도도 명령 쪽이 재므로, 여기서는 누를 자리만 낸다.
+   */
+  function financeCard(s, meId) {
+    const a = St.airline(s, meId);
+    const room = Math.max(0, St.debtCap(s, a) - a.debt);
+    const step = Math.max(10e6, Math.round(room / 4 / 1e6) * 1e6);
+    return `<div class="card full">
+      <h3>자금</h3>
+      <div class="sky-stats">
+        ${stat('현금', money(a.cash))}
+        ${stat('부채', money(a.debt))}
+        ${stat('차입 여력', money(room))}
+        ${stat('이자율', `연 ${(St.interestRate(s, a) * 100).toFixed(1)}%`)}
+      </div>
+      <div class="row">
+        <button class="ghost" data-action="borrow" data-amount="${step}" ${room < step ? 'disabled' : ''}>
+          ${money(step)} 차입</button>
+        <button class="ghost" data-action="repay" data-amount="${step}" ${a.debt <= 0 || a.cash <= 0 ? 'disabled' : ''}>
+          ${money(Math.min(step, a.debt))} 상환</button>
+      </div>
+      <p class="muted">이자는 아무것도 안 하고 나가는 돈이다. 여유가 생기면 먼저 갚는 편이 낫다.</p>
+    </div>`;
+  }
+
+  /**
+   * 노는 슬롯 — 쥐고 있는 것만으로 매 분기 임차료가 나간다.
+   *
+   * 노선을 접어도 슬롯은 남는다(그래야 곧바로 다시 열 수 있다). 반납할 자리가 화면에
+   * 없으면 플레이어만 영영 그 임차료를 문다 — AI 는 `shedIdleSlots` 로 정리한다.
+   */
+  function slotCard(s, meId) {
+    const a = St.airline(s, meId);
+    const rows = Object.keys(a.slots)
+      .map((city) => ({ city, free: A.freeSlots(s, meId, city), held: a.slots[city] }))
+      .filter((x) => x.free > 0)
+      .sort((x, y) => y.free * (Cities.get(y.city).standing + Cities.get(y.city).tour) - x.free * (Cities.get(x.city).standing + Cities.get(x.city).tour));
+    if (!rows.length) return '';
+    const waste = rows.reduce((x, r) => x + r.free * St.slotRent(s, meId, r.city), 0);
+    return `<div class="card full">
+      <h3>노는 슬롯</h3>
+      <p class="muted">쓰지 않는 ${rows.reduce((x, r) => x + r.free, 0)}자리에 분기마다 <b>${money(waste)}</b>가 나간다.
+        반납하면 임차료가 멎지만, 다시 잡을 때는 그 사이 오른 값을 치른다.</p>
+      <table class="tbl"><thead><tr><th>공항</th><th class="r">보유</th><th class="r">노는 자리</th><th class="r">분기 임차료</th><th class="r"></th></tr></thead><tbody>
+      ${rows
+        .map(
+          (x) => `<tr><td>${esc(Cities.name(x.city))}</td>
+            <td class="r">${x.held}</td><td class="r">${x.free}</td>
+            <td class="r">${money(x.free * St.slotRent(s, meId, x.city))}</td>
+            <td class="r"><button class="ghost" data-action="shed" data-city="${esc(x.city)}" data-count="${x.free}">반납</button></td></tr>`,
+        )
+        .join('')}
+      </tbody></table>
+    </div>`;
+  }
+
   // ─────────────────────────────── 노선 ───────────────────────────────
 
   function renderRoutes(s, meId, folds) {
@@ -172,6 +240,18 @@
              <p class="muted">승객 ${num(last.pax)}명${last.connectPax ? ` (환승 ${num(last.connectPax)})` : ''}
                · 점유율 ${pct(last.share)} · 수입 ${money(last.revenue)} · 원가 ${money(last.cost)}</p>`
           : '<p class="muted">아직 실적이 없다.</p>'
+      }
+      ${
+        planes.length > 1
+          ? `<div class="sky-detach"><span class="muted">기재를 떼면 다른 노선에 쓸 수 있다</span>
+              ${planes
+                .map(
+                  (p) => `<button class="ghost" data-action="detach" data-route="${r.id}" data-plane="${p.id}">
+                    ${esc(s.types[p.typeId].name)} 떼기</button>`,
+                )
+                .join('')}
+            </div>`
+          : ''
       }
       <div class="row">
         <button class="ghost" data-action="fare" data-route="${r.id}" data-delta="-0.05">운임 −5%</button>

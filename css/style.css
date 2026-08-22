@@ -1715,3 +1715,26 @@ details.fold > table:first-of-type {
     height: auto;
   }
 }
+
+/* 노선 카드의 기재 떼기 줄 */
+.sky-detach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 10px 0 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.sky-detach .muted {
+  flex: 1 1 100%;
+  font-size: 11px;
+}
+
+/* 끝난 판 — 둘러보기만 된다. 눌러 보기 전에는 못 쓴다는 걸 알 수 없는 버튼은
+   그 자체로 잘못된 화면이다. */
+.panel.over button:not([data-action='tab']),
+.panel.over select {
+  opacity: 0.4;
+  pointer-events: none;
+}

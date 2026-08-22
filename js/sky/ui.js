@@ -25,6 +25,9 @@
     animate: null,
   };
 
+  /** 판이 끝난 뒤에도 되는 것 — 둘러보기와 새 판뿐이다. */
+  const VIEW_ONLY = new Set(['tab', 'new-game', 'pick']);
+
   const TABS = [
     { id: 'overview', name: '개요' },
     { id: 'routes', name: '노선' },
@@ -45,10 +48,13 @@
     renderFoot(s);
 
     const panel = document.getElementById('panel');
-    panel.className = 'panel';
+    // 끝난 판에서는 조작 버튼을 눌리지 않게 한다. `onClick` 이 막고 토스트를 띄우기는
+    // 하지만, 눌러 보기 전에는 못 쓴다는 걸 알 수 없는 버튼은 그 자체로 잘못된 화면이다.
+    const over = isOver(s) ? ' over' : '';
+    panel.className = 'panel' + over;
     if (anim) {
       void panel.offsetWidth;
-      panel.className = 'panel enter';
+      panel.className = 'panel enter' + over;
     }
     switch (ui.tab) {
       case 'routes':
@@ -116,11 +122,24 @@
     if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'center' });
   }
 
+  /**
+   * 판이 끝났는가 — 마지막 분기를 넘겼거나 우리 회사가 접혔거나.
+   *
+   * 둘을 함께 봐야 한다. 달력만 보면, 회사가 5년째에 접혀도 남은 60분기를 계속 넘겨야
+   * "새 게임" 버튼이 나온다. 그 사이 명령은 전부 실패하므로 할 수 있는 일이 없다.
+   */
+  function isOver(s) {
+    const me = St.airline(s, ui.meId);
+    return s.turn >= s.totalTurns || !me || !me.alive;
+  }
+
   function renderFoot(s) {
     const foot = document.getElementById('foot');
     if (!foot) return;
-    if (s.turn >= s.totalTurns) {
-      foot.innerHTML = `<span class="muted">${s.startYear + Math.floor((s.totalTurns - 1) / 4)}년 · 경영 종료</span>
+    if (isOver(s)) {
+      const me = St.airline(s, ui.meId);
+      const why = me && !me.alive ? `${P.esc(me.name)} · 파산` : `${s.startYear + Math.floor((s.totalTurns - 1) / 4)}년 · 경영 종료`;
+      foot.innerHTML = `<span class="muted">${why}</span>
         <button class="next" data-action="new-game">새 게임 ▸</button>`;
       return;
     }
@@ -150,7 +169,7 @@
 
   function nextTurn() {
     const s = ui.state;
-    if (s.turn >= s.totalTurns) return;
+    if (isOver(s)) return;
     // 플레이어 회사는 AI 가 건드리지 않는다 — 방금 내린 명령이 덮어써진다.
     St.advance(s, { beforeMarket: (st, rng) => Ai.actAll(st, rng, { playerId: ui.meId }) });
     const me = St.airline(s, ui.meId);
@@ -177,6 +196,13 @@
     const d = btn.dataset;
     const s = ui.state;
     const me = ui.meId;
+
+    // 끝난 판에서는 화면을 둘러보는 것만 된다. 안 막으면 마지막 분기를 넘긴 뒤에도
+    // 기재를 사고팔아 저장된 최종 성적과 순위가 바뀐다.
+    if (isOver(s) && !VIEW_ONLY.has(d.action)) {
+      toast('경영이 끝났다. 기록만 볼 수 있다.', 'bad');
+      return;
+    }
 
     switch (d.action) {
       case 'tab':
@@ -208,6 +234,26 @@
         break;
       case 'buy':
         run(A.buyAircraft(s, me, d.type, 1));
+        break;
+      case 'detach': {
+        // 한 대만 빼고 나머지를 그대로 다시 배속한다 — 노선을 접었다 여는 것과 달리
+        // 개설비를 다시 물지 않는다.
+        const keep = St.assignedTo(s, +d.route).map((p) => p.id).filter((id) => id !== +d.plane);
+        if (!keep.length) {
+          toast('마지막 기재는 뗄 수 없다. 접으려면 노선을 닫아라.', 'bad');
+          break;
+        }
+        run(A.assignPlanes(s, me, +d.route, keep));
+        break;
+      }
+      case 'shed':
+        run(A.sellSlots(s, me, d.city, +d.count));
+        break;
+      case 'borrow':
+        run(A.borrow(s, me, +d.amount));
+        break;
+      case 'repay':
+        run(A.repay(s, me, +d.amount));
         break;
       case 'open-route': {
         const c = SP.openCandidates(s, me).find((x) => x.from === d.from && x.to === d.to);
