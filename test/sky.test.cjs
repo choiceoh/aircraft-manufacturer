@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
 // 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js']) {
   require(path.join(JS, f));
 }
 
@@ -373,6 +373,8 @@ test('수요: 항공여행 보급 지수가 기준연도와 성장률에 묶여 
 const Econ = globalThis.AirlinerSkyEconomics;
 const M = globalThis.AirlinerSkyMarket;
 const St = globalThis.AirlinerSkyState;
+const Act = globalThis.AirlinerSkyActions;
+const Ai = globalThis.AirlinerSkyAi;
 
 /** 기종 표 — 경쟁 카탈로그를 항공사 계층이 쓰는 모양으로. */
 const TYPES = {};
@@ -720,10 +722,17 @@ test('채산: 큰 기체가 한 바퀴에 더 오래 묶인다', () => {
 
 // ── 항공사 상태와 분기 정산 ──
 
-/** n분기를 굴린 판. */
+/** n분기를 굴린 판 (AI 없음 — 상태와 정산만 본다). */
 function played(seed, quarters) {
   const s = St.newGame(seed);
   for (let i = 0; i < quarters; i++) St.advance(s);
+  return s;
+}
+
+/** n분기를 굴린 판 (AI 포함 — 실제로 게임이 도는 모양). */
+function playedWithAi(seed, quarters) {
+  const s = St.newGame(seed);
+  for (let i = 0; i < quarters; i++) St.advance(s, { beforeMarket: (st, rng) => Ai.actAll(st, rng) });
   return s;
 }
 
@@ -834,21 +843,26 @@ test('상태: 감가상각은 현금이 나가지 않는다', () => {
 });
 
 test('상태: 세금은 흑자에만 붙는다', () => {
-  const s = played(1234, 4);
+  // 규칙은 판 전체에서 지켜져야 하고, 양쪽 경우가 다 나와야 검사가 산다. 흑자 쪽은
+  // 그냥 굴리면 나오고, 적자 쪽은 이자를 지워 만든다 (밸런스가 바뀌어도 안 흔들린다).
+  const s = playedWithAi(1234, 4);
   let sawProfit = false;
-  let sawLoss = false;
   for (const a of s.airlines) {
     for (const r of a.results) {
-      if (r.net > 0) {
-        sawProfit = true;
-        assert.ok(r.tax > 0, '흑자에는 세금이 붙는다');
-      } else {
-        sawLoss = true;
-        assert.strictEqual(r.tax, 0, '적자에 세금을 물리면 안 된다');
-      }
+      if (r.net > 0) sawProfit = true;
+      if (r.net > 0) assert.ok(r.tax > 0, '흑자에는 세금이 붙는다');
+      else assert.strictEqual(r.tax, 0, '적자에 세금을 물리면 안 된다');
     }
   }
-  assert.ok(sawProfit && sawLoss, '흑자와 적자가 다 나와야 이 검사가 산다');
+  assert.ok(sawProfit, '흑자가 하나도 없으면 검사가 반쪽이다');
+
+  const loser = St.newGame(1234);
+  const a = loser.airlines[0];
+  a.debt = 40e9; // 이자만으로 확실히 적자
+  St.advance(loser);
+  const r = a.results[0];
+  assert.ok(r.net < 0, '적자를 만들었어야 한다');
+  assert.strictEqual(r.tax, 0, '적자에 세금을 물리면 안 된다');
 });
 
 test('상태: 접힌 회사는 좌석을 내놓지 않는다', () => {
@@ -920,4 +934,207 @@ test('상태: 20년을 굴려도 판이 무너지지 않는다', () => {
     assert.ok(a.cash >= 0, `${a.id}: 살아 있는데 현금이 음수다`);
     assert.ok(Number.isFinite(a.cash), `${a.id}: 현금이 수가 아니다`);
   }
+});
+
+// ── 명령 ──
+
+test('명령: 실패하면 상태를 건드리지 않는다', () => {
+  // 반쯤 적용되는 명령이 가장 나쁘다 — 슬롯만 사고 노선은 못 여는 식으로 돈이 샌다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const before = JSON.stringify([a.cash, a.slots, s.routes.length, s.planes.map((p) => p.routeId)]);
+  const idle = s.planes.filter((p) => p.airlineId === a.id && p.routeId === null);
+  const bad = [
+    () => Act.openRoute(s, a.id, a.home, a.home, [1], 3, 1),
+    () => Act.openRoute(s, a.id, a.home, 'saopaulo', [], 3, 1),
+    () => Act.openRoute(s, a.id, a.home, 'saopaulo', idle.length ? [idle[0].id] : [1], 999, 1),
+    () => Act.buySlots(s, a.id, a.home, 99999),
+    () => Act.buyAircraft(s, a.id, 'b737-800', 99999),
+    () => Act.borrow(s, a.id, 1e12),
+  ];
+  for (const f of bad) assert.strictEqual(f().ok, false, '막혀야 하는 명령이 통과했다');
+  assert.strictEqual(JSON.stringify([a.cash, a.slots, s.routes.length, s.planes.map((p) => p.routeId)]), before, '실패한 명령이 상태를 바꿨다');
+});
+
+test('명령: 슬롯값은 한 자리마다 다시 매긴다', () => {
+  // 현재 단가에 개수를 곱하면 실제보다 싸게 잡혀, 예산은 통과했는데 매입이 실패한다.
+  // 그때 반대편 슬롯은 이미 사둔 뒤라 노선도 못 열고 슬롯만 놀린다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const one = Act.slotPrice(s, a.id, 'frankfurt');
+  const ten = Act.slotCost(s, a.id, 'frankfurt', 10);
+  assert.ok(ten > one * 10, `열 자리가 한 자리의 열 배보다 비싸야 한다 (${Math.round(ten / 1e6)}M vs ${Math.round((one * 10) / 1e6)}M)`);
+  const before = St.slotsAt(a, 'frankfurt');
+  Act.slotCost(s, a.id, 'frankfurt', 5);
+  assert.strictEqual(St.slotsAt(a, 'frankfurt'), before, '값을 재는 것만으로 슬롯이 늘면 안 된다');
+});
+
+test('명령: 항속이 모자라면 취항을 막는다', () => {
+  const s = St.newGame(1234);
+  const a = St.airline(s, 'nordic'); // 터보프롭·리저널기만 굴린다
+  Act.buySlots(s, a.id, 'sydney', 5);
+  const idle = s.planes.find((p) => p.airlineId === a.id && p.routeId === null);
+  const r = Act.openRoute(s, a.id, a.home, 'sydney', [idle.id], 3, 1);
+  assert.strictEqual(r.ok, false, '스톡홀름–시드니를 리저널기로 열면 안 된다');
+  assert.ok(/항속/.test(r.msg), `왜 안 되는지 말해야 한다 (${r.msg})`);
+});
+
+test('명령: 노선을 접으면 기재가 풀리고 실적은 남는다', () => {
+  // 노선을 지우면 이번 분기 결산에서 그 노선의 손익이 통째로 증발한다.
+  const s = played(1234, 1);
+  const r = s.routes.find((x) => x.active && x.last);
+  const n = St.assignedTo(s, r.id).length;
+  assert.ok(n > 0);
+  assert.strictEqual(Act.closeRoute(s, r.airlineId, r.id).ok, true);
+  assert.strictEqual(St.assignedTo(s, r.id).length, 0, '기재가 풀려야 한다');
+  assert.ok(s.routes.some((x) => x.id === r.id), '노선 기록은 남아야 한다');
+  assert.ok(r.last, '접은 분기의 실적이 남아야 한다');
+});
+
+test('명령: 슬롯 반납은 쓰지 않는 자리만 된다', () => {
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const used = Act.usedSlots(s, a.id, a.home);
+  const have = St.slotsAt(a, a.home);
+  assert.ok(used > 0 && have > used, '쓰는 자리와 노는 자리가 다 있어야 한다');
+  assert.strictEqual(Act.sellSlots(s, a.id, a.home, have).ok, false, '쓰는 자리까지 반납하면 안 된다');
+  assert.strictEqual(Act.sellSlots(s, a.id, a.home, have - used).ok, true, '노는 자리는 반납된다');
+  assert.strictEqual(St.slotsAt(a, a.home), used, '쓰는 만큼만 남아야 한다');
+});
+
+test('명령: 발주는 값을 지금 치르고 기재는 나중에 온다', () => {
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const t = s.types['b737-400'];
+  const before = { cash: a.cash, planes: St.planesOf(s, a.id).length };
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'b737-400', 2).ok, true);
+  assert.ok(Math.abs(a.cash - (before.cash - t.price * 2)) < 1e-6, '대금이 바로 나가야 한다');
+  assert.strictEqual(St.planesOf(s, a.id).length, before.planes, '기재는 아직 안 온다');
+  for (let i = 0; i < Act.ORDER_QUARTERS; i++) St.advance(s);
+  assert.strictEqual(St.planesOf(s, a.id).length, before.planes + 2, `${Act.ORDER_QUARTERS}분기 뒤에 와야 한다`);
+});
+
+test('명령: 아직 안 나온 기종·단종된 기종은 못 산다', () => {
+  const s = St.newGame(1234); // 1998년
+  assert.strictEqual(Act.buyAircraft(s, s.airlines[0].id, 'a320neo', 1).ok, false, '2016년 기종을 1998년에 살 수 없다');
+  assert.strictEqual(Act.buyAircraft(s, s.airlines[0].id, 'b737-400', 1).ok, true, '당대 기종은 살 수 있다');
+  // 취항 시점이 분기 단위라 정수 연도로 재면 안 된다 — 737-800 은 1998년 2분기 취항이다.
+  assert.strictEqual(Act.buyAircraft(s, s.airlines[0].id, 'b737-800', 1).ok, false, '1998년 1분기에는 아직 없다');
+  St.advance(s);
+  assert.strictEqual(Act.buyAircraft(s, s.airlines[0].id, 'b737-800', 1).ok, true, '2분기가 되면 살 수 있다');
+});
+
+// ── 노선망 AI ──
+
+test('AI: 20년을 굴리면 세계가 자란다', () => {
+  // AI 가 없으면 세계가 창업 노선망에 20년 동안 얼어붙는다 — 요지를 선점하는 것도
+  // 늦게 들어가는 것도 아무 뜻이 없어진다.
+  const before = St.newGame(1234);
+  const after = playedWithAi(1234, 80);
+  const grew = after.routes.filter((r) => r.active).length;
+  assert.ok(grew > before.routes.length * 3, `노선망이 자라야 한다 (${before.routes.length} → ${grew})`);
+  assert.ok(after.planes.length > before.planes.length, '기재도 늘어야 한다');
+  const cities = new Set(after.routes.filter((r) => r.active).flatMap((r) => [r.from, r.to]));
+  assert.ok(cities.size > 30, `세계 곳곳으로 퍼져야 한다 (${cities.size}개 도시)`);
+});
+
+test('AI: 20년을 굴려도 판이 한쪽으로 굳지 않는다', () => {
+  // 밸런스의 본체다. 아무도 안 죽으면 결정에 무게가 없고, 한 회사가 세계를 삼키면
+  // 나머지 판이 관전이 된다.
+  const s = playedWithAi(1234, 80);
+  const alive = s.airlines.filter((a) => a.alive);
+  assert.ok(alive.length >= 8, `절반 넘게 살아야 한다 (${alive.length}/12)`);
+  const eq = alive.map((a) => St.equity(s, a)).sort((x, y) => y - x);
+  assert.ok(eq[0] / eq[eq.length - 1] < 60, `1위와 꼴찌가 60배 안쪽이어야 한다 (${(eq[0] / eq[eq.length - 1]).toFixed(0)}배)`);
+  for (const a of alive) assert.ok(Number.isFinite(a.cash) && a.cash >= 0, `${a.id}: 현금이 이상하다`);
+});
+
+test('AI: 성격이 운임에 드러난다', () => {
+  // 두 계층에서 같은 회사가 같은 성격이어야 한다 — 라이언에어는 싸게 많이 깔고,
+  // 에미레이트는 비싸게 크게 간다. 성격을 새로 만들면 두 게임이 어긋난다.
+  assert.ok(Ai.targetFare('vertex') < Ai.targetFare('hanul'), '저가 항공사가 더 싸게 매겨야 한다');
+  assert.ok(Ai.targetFare('carta') > Ai.targetFare('vertex'), '프리미엄이 더 비싸게 매겨야 한다');
+  const s = playedWithAi(1234, 40);
+  const avg = (id) => {
+    const rs = St.routesOf(s, id).filter((r) => r.active);
+    return rs.length ? rs.reduce((x, r) => x + r.fareMul, 0) / rs.length : null;
+  };
+  const cheap = avg('vertex');
+  const dear = avg('carta');
+  if (cheap !== null && dear !== null) assert.ok(cheap < dear, `실제 운임도 갈려야 한다 (${cheap.toFixed(2)} vs ${dear.toFixed(2)})`);
+});
+
+test('AI: 슬롯이 막힌 노선에 기재를 밀어 넣지 않는다', () => {
+  // 기재를 늘려도 편수가 못 오르니 값만 나가고, 그 자리가 매 분기 다시 비어 보여
+  // AI 가 기재를 무한히 밀어 넣는다 — 실제로 노선당 열한 대까지 갔다.
+  const s = playedWithAi(1234, 80);
+  for (const r of s.routes) {
+    if (!r.active) continue;
+    const n = St.assignedTo(s, r.id).length;
+    assert.ok(n <= 6, `${r.from}–${r.to}: 한 노선에 ${n}대가 붙었다`);
+  }
+  const active = s.routes.filter((r) => r.active).length;
+  const assigned = s.planes.filter((p) => p.routeId !== null).length;
+  assert.ok(assigned / active < 2.5, `노선당 기재가 과하다 (${(assigned / active).toFixed(1)}대)`);
+});
+
+test('AI: 오래 노는 슬롯은 내놓되 곧바로 내놓지는 않는다', () => {
+  // 쌓아 두는 것만으로 임차료가 나가지만, 그 자리에서 내놓으면 다음 분기에 같은 자리를
+  // 더 비싼 값에 되산다(슬롯값은 마를수록 오른다). 즉시 반납으로 두면 20년 자기자본
+  // 중앙값이 2,638M 에서 2,337M 로 떨어졌다.
+  const s = St.newGame(1234);
+  const a = St.airline(s, 'sahara'); // 항속이 짧아 늘어난 슬롯을 곧바로 못 쓴다
+  const far = 'saopaulo';
+  a.slots[far] = 12;
+  const rng = { range: () => 0, chance: () => false };
+
+  Ai.act(s, a.id, rng);
+  assert.strictEqual(St.slotsAt(a, far), 12, '한 분기 놀았다고 바로 내놓으면 안 된다');
+  for (let i = 1; i < Ai.BALANCE.SHED_AFTER; i++) Ai.act(s, a.id, rng);
+  assert.ok(St.slotsAt(a, far) < 12, `${Ai.BALANCE.SHED_AFTER}분기 내리 놀면 내놔야 한다`);
+
+  // 20년을 굴린 판에서도 노는 자리가 쌓여 있으면 안 된다.
+  const long = playedWithAi(1234, 80);
+  for (const x of long.airlines) {
+    if (!x.alive) continue;
+    let idle = 0;
+    let held = 0;
+    for (const c of Object.keys(x.slots)) {
+      idle += Math.max(0, Act.freeSlots(long, x.id, c));
+      held += x.slots[c];
+    }
+    assert.ok(idle / Math.max(1, held) < 0.35, `${x.id}: 쥔 슬롯의 ${Math.round((idle / held) * 100)}%가 논다`);
+  }
+});
+
+test('AI: 밖으로 나간다 — 창업 도시에 갇히지 않는다', () => {
+  // 취항 후보를 고를 때 목적지 슬롯 매입비를 빼먹으면 AI 는 창업 때 받은 다섯 도시
+  // 밖으로 영영 나가지 못한다.
+  const start = St.newGame(1234);
+  const s = playedWithAi(1234, 80);
+  for (const a of s.airlines) {
+    if (!a.alive) continue;
+    const home = new Set(Object.keys(St.airline(start, a.id).slots));
+    const now = new Set(St.routesOf(s, a.id).filter((r) => r.active).flatMap((r) => [r.from, r.to]));
+    const outside = [...now].filter((c) => !home.has(c));
+    assert.ok(outside.length > 0, `${a.id}: 창업 도시 밖으로 한 곳도 못 나갔다`);
+  }
+});
+
+test('AI: 같은 시드면 20년이 통째로 같다', () => {
+  const key = (s) =>
+    s.airlines.map((a) => `${a.id}:${Math.round(a.cash)}:${a.alive}`).join('|') +
+    `#${s.routes.length}#${s.planes.length}#${s.routes.filter((r) => r.active).map((r) => r.freq).join(',')}`;
+  assert.strictEqual(key(playedWithAi(1234, 80)), key(playedWithAi(1234, 80)), 'AI 가 결정론을 깼다');
+});
+
+test('AI: 플레이어 회사는 건드리지 않는다', () => {
+  // 5단계에서 플레이어가 직접 굴릴 회사다. AI 가 같이 손대면 명령이 덮어써진다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0].id;
+  const before = JSON.stringify(St.routesOf(s, me));
+  for (let i = 0; i < 8; i++) St.advance(s, { beforeMarket: (st, rng) => Ai.actAll(st, rng, { playerId: me }) });
+  const after = St.routesOf(s, me);
+  assert.strictEqual(after.length, JSON.parse(before).length, '노선 수가 그대로여야 한다');
+  for (const r of after) assert.strictEqual(r.fareMul, 1, 'AI 가 운임을 건드리면 안 된다');
 });

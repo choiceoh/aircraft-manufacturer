@@ -57,6 +57,17 @@
 
     /** 자본잠식이 이만큼 이어지면 접는다 */
     NEGATIVE_QUARTERS_TO_FOLD: 8,
+
+    /**
+     * 공항 처리 능력의 연 성장률.
+     *
+     * 슬롯 총량이 20년 내내 고정이면 세계가 곧바로 꽉 찬다 — 여행 수요는 해마다 오르는데
+     * 활주로가 그대로이니 모든 노선이 만석이 되고, 모두가 운임 상한에서 돈을 찍는다.
+     * 실제로 1998~2017년 세계 공항 처리 능력은 크게 늘었다. sky-tycoon 은 이것을
+     * 플레이어가 돈을 대는 확장 공사로 풀지만, 여기서는 그 명령을 잘라냈으므로
+     * **저절로 자라는 쪽**으로 둔다.
+     */
+    SLOT_GROWTH_PER_YEAR: 1.035,
   };
 
   /**
@@ -89,6 +100,11 @@
 
   const yearOf = (s, turn) => s.startYear + Math.floor((turn === undefined ? s.turn : turn) / 4);
   const quarterOf = (s) => (s.turn % 4) + 1;
+  /**
+   * 소수 연도. 카탈로그의 취항·단종 시점이 분기 단위(1998.25 = 1998년 2분기)라,
+   * 정수 연도로 재면 그 해 2분기 취항 기종을 1분기에도 못 사거나 살 수 있게 된다.
+   */
+  const yearFracOf = (s) => s.startYear + s.turn / 4;
   const airline = (s, id) => s.airlines.find((a) => a.id === id) || null;
   const living = (s) => s.airlines.filter((a) => a.alive);
   const routesOf = (s, id) => s.routes.filter((r) => r.airlineId === id);
@@ -98,6 +114,14 @@
   /** 그중 **이번 분기에 실제로 뜨는** 기재. 좌석도 원가도 이 목록으로 센다. */
   const flyingOn = (s, routeId) => assignedTo(s, routeId).filter((p) => p.checkUntilTurn !== s.turn);
   const slotsAt = (a, city) => (a.slots || {})[city] || 0;
+
+  /**
+   * 이 공항의 지금 슬롯 총량. **다섯 군데서 각자 더하지 않는다** — 한 곳만 빠뜨려도
+   * 확장된 공항에서 점유율이 1 을 넘는 식으로 조용히 어긋난다. 한 군데서 답한다.
+   */
+  function totalSlots(s, city) {
+    return Math.round(Cities.get(city).slots * Math.pow(B.SLOT_GROWTH_PER_YEAR, yearOf(s) - s.startYear));
+  }
 
   /** 이 회사가 이 도시에서 **다른 어디로 더 갈 수 있는가** — 환승 매력의 근거. */
   function feedCount(s, airlineId, city, selfRouteId) {
@@ -125,7 +149,7 @@
       planesOn: (routeId) => flyingOn(s, routeId),
       typeOf: (id) => types[id],
       slotsAt: (aid, city) => slotsAt(airline(s, aid) || {}, city),
-      totalSlots: (city) => Cities.get(city).slots,
+      totalSlots: (city) => totalSlots(s, city),
       feedCount: (aid, city, selfRouteId) => feedCount(s, aid, city, selfRouteId),
       demand: (a, b) => demandFor(s, a, b),
       inflation: s.world.inflation,
@@ -162,7 +186,7 @@
     const routes = routesOf(s, a.id).filter((r) => r.active).length;
     const base = B.OVERHEAD_FIXED + fleet * B.OVERHEAD_PER_AIRCRAFT + routes * B.OVERHEAD_PER_ROUTE;
     const service = fleet * a.serviceLevel * B.SERVICE_OPEX_PER_LEVEL_PER_PLANE;
-    return (base + service) * s.world.inflation;
+    return (base + service) * s.world.inflation * Econ.BALANCE.FARE_SCALE;
   }
 
   /** 슬롯 한 자리의 분기 임차료. 큰 공항일수록, 남의 안방일수록 비싸다. */
@@ -171,7 +195,7 @@
     const size = (c.standing + c.tour) / 100;
     const a = airline(s, airlineId);
     const home = a && a.home === cityId ? B.SLOT_HOME_DISCOUNT : 1;
-    return B.SLOT_RENT_PER_QUARTER * size * c.fee * home * s.world.inflation;
+    return B.SLOT_RENT_PER_QUARTER * size * c.fee * home * s.world.inflation * Econ.BALANCE.FARE_SCALE;
   }
 
   function slotRentTotal(s, a) {
@@ -203,7 +227,7 @@
     let slots = 0;
     for (const city of Object.keys(a.slots || {})) {
       const c = Cities.get(city);
-      slots += a.slots[city] * B.SLOT_BASE_PRICE * ((c.standing + c.tour) / 100) * s.world.inflation * 0.5;
+      slots += a.slots[city] * B.SLOT_BASE_PRICE * ((c.standing + c.tour) / 100) * s.world.inflation * 0.5 * Econ.BALANCE.FARE_SCALE;
     }
     return a.cash + fleetValue(s, planesOf(s, a.id)) + slots - a.debt;
   }
@@ -531,10 +555,16 @@
     }
   }
 
-  /** 발주 인도. 발주 자체는 5단계(플레이어 명령)에서 붙는다. */
+  /**
+   * 발주 인도.
+   *
+   * `s.turn + 1` 로 잰다 — 이 함수는 분기가 넘어가기 **직전**에 돌므로, 인도 분기가
+   * 시작될 때 기체가 이미 램프에 서 있으려면 한 칸 앞서 봐야 한다. `<= s.turn` 으로
+   * 두면 "2분기 뒤 인도"가 실제로는 3분기가 걸린다.
+   */
   function deliverOrders(s) {
     if (!s.orders || !s.orders.length) return;
-    const due = s.orders.filter((o) => o.deliverTurn <= s.turn);
+    const due = s.orders.filter((o) => o.deliverTurn <= s.turn + 1);
     if (!due.length) return;
     for (const o of due) {
       for (let i = 0; i < o.count; i++) {
@@ -550,7 +580,7 @@
         });
       }
     }
-    s.orders = s.orders.filter((o) => o.deliverTurn > s.turn);
+    s.orders = s.orders.filter((o) => o.deliverTurn > s.turn + 1);
   }
 
   /**
@@ -632,6 +662,7 @@
     inflationFor,
     oilFor,
     yearOf,
+    yearFracOf,
     quarterOf,
     airline,
     living,
@@ -640,6 +671,7 @@
     assignedTo,
     flyingOn,
     slotsAt,
+    totalSlots,
     feedCount,
     typeTable,
     marketContext,
