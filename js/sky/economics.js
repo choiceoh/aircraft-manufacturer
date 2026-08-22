@@ -95,8 +95,19 @@
    * 곧바로 좌석과 수입을 만든다 — 5,950km 짜리 A321 이 8,817km 태평양에서 분기
    * 19,240석을 내놓는 것을 실제로 봤다.
    */
+  /**
+   * 이 거리를 실제로 날 수 있는 기재만 남긴다.
+   *
+   * **수송력·원가·비행시간이 모두 같은 목록을 봐야 한다.** 수송력에서만 걸러 냈더니,
+   * 못 나는 기체가 원가와 정비시간을 나눠 가져갔다 — 도쿄–LA 에 ATR 한 대를 섞으면
+   * 그 기체가 분기 697시간을 적립하고 노선 원가가 33% 싸졌다.
+   */
+  function flyable(planes, distanceKm, typeOf) {
+    return planes.filter((p) => canFly(typeOf(p.typeId), distanceKm));
+  }
+
   function capacity(planes, distanceKm, typeOf) {
-    const able = planes.filter((p) => canFly(typeOf(p.typeId), distanceKm));
+    const able = flyable(planes, distanceKm, typeOf);
     if (!able.length) return { maxFreq: 0, avgSeats: 0, minRange: 0, avgAgeQuarters: 0, usable: false };
     let freqSum = 0;
     let seatWeighted = 0;
@@ -153,7 +164,9 @@
    * 기체가 정비는 덜 받은 것으로 잡혀 점검 주기가 원가와 어긋난다.
    */
   function legShares(planes, distanceKm, typeOf) {
-    const raw = planes.map((p) => B.MAX_WEEKLY_HOURS / roundTripHours(typeOf(p.typeId), distanceKm));
+    const raw = planes.map((p) =>
+      canFly(typeOf(p.typeId), distanceKm) ? B.MAX_WEEKLY_HOURS / roundTripHours(typeOf(p.typeId), distanceKm) : 0,
+    );
     const sum = raw.reduce((a, b) => a + b, 0);
     if (sum <= 0) return raw.map(() => 0);
     return raw.map((x) => x / sum);
@@ -241,6 +254,7 @@
     roundTripHours,
     blockHoursPerLeg,
     canFly,
+    flyable,
     capacity,
     quarterlySeats,
     quarterlyLegs,

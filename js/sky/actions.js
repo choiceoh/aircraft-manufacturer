@@ -226,7 +226,12 @@
     for (const p of planes) p.routeId = routeId;
     // 줄어든 기재로 감당 못 하는 편수는 자동으로 내린다 — 안 그러면 시장이 걷어가는
     // 좌석과 화면에 뜬 편수가 어긋난다.
-    const cap = Econ.capacity(St.flyingOn(s, routeId), dist, (t) => s.types[t]);
+    //
+    // **배속 목록 전체로 잰다.** 지금 뜨는 기재로 재면, 중정비로 한 대가 빠진 분기에
+    // 예비기를 붙이는 순간 편수가 그 분기 수송력까지 영구히 깎인다(49 → 45, 입고기가
+    // 돌아와도 45). 이번 분기의 일시적 손실은 `effectiveFreq` 가 이미 처리한다 —
+    // 여기서 정하는 것은 **계속 가져갈 시간표**다.
+    const cap = Econ.capacity(St.assignedTo(s, routeId), dist, (t) => s.types[t]);
     if (r.freq > cap.maxFreq) r.freq = Math.max(1, cap.maxFreq);
     return done('기재를 다시 배속했습니다.');
   }
@@ -261,7 +266,7 @@
     if (!a || !p) return fail('보유하지 않은 기재입니다.');
     if (p.routeId !== null) return fail('노선에 배속된 기재는 팔 수 없습니다.');
     if (p.checkUntilTurn === s.turn) return fail('중정비 중인 기재는 팔 수 없습니다.');
-    a.cash += St.residual(s.types[p.typeId], p.ageQuarters) * RESALE_RATE;
+    a.cash += St.residual(s.types[p.typeId], p.ageQuarters, p.paid) * RESALE_RATE;
     s.planes = s.planes.filter((x) => x.id !== planeId);
     return done(`${s.types[p.typeId].name} 한 대를 처분했습니다.`);
   }

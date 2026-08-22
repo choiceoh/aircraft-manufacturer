@@ -238,22 +238,31 @@
     return sum;
   }
 
-  /** 기체 잔존가치 — 15년에 걸쳐 정가의 20% 까지 내려간다. */
-  function residual(type, ageQuarters) {
+  /** 기체 잔존가치 — 15년에 걸쳐 산 값의 20% 까지 내려간다. */
+  function residual(type, ageQuarters, paid) {
     const left = Math.max(0, 1 - ageQuarters / B.DEPRECIATION_QUARTERS);
-    return type.price * (0.2 + 0.8 * left);
+    return basis(type, paid) * (0.2 + 0.8 * left);
+  }
+
+  /**
+   * 장부의 기준은 **산 값**이다. 정가로 재면 카탈로그가 움직일 때마다 이미 인도된
+   * 기단의 자산가치와 상각비가 아무 거래 없이 따라 움직인다. 창업 기단처럼 값을
+   * 안 새긴 기체는 정가로 돌린다.
+   */
+  function basis(type, paid) {
+    return typeof paid === 'number' && paid > 0 ? paid : type.price;
   }
 
   function fleetValue(s, planes) {
     const types = s.types || typeTable(s.programs);
-    return planes.reduce((sum, p) => sum + residual(types[p.typeId], p.ageQuarters), 0);
+    return planes.reduce((sum, p) => sum + residual(types[p.typeId], p.ageQuarters, p.paid), 0);
   }
 
   function depreciation(s, planes) {
     const types = s.types || typeTable(s.programs);
     return planes
       .filter((p) => p.ageQuarters < B.DEPRECIATION_QUARTERS)
-      .reduce((sum, p) => sum + types[p.typeId].price / B.DEPRECIATION_QUARTERS, 0);
+      .reduce((sum, p) => sum + basis(types[p.typeId], p.paid) / B.DEPRECIATION_QUARTERS, 0);
   }
 
   /**
@@ -307,7 +316,7 @@
 
   function checkCost(s, p) {
     const types = s.types || typeTable(s.programs);
-    return types[p.typeId].price * B.CHECK_COST_RATE * (1 + p.ageQuarters * B.CHECK_COST_AGE_SLOPE);
+    return basis(types[p.typeId], p.paid) * B.CHECK_COST_RATE * (1 + p.ageQuarters * B.CHECK_COST_AGE_SLOPE);
   }
 
   /**
@@ -391,6 +400,11 @@
         alive: true,
         negativeQuarters: 0,
         results: [],
+        /**
+         * 평생 누적 승객. `results` 는 화면용 80분기 창이라 그것만 더하면 20년보다 긴
+         * 판에서 초반 수송량이 통째로 사라진다 — 최종 성적이 마지막 20년만 재게 된다.
+         */
+        lifetimePax: 0,
         // 창업 자본은 여기서 새긴다. 최종 성적이 이걸 기준으로 성장을 재는데, 나중에
         // 다시 세면 그동안의 성장이 기준에 섞여 배수가 늘 1 에 붙는다.
         startEquity: 0,
@@ -596,6 +610,7 @@
 
       const eq = equity(s, a);
       a.negativeQuarters = eq < 0 ? a.negativeQuarters + 1 : 0;
+      a.lifetimePax = (a.lifetimePax || 0) + pax;
       a.results.push({
         turn: s.turn,
         revenue,
@@ -672,11 +687,16 @@
       // 죽은 회사에는 인도하지 않는다 (fold 가 지우지 못한 경로가 있어도 여기서 막힌다).
       const a = airline(s, o.airlineId);
       if (!a || !a.alive) continue;
+      // 대당 치른 값을 기체에 새긴다. 장부가와 상각을 지금 카탈로그 값으로 다시 재면,
+      // 프로그램 정가가 3% 오른 것만으로 이미 인도된 기단의 자산가치와 감가상각비가
+      // 통째로 움직인다 — 아무 거래도 없었는데 자본과 차입 한도가 바뀐다.
+      const unit = typeof o.paid === 'number' && o.count > 0 ? o.paid / o.count : null;
       for (let i = 0; i < o.count; i++) {
         s.planes.push({
           id: s.nextId++,
           typeId: o.typeId,
           airlineId: o.airlineId,
+          paid: unit,
           ageQuarters: 0,
           routeId: null,
           hoursSinceCheck: 0,
@@ -813,7 +833,7 @@
   function finalScore(s, airlineId) {
     const a = airline(s, airlineId);
     if (!a) return null;
-    const pax = a.results.reduce((x, r) => x + r.pax, 0);
+    const pax = lifetimePaxOf(a);
     const routes = routesOf(s, airlineId).filter((r) => r.active);
     const cities = new Set();
     for (const r of routes) {
@@ -865,8 +885,14 @@
   }
 
   /** 점수만 — 순위를 매길 때 서로를 부르지 않으려고 따로 둔다. */
+  /** 평생 누적 승객. 옛 세이브(카운터가 없던 판)는 남아 있는 기록으로 메운다. */
+  function lifetimePaxOf(a) {
+    if (typeof a.lifetimePax === 'number') return a.lifetimePax;
+    return a.results.reduce((x, r) => x + r.pax, 0);
+  }
+
   function scoreOf(s, a) {
-    const pax = a.results.reduce((x, r) => x + r.pax, 0);
+    const pax = lifetimePaxOf(a);
     const cities = new Set();
     for (const r of routesOf(s, a.id)) if (r.active) cities.add(r.from), cities.add(r.to);
     const growth = Math.max(0, equity(s, a) / (a.startEquity || 1) - 1);
@@ -900,6 +926,7 @@
     slotRent,
     slotRentTotal,
     residual,
+    lifetimePaxOf,
     fleetValue,
     depreciation,
     equity,

@@ -1756,3 +1756,29 @@ details.fold > table:first-of-type {
 .sky-final h3 {
   padding-right: 60px;
 }
+
+/* 취항 후보 — 구간 카드 아래에 기재 선택을 붙인다 */
+.cand-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cand-box select {
+  background: #0f1621;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+}
+/* 고를 거리가 없을 때도 셀렉트와 같은 높이를 차지해야 카드 줄이 안 어긋난다.
+   다만 눌리는 것처럼 보이면 안 되므로 테두리는 두지 않는다. */
+.cand-plane {
+  display: block;
+  font-size: 12px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  line-height: 1.2;
+}

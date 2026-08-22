@@ -156,7 +156,9 @@
   function financeCard(s, meId) {
     const a = St.airline(s, meId);
     const room = Math.max(0, St.debtCap(s, a) - a.debt);
-    const step = Math.max(10e6, Math.round(room / 4 / 1e6) * 1e6);
+    // 남은 여력이 10M 밑이면 그 남은 만큼만 빌린다. 최소 단위를 강요하면 버튼이
+    // 잠겨, 명령 계층과 AI 는 되는 소액 차입을 플레이어만 못 해 급매로 몰린다.
+    const step = Math.min(room, Math.max(10e6, Math.round(room / 4 / 1e6) * 1e6));
     return `<div class="card full">
       <h3>자금</h3>
       <div class="sky-stats">
@@ -166,7 +168,7 @@
         ${stat('이자율', `연 ${(St.interestRate(s, a) * 100).toFixed(1)}%`)}
       </div>
       <div class="row">
-        <button class="ghost" data-action="borrow" data-amount="${step}" ${room < step ? 'disabled' : ''}>
+        <button class="ghost" data-action="borrow" data-amount="${step}" ${step <= 0 ? 'disabled' : ''}>
           ${money(step)} 차입</button>
         <button class="ghost" data-action="repay" data-amount="${step}" ${a.debt <= 0 || a.cash <= 0 ? 'disabled' : ''}>
           ${money(Math.min(step, a.debt))} 상환</button>
@@ -378,7 +380,7 @@
           const t = s.types[p.typeId];
           const fits = routes.filter((r) => Econ.canFly(t, Cities.distance(r.from, r.to)));
           return `<li>
-            <b>${esc(t.name)}</b> <span class="muted">${(p.ageQuarters / 4).toFixed(1)}년 · 잔존 ${money(St.residual(t, p.ageQuarters))}</span>
+            <b>${esc(t.name)}</b> <span class="muted">${(p.ageQuarters / 4).toFixed(1)}년 · 잔존 ${money(St.residual(t, p.ageQuarters, p.paid))}</span>
             ${
               fits.length
                 ? `<select data-action="assign" data-plane="${p.id}">
@@ -402,6 +404,13 @@
    * 플레이어와 AI 가 **같은 잣대**를 봐야 한다. 화면에만 다른 점수를 띄우면 "왜 저기를
    * 안 갔지"가 정보 비대칭이 되고, 잣대를 고칠 때 두 군데를 고치게 된다.
    */
+  /**
+   * 취항 후보.
+   *
+   * 후보마다 **그 구간에 쓸 수 있는 유휴기를 전부** 실어 보낸다. 가장 큰 기체를 골라
+   * 놓고 그것만 넘기면, 장거리에 아껴 둔 광동체가 단거리에 끌려 나가고 플레이어는
+   * 노선을 연 뒤 작은 기체로 갈아 끼우고 광동체를 떼는 수밖에 없다.
+   */
   function openCandidates(s, meId, limit) {
     const me = St.airline(s, meId);
     const idle = St.planesOf(s, meId).filter((p) => p.routeId === null && p.checkUntilTurn !== s.turn);
@@ -418,9 +427,11 @@
         if (seen.has(Cities.pairKey(from, to.id))) continue;
         if (St.isClosed(s.cityState[to.id] || {}, s.turn)) continue;
         const dist = Cities.distance(from, to.id);
-        const plane = idle
+        // 큰 기체가 먼저 오되, 나머지도 고를 수 있게 함께 싣는다.
+        const usable = idle
           .filter((p) => Econ.canFly(s.types[p.typeId], dist))
-          .sort((x, y) => s.types[y.typeId].seats - s.types[x.typeId].seats)[0];
+          .sort((x, y) => s.types[y.typeId].seats - s.types[x.typeId].seats || x.id - y.id);
+        const plane = usable[0];
         if (!plane) continue;
         const cap = Econ.capacity([plane], dist, (t) => s.types[t]);
         if (cap.maxFreq < 1) continue;
@@ -436,6 +447,7 @@
           to: to.id,
           dist,
           plane,
+          usable,
           freq,
           needFrom,
           needTo,
@@ -470,17 +482,31 @@
         <div class="cands">
         ${cands
           .map(
-            (c) => `<button class="cand" data-action="open-route"
+            (c) => `<div class="cand-box">
+              <button class="cand" data-action="open-route"
                 data-from="${esc(c.from)}" data-to="${esc(c.to)}"
                 ${me.cash < c.cost ? 'disabled' : ''}>
-              <b>${esc(Cities.name(c.from))} – ${esc(Cities.name(c.to))}</b>
-              <span>${num(c.dist)}km · 분기 수요 ${num(c.demand)}</span>
-              <span>로컬 ${esc(root.AirlinerSkyMarket.localStrengthLabel(Cities.get(c.from), Cities.get(c.to)))}
-                · ${esc(s.types[c.plane.typeId].name)} 주 ${c.freq}왕복</span>
-              <span class="${me.cash < c.cost ? 'bad' : 'accent'}">${money(c.cost)}${
-                c.needFrom + c.needTo ? ` (슬롯 ${c.needFrom + c.needTo}자리 포함)` : ''
-              }</span>
-            </button>`,
+                <b>${esc(Cities.name(c.from))} – ${esc(Cities.name(c.to))}</b>
+                <span>${num(c.dist)}km · 분기 수요 ${num(c.demand)}</span>
+                <span>로컬 ${esc(root.AirlinerSkyMarket.localStrengthLabel(Cities.get(c.from), Cities.get(c.to)))}
+                  · 주 ${c.freq}왕복</span>
+                <span class="${me.cash < c.cost ? 'bad' : 'accent'}">${money(c.cost)}${
+                  c.needFrom + c.needTo ? ` (슬롯 ${c.needFrom + c.needTo}자리 포함)` : ''
+                }</span>
+              </button>
+              ${
+                c.usable.length > 1
+                  ? `<select data-action="pick-plane" data-from="${esc(c.from)}" data-to="${esc(c.to)}">
+                      ${c.usable
+                        .map(
+                          (p) => `<option value="${p.id}"${p.id === c.plane.id ? ' selected' : ''}>
+                            ${esc(s.types[p.typeId].name)} · ${s.types[p.typeId].seats}석</option>`,
+                        )
+                        .join('')}
+                    </select>`
+                  : `<span class="muted cand-plane">${esc(s.types[c.plane.typeId].name)} · ${s.types[c.plane.typeId].seats}석</span>`
+              }
+            </div>`,
           )
           .join('')}
         </div>

@@ -13,6 +13,7 @@
   const A = root.AirlinerSkyActions;
   const Ai = root.AirlinerSkyAi;
   const SP = root.AirlinerSkyPanels;
+  const Econ = root.AirlinerSkyEconomics;
   const P = root.AirlinerPanels;
 
   const SAVE_KEY = 'airliner-sky-save-v1';
@@ -22,6 +23,8 @@
     meId: null,
     tab: 'overview',
     folds: new Set(),
+    /** 취항 후보에서 고른 기재 (구간 → 기재 id). 누를 때까지 상태를 안 건드린다. */
+    planeChoice: {},
     animate: null,
   };
 
@@ -269,16 +272,29 @@
         run(A.repay(s, me, +d.amount));
         break;
       case 'open-route': {
-        const c = SP.openCandidates(s, me).find((x) => x.from === d.from && x.to === d.to);
+        const c = SP.openCandidates(s, me, 500).find((x) => x.from === d.from && x.to === d.to);
         if (!c) {
           toast('그 사이 조건이 바뀌었다.', 'bad');
           render();
           break;
         }
-        if (c.needFrom > 0 && !run(A.buySlots(s, me, c.from, c.needFrom))) break;
-        if (c.needTo > 0 && !run(A.buySlots(s, me, c.to, c.needTo))) break;
-        const freq = Math.min(c.freq, A.freeSlots(s, me, c.from), A.freeSlots(s, me, c.to));
-        run(A.openRoute(s, me, c.from, c.to, [c.plane.id], freq, 1));
+        // 플레이어가 고른 기체가 있으면 그것으로 연다 — 없으면 가장 큰 것.
+        const picked = ui.planeChoice[`${d.from}|${d.to}`];
+        const plane = c.usable.find((x) => x.id === picked) || c.plane;
+        const dist = Cities.distance(c.from, c.to);
+        const cap = Econ.capacity([plane], dist, (t) => s.types[t]);
+        const want = Math.min(cap.maxFreq, 7);
+        if (want < 1) {
+          toast('그 기체로는 이 구간을 뛸 수 없다.', 'bad');
+          break;
+        }
+        const needFrom = Math.max(0, want - A.freeSlots(s, me, c.from));
+        const needTo = Math.max(0, want - A.freeSlots(s, me, c.to));
+        if (needFrom > 0 && !run(A.buySlots(s, me, c.from, needFrom))) break;
+        if (needTo > 0 && !run(A.buySlots(s, me, c.to, needTo))) break;
+        const freq = Math.min(want, A.freeSlots(s, me, c.from), A.freeSlots(s, me, c.to));
+        run(A.openRoute(s, me, c.from, c.to, [plane.id], freq, 1));
+        delete ui.planeChoice[`${d.from}|${d.to}`];
         break;
       }
       default:
@@ -287,6 +303,13 @@
   }
 
   function onChange(e) {
+    // 취항 후보의 기재 선택은 상태를 바꾸지 않는다 — 누를 때 쓰려고 기억만 해 둔다.
+    // 여기서 다시 그리면 셀렉트가 초기화되어 고른 것이 날아간다.
+    const pick = e.target.closest('select[data-action="pick-plane"]');
+    if (pick) {
+      ui.planeChoice[`${pick.dataset.from}|${pick.dataset.to}`] = +pick.value;
+      return;
+    }
     const sel = e.target.closest('select[data-action="assign"]');
     if (!sel || !sel.value) return;
     const s = ui.state;
@@ -339,6 +362,7 @@
     ui.meId = meId || ui.state.airlines[0].id;
     ui.tab = 'overview';
     ui.folds = new Set();
+    ui.planeChoice = {};
     render();
   }
 

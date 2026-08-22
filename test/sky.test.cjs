@@ -1668,3 +1668,114 @@ test('상태: 선급금은 치른 값으로 잡는다', () => {
   assert.ok(Math.abs(St.equity(s, a) - eq) < 1e-6, '정가가 올랐다고 자본이 늘었다');
   assert.ok(Math.abs(St.debtCap(s, a) - cap) < 1e-6, '차입 한도가 따라 늘었다');
 });
+
+test('채산: 항속이 모자란 기재는 원가도 정비시간도 가져가지 않는다', () => {
+  // 수송력에서만 걸러 냈더니 못 나는 기체가 원가와 정비시간을 나눠 가져갔다 —
+  // 도쿄–LA 에 ATR 한 대를 섞으면 그 기체가 분기 697시간을 적립하고 노선 원가가
+  // 33% 싸졌다. 셋이 같은 목록을 봐야 한다.
+  const s = St.newGame(1234);
+  const dist = C.distance('tokyo', 'losangeles');
+  assert.ok(Econ.canFly(s.types['b747-400'], dist) && !Econ.canFly(s.types['atr42-500'], dist), '섞을 짝이 맞아야 한다');
+  const r = { id: 1, airlineId: s.airlines[0].id, from: 'tokyo', to: 'losangeles', fareMul: 1, freq: 4, serviceExtra: 0, active: true, last: null };
+  const plane = (id, typeId) => ({ id, typeId, airlineId: s.airlines[0].id, routeId: 1, ageQuarters: 8, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 });
+  const able = [plane(1, 'b747-400')];
+  const mixed = [plane(1, 'b747-400'), plane(2, 'atr42-500')];
+  const ctx = { typeOf: (t) => s.types[t], oil: 1, inflation: 1, serviceLevel: 3, pax: 1000, revenue: 1e6 };
+
+  const capA = Econ.capacity(able, dist, (t) => s.types[t]);
+  assert.strictEqual(Econ.capacity(mixed, dist, (t) => s.types[t]).maxFreq, capA.maxFreq, '수송력이 늘면 안 된다');
+  assert.ok(Math.abs(Econ.routeCost(r, mixed, ctx).total - Econ.routeCost(r, able, ctx).total) < 1, '원가가 달라졌다');
+  const hours = Econ.blockHoursByPlane(mixed, 4, dist, (t) => s.types[t]);
+  assert.ok(!hours[2], '못 나는 기체에 비행시간이 쌓였다');
+  assert.ok(hours[1] > 0, '나는 기체는 제 몫을 다 받아야 한다');
+});
+
+test('명령: 예비기를 붙여도 시간표가 영구히 깎이지 않는다', () => {
+  // 중정비로 한 대가 빠진 분기에 예비기를 붙이면, 그 분기 수송력까지 편수가 깎이고
+  // 입고기가 돌아와도 그대로였다(49 → 45, 돌아오면 69를 낼 수 있는데도).
+  // 이번 분기의 일시적 손실은 effectiveFreq 가 이미 처리한다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const r = St.routesOf(s, a.id).find((x) => x.active);
+  const dist = C.distance(r.from, r.to);
+  a.slots[r.from] = 300;
+  a.slots[r.to] = 300;
+  const fast = St.planesOf(s, a.id)
+    .filter((x) => x.routeId === null && Econ.canFly(s.types[x.typeId], dist))
+    .sort((x, y) => s.types[y.typeId].speed - s.types[x.typeId].speed);
+  Act.assignPlanes(s, a.id, r.id, St.assignedTo(s, r.id).map((x) => x.id).concat([fast[0].id]));
+  Act.tuneRoute(s, a.id, r.id, { freq: Econ.capacity(St.flyingOn(s, r.id), dist, (t) => s.types[t]).maxFreq });
+  const scheduled = r.freq;
+
+  St.assignedTo(s, r.id)[0].checkUntilTurn = s.turn; // 한 대 입고
+  const spare = { id: 99999, typeId: 'atr72-500', airlineId: a.id, routeId: null, ageQuarters: 8, hoursSinceCheck: 0, quartersSinceCheck: 0, checkUntilTurn: -1 };
+  s.planes.push(spare);
+  assert.strictEqual(Act.assignPlanes(s, a.id, r.id, St.assignedTo(s, r.id).map((x) => x.id).concat([spare.id])).ok, true);
+  assert.ok(r.freq >= scheduled, `시간표가 ${scheduled} → ${r.freq} 로 깎였다`);
+  // 그래도 이번 분기에 실제로 뜨는 편수는 줄어 있어야 한다.
+  const flying = Econ.effectiveFreq(r, St.flyingOn(s, r.id), dist, (t) => s.types[t], false);
+  assert.ok(flying <= r.freq, '이번 분기 편수가 시간표를 넘으면 안 된다');
+});
+
+test('성적: 20년보다 긴 판에서도 초반 수송량을 센다', () => {
+  // `results` 는 화면용 80분기 창이다. 그것만 더하면 30년 판이 마지막 20년만 재고,
+  // 초반에 크게 실어 나른 회사가 뒤로 밀린다.
+  const s = St.newGame(1234, { totalTurns: 120 });
+  for (let i = 0; i < 100; i++) St.advance(s);
+  const a = s.airlines[0];
+  const window = a.results.reduce((x, r) => x + r.pax, 0);
+  assert.strictEqual(a.results.length, 80, '기록 창이 80분기여야 검사가 산다');
+  assert.ok(a.lifetimePax > window, '누적이 창보다 커야 한다');
+  assert.strictEqual(St.finalScore(s, a.id).pax, a.lifetimePax, '성적이 누적을 써야 한다');
+});
+
+test('상태: 인도된 기체의 장부가가 카탈로그를 따라 움직이지 않는다', () => {
+  // 프로그램 정가가 오른 것만으로 이미 인도된 기단의 자산가치·상각비·중정비비가
+  // 통째로 움직이면, 아무 거래도 없었는데 자본과 차입 한도가 바뀐다.
+  const prog = { id: 'p1', name: '신형', phase: 'production', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const s = St.newGame(1234, { programs: [prog] });
+  const a = s.airlines[0];
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'p1', 2).ok, true);
+  for (let i = 0; i < Act.ORDER_QUARTERS; i++) St.advance(s);
+  const mine = St.planesOf(s, a.id).filter((p) => p.typeId === 'p1');
+  assert.strictEqual(mine.length, 2, '인도됐어야 한다');
+  const value = St.fleetValue(s, mine);
+  const dep = St.depreciation(s, mine);
+  const check = St.checkCost(s, mine[0]);
+  prog.listPrice = 120;
+  St.refreshTypes(s, [prog]);
+  assert.ok(Math.abs(St.fleetValue(s, mine) - value) < 1, '자산가치가 정가를 따라갔다');
+  assert.ok(Math.abs(St.depreciation(s, mine) - dep) < 1, '상각비가 정가를 따라갔다');
+  assert.ok(Math.abs(St.checkCost(s, mine[0]) - check) < 1, '중정비비가 정가를 따라갔다');
+});
+
+test('화면: 남은 차입 여력이 적어도 그만큼 빌릴 수 있다', () => {
+  // 최소 단위를 강요하면 버튼이 잠겨, 명령 계층과 AI 는 되는 소액 차입을 플레이어만
+  // 못 해 급매로 몰린다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  // 남은 여력이 정확히 4M 이 되도록 (한도는 자본을 타므로 부채가 한도도 낮춘다).
+  a.debt = (St.BALANCE.DEBT_CAP_EQUITY * St.equity(s, a) - 4e6) / (1 + St.BALANCE.DEBT_CAP_EQUITY);
+  const room = St.debtCap(s, a) - a.debt;
+  assert.ok(room > 0 && room < 10e6, `여력이 10M 미만이어야 검사가 산다 (${Math.round(room / 1e6)}M)`);
+  const m = SP.renderOverview(s, a.id, new Set()).match(/data-action="borrow" data-amount="([0-9.e+]+)"[^>]*>/);
+  assert.ok(m, '차입 버튼이 없다');
+  assert.ok(!/disabled/.test(m[0]), '여력이 있는데 버튼이 잠겼다');
+  assert.ok(+m[1] > 0 && +m[1] <= room + 1, `버튼 금액이 여력을 넘는다 (${+m[1]} > ${room})`);
+  assert.strictEqual(Act.borrow(s, a.id, +m[1]).ok, true, '화면이 내놓은 금액이 실제로 안 통한다');
+});
+
+test('화면: 취항할 기체를 고를 수 있다', () => {
+  // 가장 큰 기체만 넘기면, 장거리에 아껴 둔 광동체가 단거리로 끌려 나가고 플레이어는
+  // 노선을 연 뒤 갈아 끼우고 떼는 수밖에 없다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0].id;
+  const cands = SP.openCandidates(s, me, 500);
+  const many = cands.find((c) => c.usable.length > 1);
+  assert.ok(many, '고를 거리가 있는 후보가 있어야 검사가 산다');
+  for (const p of many.usable) {
+    assert.ok(Econ.canFly(s.types[p.typeId], many.dist), '못 나는 기체가 목록에 있다');
+  }
+  assert.strictEqual(many.usable[0].id, many.plane.id, '기본값은 목록 맨 앞이어야 한다');
+  assert.ok(/data-action="pick-plane"/.test(SP.renderOpen(s, me, new Set())), '화면에 고를 자리가 없다');
+});
