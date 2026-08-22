@@ -284,7 +284,9 @@
 
   function quarterCard(r) {
     const rows = [
-      ['운항 수입', r.revenue, 1],
+      ['여객 수입', r.revenue, 1],
+      // 0 이면 아래 필터가 걸러 낸다 — 화물을 아직 못 싣는 판에 빈 줄이 생기지 않는다.
+      ['화물 수입', r.cargoRevenue || 0, 1],
       ['연료', -r.fuel],
       ['승무원', -r.crew],
       ['정비', -r.maint],
@@ -488,7 +490,9 @@
           ? `<div class="sky-stat wide"><span>탑승률</span><b class="${lfClass(last.loadFactor)}">${pct(last.loadFactor)}</b></div>
              ${bar(last.loadFactor, lfClass(last.loadFactor))}
              <p class="muted">승객 ${num(last.pax)}명${last.connectPax ? ` (환승 ${num(last.connectPax)})` : ''}
-               · 점유율 ${pct(last.share)} · 수입 ${money(last.revenue)} · 원가 ${money(last.cost)}</p>`
+               · 점유율 ${pct(last.share)} · 수입 ${money(last.revenue)}${
+                 last.cargoRevenue ? ` <i class="muted">(화물 ${money(last.cargoRevenue)})</i>` : ''
+               } · 원가 ${money(last.cost)}</p>`
           : '<p class="muted">아직 실적이 없다.</p>'
       }
       ${
@@ -693,7 +697,8 @@
           needTo: chosen.needTo,
           cost: chosen.cost,
           demand: St.demandFor(s, Cities.get(from), to).total,
-          score: Ai.attractiveness(s, meId, Cities.get(from), to) / (1 + chosen.cost / 60e6),
+          // 자동조종과 **같은 자로 잰다** — 화면이 다른 순서를 내놓으면 추천이 아니라 잡음이다.
+          score: Ai.attractiveness(s, meId, Cities.get(from), to, s.types[chosen.plane.typeId]) / (1 + chosen.cost / 60e6),
         });
       }
     }
@@ -837,13 +842,14 @@
       ${chartCard(C, '현금', me.results.map((r) => r.cash), labels, asMoney)}
       ${chartCard(C, '분기 승객', me.results.map((r) => r.pax), labels, num)}
       <div class="card full"><h3>최근 분기</h3>
-        <table class="tbl"><thead><tr><th>분기</th><th class="r">수입</th><th class="r">순익</th><th class="r">승객</th><th class="r">탑승률</th></tr></thead><tbody>
+        <table class="tbl"><thead><tr><th>분기</th><th class="r">여객</th><th class="r">화물</th><th class="r">순익</th><th class="r">승객</th><th class="r">탑승률</th></tr></thead><tbody>
         ${me.results
           .slice(-12)
           .reverse()
           .map(
             (r) => `<tr><td>${s.startYear + Math.floor(r.turn / 4)}년 ${(r.turn % 4) + 1}분기</td>
               <td class="r">${money(r.revenue)}</td>
+              <td class="r">${r.cargoRevenue ? money(r.cargoRevenue) : '—'}</td>
               <td class="r ${tone(r.net)}">${sign(r.net)}${money(r.net)}</td>
               <td class="r">${num(r.pax)}</td>
               <td class="r">${r.seats > 0 ? pct(r.pax / r.seats) : '—'}</td></tr>`,

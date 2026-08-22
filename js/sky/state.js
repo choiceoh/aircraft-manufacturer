@@ -16,6 +16,7 @@
   const Types = root.AirlinerSkyTypes;
   const Econ = root.AirlinerSkyEconomics;
   const Market = root.AirlinerSkyMarket;
+  const Cargo = root.AirlinerSkyCargo;
   const Fleet = root.AirlinerFleet;
   const Design = root.AirlinerDesign;
   const Data = root.AirlinerData;
@@ -188,6 +189,23 @@
       closed: (city) => isClosed(s.cityState[city] || {}, s.turn),
       inflation: s.world.inflation,
       oil: s.world.oil,
+    };
+  }
+
+  /**
+   * 화물이 쓰는 조회 묶음.
+   *
+   * 여객 쪽(`marketContext`)과 나누어 둔다 — 화물은 브랜드도 서비스 등급도 슬롯도 안
+   * 보고(자리가 있는 곳에 실린다), 대신 여객이 풀린 뒤의 **빈자리**를 본다.
+   */
+  function cargoContext(s) {
+    const types = s.types || typeTable(s.programs);
+    return {
+      typeOf: (id) => types[id],
+      flyingOn: (routeId) => flyingOn(s, routeId),
+      economy: s.world.economy,
+      inflation: s.world.inflation,
+      dev: (cityId) => (s.cityState[cityId] || {}).dev || 1,
     };
   }
 
@@ -541,7 +559,9 @@
     if (o.beforeMarket) o.beforeMarket(s, rng);
 
     const outcomes = Market.resolveAll(s.routes, marketContext(s));
-    settle(s, outcomes);
+    // **여객이 풀린 뒤에 화물을 푼다.** 실을 양은 손님 짐이 먹고 남은 자리가 정한다.
+    const cargo = Cargo.resolveAll(s.routes, outcomes, cargoContext(s));
+    settle(s, outcomes, cargo);
     // **기록을 남기기 전에** 급한 매각을 끝낸다. 뒤에 두면 현금이 마이너스인 채로
     // 기록되고 실제 잔액은 플러스가 되어, 화면의 재무 기록과 상태가 어긋난다.
     resolveDistress(s);
@@ -566,14 +586,16 @@
     return s;
   }
 
-  function settle(s, outcomes) {
+  function settle(s, outcomes, cargoBy) {
     for (const r of s.routes) r.last = null;
+    const cargo = cargoBy || {};
 
     for (const a of living(s)) {
       const planes = planesOf(s, a.id);
       let pax = 0;
       let seats = 0;
       let revenue = 0;
+      let cargoRevenue = 0;
       const cost = { fuel: 0, crew: 0, maint: 0, landing: 0, nav: 0, paxService: 0, distribution: 0, total: 0 };
 
       for (const r of routesOf(s, a.id)) {
@@ -584,13 +606,16 @@
           continue;
         }
         const dist = Cities.distance(r.from, r.to);
+        const freight = cargo[r.id] || 0;
         const rc = Econ.routeCost(r, flying, {
           typeOf: (t) => s.types[t],
           oil: s.world.oil,
           inflation: s.world.inflation,
           serviceLevel: a.serviceLevel,
           pax: out.pax,
-          revenue: out.revenue,
+          // 판매수수료는 **화물까지 포함한 매출**에 붙는다 — 화물도 포워더를 통해
+          // 팔리고, 그 수수료를 빼면 벨리 매출이 통째로 순익이 되어 과하게 남는다.
+          revenue: out.revenue + freight,
           closed: routeClosed(s, r),
         });
 
@@ -605,10 +630,14 @@
         pax += out.pax;
         seats += out.seats;
         revenue += out.revenue;
+        cargoRevenue += freight;
         r.last = {
           pax: out.pax,
           seats: out.seats,
-          revenue: out.revenue,
+          // **노선 손익에는 화물까지 넣는다.** 안 넣으면 화면도 AI 도 벨리로 먹고 사는
+          // 장거리 광동체 노선을 "간신히 남는 노선"으로 읽고 접는다.
+          revenue: out.revenue + freight,
+          cargoRevenue: freight,
           cost: rc.total + occupied,
           share: out.share,
           loadFactor: out.loadFactor,
@@ -624,7 +653,7 @@
       const dep = depreciation(s, planes);
       const interest = (a.debt * interestRate(s, a)) / 4;
 
-      const pretax = revenue - cost.total - over - rent - dep - interest - checkCostTotal;
+      const pretax = revenue + cargoRevenue - cost.total - over - rent - dep - interest - checkCostTotal;
       const tax = pretax > 0 ? pretax * B.TAX_RATE : 0;
       const net = pretax - tax;
       // 감가상각은 현금이 나가지 않는다.
@@ -638,6 +667,7 @@
       a.results.push({
         turn: s.turn,
         revenue,
+        cargoRevenue,
         fuel: cost.fuel,
         crew: cost.crew,
         maint: cost.maint,
