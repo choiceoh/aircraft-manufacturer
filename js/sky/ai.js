@@ -18,6 +18,7 @@
   const Cities = root.AirlinerCities;
   const Econ = root.AirlinerSkyEconomics;
   const Market = root.AirlinerSkyMarket;
+  const Cargo = root.AirlinerSkyCargo;
   const St = root.AirlinerSkyState;
   const A = root.AirlinerSkyActions;
   const Data = root.AirlinerData;
@@ -227,7 +228,7 @@
           if (cost > budget) continue;
 
           // 같은 매력이면 슬롯값이 싼 쪽이 낫다.
-          const score = attractiveness(s, airlineId, Cities.get(fromId), to) / (1 + cost / 60e6);
+          const score = attractiveness(s, airlineId, Cities.get(fromId), to, s.types[plane.typeId]) / (1 + cost / 60e6);
           if (!best || score > best.score) {
             best = { fromId, toId: to.id, plane, freq, needFrom, needTo, score };
           }
@@ -245,7 +246,43 @@
   }
 
   /** 수요가 크고 경쟁이 옅을수록 매력적이다. */
-  function attractiveness(s, airlineId, a, b) {
+  /**
+   * 이 구간에 이 기종을 붙였을 때 **화물이 매출을 얼마나 더 얹는가** (0.. 비율).
+   *
+   * 화물을 안 보면 자동조종은 벨리로 먹는 장거리 광동체 노선을 여객 수요만으로
+   * 판단한다 — 사람이 쓸 수 있는 손잡이를 기계는 못 쓰는 셈이고, 등급 눈금이
+   * "자동조종만큼 하면 B" 인 이 게임에서는 그게 곧 난이도 왜곡이다.
+   *
+   * 크기는 재지 않고 **비율**만 본다. `attractiveness` 가 돈이 아니라 상대 점수라,
+   * 매출의 2할이 화물인 노선을 2할 더 끌리는 것으로 두면 단위가 맞는다.
+   */
+  function cargoLift(s, type, a, b) {
+    if (!Cargo || !type) return 0;
+    const dist = Cities.distance(a.id, b.id);
+    const ctx = {
+      economy: s.world.economy,
+      inflation: s.world.inflation,
+      dev: (id) => (s.cityState[id] || {}).dev || 1,
+    };
+    // **기령까지 적어 준다.** 아직 사지도 않은 기체를 가정하는 자리라 0 이 맞고,
+    // 안 적으면 `capacity` 가 기령 합을 내다 `avgAgeQuarters: NaN` 을 돌려준다 —
+    // 지금 그 칸을 안 쓸 뿐이지, 쓰는 순간 조용히 번진다.
+    const cap = Econ.capacity([{ typeId: type.id, ageQuarters: 0 }], dist, () => type);
+    if (cap.maxFreq < 1) return 0;
+    const freq = Math.min(cap.maxFreq, 7);
+    const legs = Econ.quarterlyLegs(freq);
+    // 짐이 먹는 몫은 아직 모른다(태울 손님 수가 정해지기 전이다) — 절반쯤 찬다고 본다.
+    const tons = Cargo.bellyTons(type) * legs * (1 - Cargo.BALANCE.CARGO_BAGGAGE_SHARE * 0.5);
+    const carried = Math.min(tons, Cargo.demandTons(a.id, b.id, ctx));
+    const cargoRev = carried * Cargo.revenuePerTon(dist, s.world.inflation);
+    const seats = Econ.quarterlySeats(freq, cap.avgSeats);
+    const paxRev = seats * 0.7 * Econ.standardFare(dist, s.world.inflation);
+    if (paxRev <= 0) return 0;
+    // 상한을 둔다 — 여객 수요가 거의 없는 구간에서 비율이 발산해 화물만 보고 취항한다.
+    return Math.min(0.6, cargoRev / paxRev);
+  }
+
+  function attractiveness(s, airlineId, a, b, type) {
     const demand = St.demandFor(s, a, b).total;
     if (demand < B.MIN_DEMAND) return 0;
     const key = Cities.pairKey(a.id, b.id);
@@ -268,7 +305,7 @@
     // 세기가 구간마다 다르므로, 로컬이 억센 시장은 그만큼 깎아 본다 — 이게 없으면
     // AI 는 편차를 못 읽고 하필 빡센 시장만 골라 들어간다.
     const local = Math.exp(Market.localStrength(a, b));
-    return (demand / (1 + rivalSeats / 1000) / (1 + local)) * homeBonus * brandBonus;
+    return (demand / (1 + rivalSeats / 1000) / (1 + local)) * homeBonus * brandBonus * (1 + cargoLift(s, type, a, b));
   }
 
   /** 노선망 평균 거리에 맞는, 좌석당 값이 가장 싼 기종을 고른다. */

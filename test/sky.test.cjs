@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
 // 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js', 'sky/group.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/cargo.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js', 'sky/group.js']) {
   require(path.join(JS, f));
 }
 
@@ -373,6 +373,7 @@ test('수요: 항공여행 보급 지수가 기준연도와 성장률에 묶여 
 const Econ = globalThis.AirlinerSkyEconomics;
 const M = globalThis.AirlinerSkyMarket;
 const St = globalThis.AirlinerSkyState;
+const Cg = globalThis.AirlinerSkyCargo;
 const Act = globalThis.AirlinerSkyActions;
 const Ai = globalThis.AirlinerSkyAi;
 const SP = globalThis.AirlinerSkyPanels;
@@ -3354,4 +3355,159 @@ test('통합: 끝난 판도 되돌려 줄 돈을 자회사에 넘기고 성적�
     Math.abs(a.cash - cashBefore - extra * G.MUSD) < 1,
     `자회사가 못 받았다 — ${Math.round((a.cash - cashBefore) / 1e6)}M (${Math.round(extra)}M 이어야 한다)`,
   );
+});
+
+// ─────────────────────────────── 화물 ───────────────────────────────
+
+test('화물: 광동체가 좌석당 두 배 넘게 싣는다', () => {
+  // 화물 적재량은 좌석 수가 아니라 동체 굵기가 정한다 — 바닥 아래 컨테이너가
+  // 들어가느냐다. 이게 없으면 좌석만 세게 되어 협동체를 여러 대 굴리는 쪽이 늘 같다.
+  const narrow = { seats: 180, widebody: false, speed: 850 };
+  const wide = { seats: 180, widebody: true, speed: 880 };
+  const rn = Cg.bellyTons(narrow);
+  const rw = Cg.bellyTons(wide);
+  assert.ok(rn > 0 && rw > 0, '둘 다 실어야 한다');
+  assert.ok(rw / rn > 2, `같은 좌석인데 광동체가 ${(rw / rn).toFixed(1)}배뿐이다`);
+
+  // 초음속기는 동체가 가늘고 연료가 무거워 거의 못 싣는다.
+  const sst = { seats: 180, widebody: false, speed: 2100 };
+  assert.ok(Cg.bellyTons(sst) < rn * 0.3, '초음속기가 협동체만큼 싣는다');
+});
+
+test('화물: 관광지가 아니라 경제 중심지 사이를 흐른다', () => {
+  // 여객 수요는 `tour` 가 밀지만 화물은 안 민다. 안 갈라 두면 관광 노선에 광동체를
+  // 붙이는 것이 화물까지 버는 최적해가 되어, 화물이 여객의 그림자로 되돌아간다.
+  const ctx = { economy: 1, inflation: 1 };
+  const all = C.CITIES.slice();
+  const byStanding = all.slice().sort((x, y) => y.standing - x.standing);
+  const byTour = all.slice().sort((x, y) => y.tour - x.tour);
+  // 관광지수는 높지만 비중은 낮은 도시 하나를 고른다.
+  const touristy = byTour.find((c) => c.standing < byStanding[Math.floor(all.length / 2)].standing);
+  assert.ok(touristy, '이 판별을 할 도시가 없으면 검사가 아무것도 안 잰다');
+  const trade = byStanding[0];
+  const hub = byStanding[1];
+
+  const tradeLane = Cg.quarterlyTons(hub.id, trade.id, ctx);
+  const tourLane = Cg.quarterlyTons(hub.id, touristy.id, ctx);
+  assert.ok(tradeLane > tourLane, `무역로 ${Math.round(tradeLane)}t 가 관광로 ${Math.round(tourLane)}t 보다 커야 한다`);
+});
+
+test('화물: 손님 짐이 먼저 들어간다 — 만석이면 실을 자리가 없다', () => {
+  const typeOf = () => ({ id: 't', seats: 300, widebody: true, speed: 880, range: 12000, turn: 1.5, maint: 900, crew: 700, fuel: 6, price: 1e8, prestige: 1 });
+  const planes = [{ id: 1, typeId: 't', ageQuarters: 4 }];
+  const dist = 6000;
+  const seats = Econ.quarterlySeats(4, Econ.capacity(planes, dist, typeOf).avgSeats);
+
+  const empty = Cg.capacityTons(planes, 4, dist, 0, typeOf);
+  const full = Cg.capacityTons(planes, 4, dist, seats, typeOf);
+  assert.ok(empty > 0, '빈 기체가 화물을 못 싣는다');
+  assert.ok(full < empty, `만석인데 여력이 안 줄었다 (${full.toFixed(1)} vs ${empty.toFixed(1)})`);
+  // 짐이 먹는 몫만큼만 준다 — 만석이라고 0 이 되지는 않는다.
+  assert.ok(full > empty * 0.3, '만석이라고 화물이 통째로 사라졌다');
+});
+
+test('화물: 수요보다 여력이 크면 수요만큼만 실린다', () => {
+  // 이게 없으면 큰 기체 몇 대로 그 구간 화물을 통째로 쓸어 담아 매출이 무한히 는다.
+  const ctx = { economy: 1, inflation: 1 };
+  const from = 'seoul';
+  const to = 'tokyo';
+  const demand = Cg.demandTons(from, to, ctx);
+  assert.ok(demand > 0, '수요가 0 이면 검사가 아무것도 안 잰다');
+  const perTon = Cg.revenuePerTon(C.distance(from, to), 1);
+
+  const modest = Cg.allocate(from, to, { 1: demand * 0.5 }, ctx);
+  assert.ok(Math.abs(modest[1] - demand * 0.5 * perTon) < 1e-6, '여력이 수요보다 작으면 여력만큼 실린다');
+
+  const huge = Cg.allocate(from, to, { 1: demand * 100 }, ctx);
+  assert.ok(Math.abs(huge[1] - demand * perTon) < 1e-6, `여력을 키운 만큼 매출이 늘었다 (${huge[1]} vs ${demand * perTon})`);
+});
+
+test('화물: 같은 구간의 경쟁자와 여력에 비례해 나눈다', () => {
+  // 혼자만 넣고 돌리면 경쟁자 몫까지 제 것으로 잡는다.
+  const ctx = { economy: 1, inflation: 1 };
+  const from = 'london';
+  const to = 'newyork';
+  const demand = Cg.demandTons(from, to, ctx);
+  const share = Cg.allocate(from, to, { 1: demand, 2: demand * 3 }, ctx);
+  const total = share[1] + share[2];
+  assert.ok(Math.abs(share[2] / share[1] - 3) < 1e-9, '여력 비율대로 안 나눴다');
+  assert.ok(Math.abs(total - demand * Cg.revenuePerTon(C.distance(from, to), 1)) < 1e-6, '합이 수요를 넘거나 모자란다');
+});
+
+test('화물: 정산이 화물 매출을 노선과 회사 양쪽에 적는다', () => {
+  const s = playedWithAi(1234, 12);
+  const a = s.airlines.find((x) => x.alive && x.results.length);
+  const last = a.results[a.results.length - 1];
+  assert.ok(typeof last.cargoRevenue === 'number', '분기 기록에 화물이 없다');
+  assert.ok(last.cargoRevenue > 0, '12분기를 굴렸는데 화물 매출이 0 이다');
+
+  // 노선에 적힌 화물의 합이 회사 기록과 맞아야 한다.
+  const sum = St.routesOf(s, a.id)
+    .filter((r) => r.last)
+    .reduce((x, r) => x + (r.last.cargoRevenue || 0), 0);
+  assert.ok(Math.abs(sum - last.cargoRevenue) < 1e-6, `노선 합 ${Math.round(sum)} 과 회사 기록 ${Math.round(last.cargoRevenue)} 이 다르다`);
+
+  // 노선 매출에도 들어가 있어야 한다 — 안 넣으면 화면도 AI 도 벨리로 먹는 노선을
+  // "간신히 남는 노선"으로 읽고 접는다.
+  const withCargo = St.routesOf(s, a.id).find((r) => r.last && r.last.cargoRevenue > 0);
+  assert.ok(withCargo, '화물을 실은 노선이 없다');
+  assert.ok(withCargo.last.revenue > withCargo.last.cargoRevenue, '노선 매출이 화물만으로 이뤄졌다');
+});
+
+test('화물: 광동체 장거리가 협동체 단거리보다 화물 비중이 높다', () => {
+  // 이 모형을 되살린 이유 그 자체다 — 기종 선택과 노선 선택이 화물에 닿아야 한다.
+  const ctx = { economy: 1, inflation: 1 };
+  const typeOf = (id) =>
+    id === 'w'
+      ? { id: 'w', seats: 300, widebody: true, speed: 880, range: 12000, turn: 1.5, maint: 900, crew: 700, fuel: 6, price: 1e8, prestige: 1 }
+      : { id: 'n', seats: 150, widebody: false, speed: 830, range: 5000, turn: 0.9, maint: 500, crew: 400, fuel: 3, price: 5e7, prestige: 1 };
+
+  const tons = (typeId, dist) => {
+    const planes = [{ id: 1, typeId, ageQuarters: 4 }];
+    const cap = Econ.capacity(planes, dist, typeOf);
+    const freq = Math.min(4, cap.maxFreq);
+    const seats = Econ.quarterlySeats(freq, cap.avgSeats);
+    // 같은 탑승률에서 비교한다 — 벨리 여력의 차이만 보려는 것이다.
+    return Cg.capacityTons(planes, freq, dist, seats * 0.75, typeOf);
+  };
+
+  const wideLong = tons('w', 9000) * Cg.revenuePerTon(9000, 1);
+  const narrowShort = tons('n', 900) * Cg.revenuePerTon(900, 1);
+  assert.ok(
+    wideLong > narrowShort * 5,
+    `광동체 장거리 ${Math.round(wideLong)} 가 협동체 단거리 ${Math.round(narrowShort)} 의 5배는 돼야 한다`,
+  );
+  assert.ok(ctx.economy === 1, '이 검사는 세계 상태를 안 건드린다');
+});
+
+test('경제: 아직 사지 않은 기체로 물어도 값이 성하다', () => {
+  // 자동조종은 취항 후보를 잴 때 **가정한 기체**로 이 함수를 부른다 — 기령이 없다.
+  // 그때 `undefined` 를 더하면 합이 NaN 이 되어 돌려주는 값이 통째로 오염된다.
+  // 던지지도 않고 조용히 번지는 종류라, 쓰는 칸이 늘어나는 순간 터진다.
+  const s = St.newGame(1234);
+  const type = Object.values(s.types).find((t) => t.range > 3000);
+  assert.ok(type, '기종이 없으면 검사가 아무것도 안 잰다');
+
+  const bare = Econ.capacity([{ typeId: type.id }], 3000, (t) => s.types[t]);
+  for (const k of Object.keys(bare)) {
+    if (typeof bare[k] === 'number') assert.ok(Number.isFinite(bare[k]), `기령 없이 물었더니 capacity.${k} 가 ${bare[k]} 다`);
+  }
+  // 기령을 적어 준 것과 같은 답이어야 한다 — 0 으로 읽는다는 뜻이다.
+  const aged = Econ.capacity([{ typeId: type.id, ageQuarters: 0 }], 3000, (t) => s.types[t]);
+  assert.deepStrictEqual(bare, aged, '없는 기령을 0 이 아닌 다른 값으로 읽었다');
+});
+
+test('화물: 취항 점수가 NaN 을 만들지 않는다', () => {
+  // 화물 항이 `capacity` 를 가정 기체로 부른다. 위 검사가 그 뿌리를 막고, 이 검사는
+  // 실제 경로에서 값이 성하게 나오는지를 본다.
+  const s = playedWithAi(1234, 8);
+  const a = s.airlines.find((x) => x.alive);
+  const from = C.get(a.home);
+  const to = C.CITIES.find((c) => c.id !== a.home);
+  const type = Object.values(s.types).find((t) => t.range > C.distance(from.id, to.id));
+  assert.ok(type, '이 거리를 날 기종이 없으면 검사가 아무것도 안 잰다');
+
+  const score = Ai.attractiveness(s, a.id, from, to, type);
+  assert.ok(Number.isFinite(score), `취항 점수가 ${score} 다`);
+  assert.ok(score > 0, '점수가 0 이하면 화물 항이 실렸는지 알 수 없다');
 });
