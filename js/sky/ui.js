@@ -358,8 +358,15 @@
     try {
       // `types` 는 카탈로그에서 다시 만들 수 있다. 넣으면 세이브가 몇 배로 부풀고,
       // 무엇보다 옛 세이브가 옛 기종표를 물고 다니게 된다.
+      //
+      // 다만 **카탈로그에 없는 기종만은 들고 간다** — 단종된 자사 설계를 굴리는 기체나
+      // 인도 대기 발주가 있으면, 다시 만든 표에 그 기종이 없어 불러온 순간 기재 화면이
+      // 터진다. 몇 종뿐이라 세이브가 부풀지도 않는다.
       const { types, ...rest } = ui.state;
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ meId: ui.meId, tab: ui.tab, state: rest }));
+      localStorage.setItem(
+        SAVE_KEY,
+        JSON.stringify({ meId: ui.meId, tab: ui.tab, state: rest, keepTypes: St.referencedTypes(ui.state) }),
+      );
     } catch (err) {
       /* 사파리 프라이빗 모드 등 — 저장 못 해도 게임은 굴러간다 */
     }
@@ -371,7 +378,7 @@
       if (!raw) return false;
       const d = JSON.parse(raw);
       if (!d || !d.state || !d.state.airlines) return false;
-      d.state.types = St.typeTable(d.state.programs);
+      St.restoreTypes(d.state, d.keepTypes);
       ui.state = d.state;
       ui.meId = d.meId;
       ui.tab = d.tab || 'overview';

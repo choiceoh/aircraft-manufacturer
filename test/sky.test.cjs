@@ -2369,3 +2369,74 @@ test('통합: 기체를 못 세우면 잔금도 선급금도 건드리지 않는
     '선급금 기록이 지워졌다 — 낸 돈이 사라진다',
   );
 });
+
+test('상태: 판이 끝난 뒤에는 중정비 입고를 잡지 않는다', () => {
+  // 마지막 정산 뒤 `s.turn` 은 `totalTurns` 다. 그대로 입고를 잡으면 영영 오지 않을
+  // 분기의 입고가 되어, 끝난 판의 개요가 기체를 중정비 중이라 하고 노선 카드가 그
+  // 기체를 수송력에서 뺀다. 정비 시계까지 0 으로 되돌아간다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  s.turn = s.totalTurns - 1;
+  // 전 기재를 입고 직전으로 몰아 둔다 — 안 그러면 아무도 안 걸려 검사가 죽는다.
+  for (const p of St.planesOf(s, a.id)) {
+    p.quartersSinceCheck = 999;
+    p.hoursSinceCheck = 999999;
+  }
+
+  St.advance(s);
+
+  assert.strictEqual(s.turn, s.totalTurns);
+  const scheduled = s.planes.filter((p) => p.checkUntilTurn === s.turn);
+  assert.strictEqual(scheduled.length, 0, `${scheduled.length}대가 오지 않을 분기의 입고에 묶였다`);
+
+  // 판이 도는 동안에는 그대로 잡혀야 한다 — 검사가 너무 세지 않은지 본다.
+  const s2 = St.newGame(1234);
+  const a2 = s2.airlines[0];
+  for (const p of St.planesOf(s2, a2.id)) {
+    p.quartersSinceCheck = 999;
+    p.hoursSinceCheck = 999999;
+  }
+  St.advance(s2);
+  assert.ok(s2.planes.some((p) => p.checkUntilTurn === s2.turn), '판이 도는데 입고가 안 잡혔다');
+});
+
+test('상태: 세이브가 단종된 자사 기종을 들고 간다', () => {
+  // 세이브는 기종표를 버리고 카탈로그로 다시 만든다. 그런데 단종된 자사 설계는
+  // 카탈로그에 없다 — 그 기체를 굴리고 있으면 불러온 순간 기재 화면이 터진다.
+  const spec = { id: 'p7', name: '단종기', phase: 'production', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const programs = [spec];
+  const s = St.newGame(1234, { programs });
+  const a = s.airlines[0];
+  assert.ok(s.types.p7);
+
+  a.cash = 5000e6;
+  assert.strictEqual(Act.buyAircraft(s, a.id, 'p7', 1).ok, true);
+  St.advance(s, { programs });
+  St.advance(s, { programs });
+  assert.ok(s.planes.some((p) => p.typeId === 'p7'), '인도가 돼야 검사가 산다');
+
+  // 이제 접는다. 살아 있는 판에서는 `refreshTypes` 가 지켜 준다.
+  spec.phase = 'cancelled';
+  St.refreshTypes(s, programs);
+  assert.ok(s.types.p7, '살아 있는 판에서 사라졌다');
+
+  // 세이브 — 불러오기.
+  const keep = St.referencedTypes(s);
+  assert.ok(keep.p7, '참조 중인 기종이 스냅샷에 없다');
+  const revived = JSON.parse(JSON.stringify({ state: s, keepTypes: keep }));
+  St.restoreTypes(revived.state, revived.keepTypes);
+
+  assert.ok(revived.state.types.p7, '불러온 판에서 기종이 사라졌다');
+  assert.strictEqual(revived.state.types.p7.name, '단종기');
+  // 화면이 실제로 그 기체를 그릴 수 있어야 한다 — 여기서 터지던 자리다.
+  assert.doesNotThrow(() => SP.renderFleet(revived.state, a.id));
+
+  // 아직 팔리는 기종은 스냅샷이 아니라 **카탈로그의 새 값**을 따라야 한다.
+  const s2 = St.newGame(1234, { programs: [{ ...spec, phase: 'production', listPrice: 90 }] });
+  const stale = St.referencedTypes(s2);
+  const catalogId = Object.keys(stale)[0];
+  assert.ok(catalogId, '참조 기종이 있어야 한다');
+  stale[catalogId] = { ...stale[catalogId], name: '옛 이름' };
+  St.restoreTypes(s2, stale);
+  assert.notStrictEqual(s2.types[catalogId].name, '옛 이름', '카탈로그에 있는 기종을 옛 값으로 덮었다');
+});

@@ -556,7 +556,12 @@
     s.turn += 1;
     // 다음 분기 입고를 지금 정한다. 화면이 열릴 때 이미 묶여 있어야 플레이어가
     // 예비기를 붙일 시간을 갖는다 — AI 도 같은 시점에 같은 것을 본다.
-    scheduleChecks(s);
+    //
+    // **판이 끝났으면 잡지 않는다.** 마지막 정산 뒤에는 `s.turn` 이 `totalTurns` 라,
+    // 그대로 부르면 영영 오지 않을 분기의 입고가 잡힌다 — 끝난 판의 개요가 기체를
+    // 중정비 중이라 하고 노선 카드가 그 기체를 수송력에서 빼며, 정비 시계까지 0 으로
+    // 되돌아간다. 아무도 처리하지 않을 입고다.
+    if (s.turn < s.totalTurns) scheduleChecks(s);
     s.rngState = rng.getState();
     return s;
   }
@@ -727,6 +732,38 @@
     // 기간 밖 발주가 같은 분기에 걸린 마지막 분기에 후자가 인도도 안 된 채 장부에서
     // 사라진다 — 선급금까지 함께 증발한다.
     s.orders = s.orders.filter((o) => o.external || o.deliverTurn > last);
+  }
+
+  /**
+   * 지금 판이 참조하는 기종만 추린다 — 세이브가 들고 가야 할 최소한.
+   *
+   * 세이브는 기종표를 통째로 버리고 불러올 때 카탈로그로 다시 만든다(표가 커서, 그리고
+   * 옛 세이브가 옛 값을 물고 다니지 않도록). 그런데 **단종된 자사 기종은 카탈로그에
+   * 없다** — 굴러다니는 기체나 인도 대기 발주가 그 기종을 물고 있으면, 불러온 순간
+   * `s.types[id]` 가 `undefined` 가 되어 기재 화면이 그 자리에서 터진다.
+   * `refreshTypes` 가 살아 있는 판에서 지키는 것과 같은 불변식을, 세이브에서도 지킨다.
+   */
+  function referencedTypes(s) {
+    const out = {};
+    const keep = (id) => {
+      if (id && !out[id] && s.types && s.types[id]) out[id] = s.types[id];
+    };
+    for (const p of s.planes || []) keep(p.typeId);
+    for (const o of s.orders || []) keep(o.typeId);
+    return out;
+  }
+
+  /**
+   * 불러온 판의 기종표를 세운다.
+   *
+   * 카탈로그로 다시 만들되, 세이브가 들고 온 기종 중 **표에 없는 것만** 채운다.
+   * 아직 팔리는 기종은 새 값을 따라야 하므로 스냅샷으로 덮지 않는다.
+   */
+  function restoreTypes(s, saved) {
+    const next = typeTable(s.programs);
+    for (const id of Object.keys(saved || {})) if (!next[id]) next[id] = saved[id];
+    s.types = next;
+    return s;
   }
 
   /** 갓 나온 기체를 기단에 세운다. 타이머 인도와 제조사 인도가 이 한 곳을 쓴다. */
@@ -987,6 +1024,8 @@
     slotRentTotal,
     residual,
     receiveAircraft,
+    referencedTypes,
+    restoreTypes,
     lifetimePaxOf,
     fleetValue,
     depreciation,
