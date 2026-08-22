@@ -182,7 +182,17 @@
    * 그룹 합산으로는 한 주머니에서 다른 주머니로 옮긴 것이라 성적도 움직이지 않는다.
    */
   function reconcileOrders(mfg, sky, airlineId) {
-    if (!mfg || !sky || !sky.orders || !sky.orders.length) return [];
+    if (!mfg || !sky) return [];
+    // **먼저 물어 준 돈을 받는다.** 제조사가 계약을 깨면 선수금과 위약금을 물어 주는데,
+    // 그 돈의 상대가 우리 자회사다. 안 받으면 제조사에서는 나갔는데 항공사에는 안
+    // 들어와 연결 장부에서 통째로 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
+    const refund = mfg.inHouseRefund || 0;
+    if (refund > 0) {
+      const a = St.airline(sky, airlineId);
+      if (a && a.alive) a.cash += refund * MUSD;
+      mfg.inHouseRefund = 0;
+    }
+    if (!sky.orders || !sky.orders.length) return [];
     const live = {};
     for (const o of mfg.backlog || []) {
       if (o.inHouse && o.airlineId === airlineId && o.remaining > 0) {

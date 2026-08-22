@@ -196,7 +196,7 @@
                   <span class="muted">대당 ${money(base.unitPrice * G.MUSD)} · 1기 착수금 ${money(dep)}${
                     me.cash >= dep ? '' : ' — 현금 부족'
                   }</span>
-                  ${line.ok ? '' : `<span class="warn">⚠ ${esc(line.why)}</span>`}
+                  ${line.ok ? '' : `<span class="order-warn">⚠ ${esc(line.why)}</span>`}
                   <span class="row">
                     ${lots
                       .map((q) =>
@@ -221,7 +221,7 @@
               return `<p class="muted">인도 대기 ${n}기 · 선급금 ${money(pending.reduce((x, o) => x + o.paid, 0))}</p>
                 ${
                   stuck.length
-                    ? `<p class="warn">발주해 둔 ${stuck.reduce((x, o) => x + o.count, 0)}기는 <b>만들 라인이 없어 오지 않는다</b>.
+                    ? `<p class="order-warn">발주해 둔 ${stuck.reduce((x, o) => x + o.count, 0)}기는 <b>만들 라인이 없어 오지 않는다</b>.
                        제조사 화면 <b>생산</b> 탭에서 라인을 세워야 한다.</p>`
                     : ''
                 }`;

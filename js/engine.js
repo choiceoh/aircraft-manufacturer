@@ -1525,7 +1525,12 @@
     if (!dead.length) return;
     let refund = 0;
     for (const o of dead) {
-      refund += o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+      const one = o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT;
+      refund += one;
+      // 계열 항공사에 물어 주는 돈은 그룹 밖으로 나가지 않는다 — 받는 쪽이 우리
+      // 자회사다. 여기서 적어 두지 않으면 제조사에서는 나갔는데 항공사에는 안 들어와
+      // 연결 장부에서 그만큼이 증발한다(`AirlinerSkyGroup` 이 이 값을 걷어 간다).
+      if (o.inHouse) s.inHouseRefund = (s.inHouseRefund || 0) + one;
       s.relations[o.airlineId] = clamp((s.relations[o.airlineId] ?? 40) - ORDER_BREACH_RELATION_PENALTY, 0, 100);
     }
     refund = Math.round(refund);
@@ -1566,6 +1571,7 @@
       const lastMoved = Math.max(won, moved);
       if (!Number.isFinite(lastMoved) || s.turn - lastMoved < PREORDER_STALL_QUARTERS) continue;
       const refund = Math.round(o.remaining * o.unitPrice * (o.depositRate ?? CONFIG.depositRate) * ORDER_VOID_REFUND_MULT);
+      if (o.inHouse) s.inHouseRefund = (s.inHouseRefund || 0) + refund;
       s.cash -= refund;
       // 이 분기 리포트에 직접 적는다(chargeLatePenalties 와 같은 이유). endTurn 은
       // 리포트를 만들며 pending 을 이미 비웠으므로, pending 에 넣으면 현금은 지금

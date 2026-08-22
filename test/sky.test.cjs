@@ -2788,3 +2788,33 @@ test('통합: 인도된 만큼만 맞추고 멀쩡한 발주는 건드리지 않
   assert.strictEqual(G.reconcileOrders(mfg, sky, meId).length, 0, '멀쩡한데 맞췄다고 답했다');
   assert.strictEqual((sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.count, 0), before);
 });
+
+test('통합: 제조사가 계약을 깨면 그 돈이 자회사에 들어온다', () => {
+  // 물어 주는 돈의 상대가 우리 자회사다. 안 받으면 제조사에서는 나갔는데 항공사에는
+  // 안 들어와 연결 장부에서 통째로 증발한다 — 그룹 자본이 그만큼 낮게 잡힌다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+
+  const before = G.combinedEquity(mfg, sky, meId).total;
+  const cash = a.cash;
+
+  // 어떤 파기 경로가 제조사에 위약금을 물렸다고 하자.
+  const refundM = 40;
+  mfg.cash -= refundM;
+  mfg.inHouseRefund = refundM;
+  mfg.backlog = mfg.backlog.filter((o) => !o.inHouse);
+
+  G.reconcileOrders(mfg, sky, meId);
+
+  assert.strictEqual(mfg.inHouseRefund, 0, '받은 돈을 지우지 않으면 매 분기 또 들어온다');
+  assert.ok(Math.abs(a.cash - cash - refundM * G.MUSD) < 1, '자회사가 위약금을 못 받았다');
+  assert.ok(!(sky.orders || []).some((o) => o.external), '파기된 발주의 선급금이 남았다');
+  // 그룹 밖으로 나간 돈이 없으니 합산은 그대로다.
+  const after = G.combinedEquity(mfg, sky, meId).total;
+  assert.ok(
+    Math.abs(after - before) < 1,
+    `파기로 그룹 자본이 ${Math.round((after - before) / 1e6)}M 움직였다 — 계열 안에서 오간 돈이다`,
+  );
+});

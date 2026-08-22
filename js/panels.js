@@ -379,13 +379,13 @@
     return `<section class="card">
       <h3>자회사 — ${esc(a.name)}</h3>
       <p class="muted">노선망은 <b>항공사</b> 화면에서 편다. 여기서는 그룹 장부와 우리가 만들어 줄 몫만 본다.</p>
-      <div class="stats">
-        <div class="stat"><span>그룹 자본</span><b>${money(eq.total / 1e6)}</b></div>
-        <div class="stat"><span>항공사 자본</span><b>${money(eq.airline / 1e6)}</b></div>
-        <div class="stat ${last && last.net < 0 ? 'bad' : ''}"><span>분기 순익</span><b>${
+      <div class="sky-stats">
+        <div class="sky-stat"><span>그룹 자본</span><b>${money(eq.total / 1e6)}</b></div>
+        <div class="sky-stat"><span>항공사 자본</span><b>${money(eq.airline / 1e6)}</b></div>
+        <div class="sky-stat ${last && last.net < 0 ? 'bad' : ''}"><span>분기 순익</span><b>${
           last ? money(last.net / 1e6) : '—'
         }</b></div>
-        <div class="stat"><span>노선 · 기재</span><b>${routes.length}개 · ${planes.length}대</b></div>
+        <div class="sky-stat"><span>노선 · 기재</span><b>${routes.length}개 · ${planes.length}대</b></div>
       </div>
       ${
         backlog || queued

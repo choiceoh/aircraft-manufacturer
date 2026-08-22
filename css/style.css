@@ -1661,17 +1661,13 @@ details.fold > table:first-of-type {
 }
 
 /* 숫자 한 칸 — 라벨 위, 값 아래. 좁은 화면에서 두 칸씩 접힌다. */
-/* 통계 격자. 항공사 쪽에서 먼저 쓰여 `sky-` 가 붙었는데, 통합 모드로 제조사 화면도
-   같은 격자를 쓴다 — 이제 접두사는 이름만 남은 것이라 중립 별칭을 함께 둔다. */
-.sky-stats,
-.stats {
+.sky-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px 14px;
   margin: 12px 0 4px;
 }
-.sky-stat,
-.stat {
+.sky-stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1683,18 +1679,15 @@ details.fold > table:first-of-type {
   align-items: baseline;
   margin: 10px 0 4px;
 }
-.sky-stat span,
-.stat span {
+.sky-stat span {
   font-size: 11px;
   color: var(--muted);
 }
-.sky-stat b,
-.stat b {
+.sky-stat b {
   font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
-.sky-stat i,
-.stat i {
+.sky-stat i {
   font-size: 11px;
   font-style: normal;
   color: var(--muted);
@@ -1862,15 +1855,17 @@ details.fold > table:first-of-type {
   font-size: 13px;
 }
 
-/* 경고 한 줄. `.warn-box` 는 카드만 한 덩어리라 목록 항목 안에서는 너무 크다 —
-   이건 "이 줄에 관한 경고"다. */
-.warn {
+/* 발주 경고 한 줄. `.warn-box` 는 카드만 한 덩어리라 목록 항목 안에서는 너무 크다.
+   **`.warn` 을 쓰지 않는다** — 그 이름은 이미 제조사 패널의 인라인 배지(`<b class="warn">`)가
+   쓰고 있어서, 블록 레이아웃을 걸면 표 칸과 라벨이 통째로 줄바꿈된다. 한 번 그렇게
+   덮었다가 되돌렸다. `.stat` 도 같은 이유로 별칭을 두지 않는다. */
+.order-warn {
   display: block;
   color: var(--warn);
   font-size: 12px;
   margin-top: 2px;
 }
-p.warn {
+p.order-warn {
   margin: 6px 0 0;
   line-height: 1.5;
 }
