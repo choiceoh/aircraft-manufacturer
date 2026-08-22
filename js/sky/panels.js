@@ -82,6 +82,7 @@
     const over = s.turn >= s.totalTurns || !me.alive;
     return `
     <section class="cards">
+      ${over ? groupFinalCard(s, meId) : ''}
       ${over ? finalCard(s, meId) : ''}
       <div class="card">
         <h3>${esc(me.name)}</h3>
@@ -325,6 +326,54 @@
    * 등급만 던지면 무엇을 잘하고 못했는지가 남지 않는다 — 항목별 점수를 함께 편다
    * (제조사 쪽 `scoreBreakdown` 과 같은 규칙).
    */
+  /**
+   * 통합 모드의 최종 성적표 — 그룹으로 읽는 20년.
+   *
+   * 두 계층의 성적표를 따로 두면 정작 이 모드가 내건 규칙("성적은 합산 자기자본이다")을
+   * 결말이 안 지킨다. 이것이 머리에 오고, 항공사 성적표는 그 아래 세부로 남는다.
+   */
+  function groupFinalCard(s, meId) {
+    const G = root.AirlinerSkyGroup;
+    const Shell = root.AirlinerShell;
+    if (!G || !Shell || Shell.shell.mode !== 'group') return '';
+    const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
+    if (!mfg) return '';
+    const g = G.groupScore(mfg, s, meId);
+    if (!g) return '';
+
+    const a = St.airline(s, meId);
+    const dead = [];
+    if (!a.alive) dead.push('항공사');
+    if (mfg.gameOver && mfg.gameOver.reason === 'bankrupt') dead.push('제조사');
+    const why = dead.length
+      ? `${dead.join('·')}가 무너졌다 — 통합 경영은 둘을 함께 지고 가는 판이다`
+      : `${s.startYear + Math.floor((s.totalTurns - 1) / 4)}년 · 제조사와 자체 항공사를 함께 20년`;
+
+    return `<div class="card full sky-final">
+      <div class="sky-grade ${g.grade === 'F' ? 'bad' : 'good'}">${g.grade}</div>
+      <h3>그룹 — ${num(g.score)}점</h3>
+      <p class="muted">${esc(why)}</p>
+      <div class="sky-stats">
+        ${stat('그룹 자본', money(g.equity.total))}
+        ${stat('제조사', money(g.equity.maker))}
+        ${stat('항공사', money(g.equity.airline))}
+        ${g.equity.internal ? stat('계열 상계', '−' + money(g.equity.internal), '중복 계상분') : ''}
+      </div>
+      <table class="tbl"><tbody>
+        ${g.rows
+          .map(
+            (r) => `<tr><td><b>${esc(r.label)}</b><br><span class="muted">${esc(r.detail)}</span></td>
+              <td class="r">${g.alive ? num(r.points) : '—'}</td></tr>`,
+          )
+          .join('')}
+        <tr class="sum"><td><b>합계</b></td><td class="r"><b>${num(g.score)}</b></td></tr>
+      </tbody></table>
+      <p class="muted">S 7,000 · A 4,600 · B 3,000 · C 1,700 — 두 게임과 같은 눈금이다.
+        <b>자본은 연결 기준으로 한 번만 센다</b> — 그래서 계열 간 값을 어떻게 매기든 이 점수는 안 움직인다.
+        ${g.alive ? '' : '한쪽이라도 무너지면 F 다.'}</p>
+    </div>`;
+  }
+
   function finalCard(s, meId) {
     const f = St.finalScore(s, meId);
     if (!f) return '';
@@ -763,6 +812,7 @@
     money,
     renderOverview,
     groupCard,
+    groupFinalCard,
     finalCard,
     renderRoutes,
     renderFleet,

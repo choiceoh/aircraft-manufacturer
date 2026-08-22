@@ -1661,13 +1661,17 @@ details.fold > table:first-of-type {
 }
 
 /* 숫자 한 칸 — 라벨 위, 값 아래. 좁은 화면에서 두 칸씩 접힌다. */
-.sky-stats {
+/* 통계 격자. 항공사 쪽에서 먼저 쓰여 `sky-` 가 붙었는데, 통합 모드로 제조사 화면도
+   같은 격자를 쓴다 — 이제 접두사는 이름만 남은 것이라 중립 별칭을 함께 둔다. */
+.sky-stats,
+.stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px 14px;
   margin: 12px 0 4px;
 }
-.sky-stat {
+.sky-stat,
+.stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1679,15 +1683,18 @@ details.fold > table:first-of-type {
   align-items: baseline;
   margin: 10px 0 4px;
 }
-.sky-stat span {
+.sky-stat span,
+.stat span {
   font-size: 11px;
   color: var(--muted);
 }
-.sky-stat b {
+.sky-stat b,
+.stat b {
   font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
-.sky-stat i {
+.sky-stat i,
+.stat i {
   font-size: 11px;
   font-style: normal;
   color: var(--muted);

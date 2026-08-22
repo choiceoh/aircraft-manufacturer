@@ -927,6 +927,30 @@
     ['C', 1700],
   ];
 
+  /**
+   * 자본 성장 항목을 뺀 항공사 점수 — 통합 모드 전용.
+   *
+   * 그룹 성적은 자본을 연결 기준으로 한 번만 센다(`AirlinerSkyGroup.groupScore`).
+   * 여기 남는 것은 계열 간 거래가 닿지 않는 항목뿐이다 — 몇 명을 실어 날랐고 세계를
+   * 얼마나 이었는가. 이전가격을 어떻게 매겨도 이 값은 안 움직인다.
+   */
+  function operatingScore(s, airlineId) {
+    const a = airline(s, airlineId);
+    if (!a || !a.alive) return { score: 0, rows: [] };
+    const pax = lifetimePaxOf(a);
+    const routes = routesOf(s, airlineId).filter((r) => r.active);
+    const cities = new Set();
+    for (const r of routes) {
+      cities.add(r.from);
+      cities.add(r.to);
+    }
+    const rows = [
+      { label: '누적 승객', detail: `${Math.round(pax / 1e6)}백만 명`, points: Math.round(pax / SCORE.PAX_PER_POINT) },
+      { label: '노선망', detail: `${cities.size}개 도시 · ${routes.length}개 노선`, points: cities.size * SCORE.PER_CITY },
+    ];
+    return { score: rows.reduce((x, r) => x + r.points, 0), rows };
+  }
+
   function finalScore(s, airlineId) {
     const a = airline(s, airlineId);
     if (!a) return null;
@@ -1040,6 +1064,7 @@
     checkCost,
     scheduleChecks,
     finalScore,
+    operatingScore,
     SCORE,
     GRADE_CUTS,
     newGame,

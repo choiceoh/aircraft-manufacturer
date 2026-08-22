@@ -2563,3 +2563,97 @@ test('통합: 화면이 묻는 착수금과 실제 청구액이 같다', () => {
   const mismatched = [2, 5].filter((n) => E.inHouseQuote(mfg, { programId: prog.id, qty: n }).deposit !== one.deposit * n);
   assert.ok(mismatched.length > 0, '반올림 차이가 없으면 이 검사는 아무것도 지키지 않는다');
 });
+
+test('통합: 그룹 성적은 이전가격으로 만들 수 없다', () => {
+  // 이 모드의 규칙이다. 제조사 순자산과 항공사 자본 성장을 그대로 더하면 같은 돈이
+  // 두 번 세어지고, 계열 간 값을 어떻게 매기느냐로 두 항목의 비중이 갈린다.
+  const { mfg, sky, meId, prog } = groupGame();
+  for (let i = 0; i < 4; i++) St.advance(sky, { programs: mfg.programs });
+  // **현금은 재기 전에 넣는다.** 뒤에 넣으면 자본 성장이 뛰는데 그건 발주 탓이 아니다 —
+  // 처음 이 검사가 그렇게 쓰여 있어서, 없는 누출을 잡았다고 잘못 읽었다.
+  St.airline(sky, meId).cash = 9e9;
+  const before = G.groupScore(mfg, sky, meId);
+  assert.ok(before && before.score > 0, '점수가 나와야 검사가 산다');
+
+  // 계열 간 거래를 잔뜩 한다.
+  for (let i = 0; i < 6; i++) assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 2).ok, true);
+  const after = G.groupScore(mfg, sky, meId);
+
+  assert.strictEqual(after.score, before.score, `발주 여섯 번에 그룹 점수가 ${after.score - before.score} 움직였다`);
+  assert.strictEqual(after.grade, before.grade);
+  // 운영 항목은 계열 간 거래가 닿지 않는 것들이다.
+  const label = (r) => r.label;
+  assert.deepStrictEqual(after.rows.map(label), before.rows.map(label));
+});
+
+test('통합: 그룹 자본은 두 장부를 한 번씩만 센다', () => {
+  // 항공사 자본과 제조사 순자산을 그냥 더하면 계열 선급금이 두 번 잡힌다.
+  const { mfg, sky, meId, prog } = groupGame();
+  const a = St.airline(sky, meId);
+  a.cash = 9e9;
+  const eq0 = G.combinedEquity(mfg, sky, meId);
+  assert.strictEqual(eq0.internal, 0);
+
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 4).ok, true);
+  const eq1 = G.combinedEquity(mfg, sky, meId);
+  assert.ok(eq1.internal > 0, '상계할 계열 선급금이 잡혀야 한다');
+  assert.ok(Math.abs(eq1.total - eq0.total) < 1, `합산이 ${Math.round((eq1.total - eq0.total) / 1e6)}M 움직였다`);
+  // 상계를 빼면 딱 그만큼 부푼다 — 그게 두 번 세어지던 값이다.
+  assert.ok(Math.abs(eq1.maker + eq1.airline - (eq1.total + eq1.internal)) < 1);
+});
+
+test('통합: 한쪽이 무너지면 그룹도 실패다', () => {
+  // 제조사가 무너진 채 항공사만 굴러가는 판을 "잘한 경영"으로 부를 수는 없다.
+  const { mfg, sky, meId } = groupGame();
+  for (let i = 0; i < 4; i++) St.advance(sky, { programs: mfg.programs });
+  assert.notStrictEqual(G.groupScore(mfg, sky, meId).grade, 'F', '멀쩡한 판이 F 면 검사가 죽는다');
+
+  // 제조사 파산.
+  const broke = { ...mfg, gameOver: { reason: 'bankrupt' } };
+  const g1 = G.groupScore(broke, sky, meId);
+  assert.strictEqual(g1.grade, 'F', '제조사가 파산했는데 F 가 아니다');
+  assert.strictEqual(g1.score, 0);
+
+  // 항공사 파산.
+  St.airline(sky, meId).alive = false;
+  const g2 = G.groupScore(mfg, sky, meId);
+  assert.strictEqual(g2.grade, 'F', '항공사가 파산했는데 F 가 아니다');
+
+  // 제조사가 20년을 마친 것(complete)은 파산이 아니다.
+  St.airline(sky, meId).alive = true;
+  const done = { ...mfg, gameOver: { reason: 'complete' } };
+  assert.notStrictEqual(G.groupScore(done, sky, meId).grade, 'F', '완주를 실패로 읽었다');
+});
+
+test('통합: 창업 자본을 모르는 옛 세이브는 성장 항목을 생략한다', () => {
+  // 0 을 기준으로 재면 있지도 않은 성장이 잡혀 점수가 통째로 부푼다.
+  const { mfg, sky, meId } = groupGame();
+  for (let i = 0; i < 4; i++) St.advance(sky, { programs: mfg.programs });
+  // 성장 점수가 0 이면 "뺐더니 줄었다"를 확인할 수 없다 — 자본을 키워 둔다.
+  St.airline(sky, meId).cash += 4000e6;
+  const normal = G.groupScore(mfg, sky, meId);
+  const growthRow = normal.rows.find((r) => r.label === '그룹 자본 성장');
+  assert.ok(growthRow, '보통은 성장 항목이 있어야 한다');
+  assert.ok(growthRow.points > 0, '성장 점수가 있어야 검사가 산다');
+
+  const old = { ...mfg, startWorth: 0 };
+  const oldAirlines = sky.airlines.map((x) => ({ ...x }));
+  for (const x of sky.airlines) x.startEquity = 0;
+  const g = G.groupScore(old, sky, meId);
+  assert.ok(!g.rows.some((r) => r.label === '그룹 자본 성장'), '모르는 창업 자본으로 성장을 쟀다');
+  assert.ok(g.score < normal.score, '성장 항목을 뺐는데 점수가 안 줄었다');
+  for (let i = 0; i < sky.airlines.length; i++) sky.airlines[i].startEquity = oldAirlines[i].startEquity;
+});
+
+test('통합: 제조사가 창업 순자산을 새긴다', () => {
+  // 지금 다시 세면 그동안의 성장이 기준에 섞인다 — 항공사 쪽 `startEquity` 와 같은 이유다.
+  for (const company of ['deneb', 'boeing', 'airbus']) {
+    const s = E.newGame(1234, company);
+    assert.ok(s.startWorth > 0, `${company}: 창업 순자산이 안 새겨졌다`);
+  }
+  // 옛 세이브는 0 으로 채워 "모르는 값"임을 남긴다.
+  const s = E.newGame(1234);
+  delete s.startWorth;
+  E.ensureShape(s);
+  assert.strictEqual(s.startWorth, 0, '옛 세이브에 지금 값을 채워 넣었다');
+});

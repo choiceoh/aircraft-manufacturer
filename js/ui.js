@@ -862,6 +862,24 @@
     return rep;
   }
 
+  /**
+   * 통합 모드에서는 이 등급이 **제조사 몫**일 뿐이다.
+   *
+   * 그룹 성적은 자본을 연결 기준으로 다시 세므로 여기 숫자와 다르다. 어디서 볼 수
+   * 있는지 알려 주지 않으면, 20년을 함께 굴려 놓고 반쪽 성적만 보고 판을 닫는다.
+   */
+  function groupNote(s) {
+    const G = root.AirlinerSkyGroup;
+    const Shell = root.AirlinerShell;
+    const Sky = root.AirlinerSkyUi;
+    if (!G || !Shell || !Sky || Shell.shell.mode !== 'group') return '';
+    const g = G.groupScore(s, Sky.ui.state, Sky.ui.meId);
+    if (!g) return '';
+    return `<p class="go-reason">위 등급은 <b>제조사 몫</b>이다. 자체 항공사까지 합한
+      <b>그룹 성적은 ${P.esc(g.grade)} · ${P.num(g.score)}점</b> —
+      <b>항공사</b> 화면 개요에 자세히 적혀 있다.</p>`;
+  }
+
   function showGameOver(s) {
     const g = s.gameOver;
     const bankrupt = g.reason === 'bankrupt';
@@ -887,6 +905,7 @@
         <tr><th>순자산</th><td>${money(g.worth)}</td></tr>
         <tr><th>최종 평판</th><td>${Math.round(s.reputation)} / 100</td></tr>
       </table>
+      ${groupNote(s)}
       <div class="career">${P.renderCareer(s)}</div>
       <div class="row">
         <button class="primary" data-action="new-game">새 게임</button>

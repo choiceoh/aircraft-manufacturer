@@ -370,6 +370,9 @@
       // 증자 횟수와 누적 지분 희석 — 최종 점수에서 그만큼 우리 몫이 아니다.
       equityRounds: 0,
       equityDilution: 0,
+      // 창업 순자산. 통합 모드의 그룹 성적이 "창업 대비 몇 배"로 재는데, 지금 다시
+      // 세면 그동안의 성장이 기준에 섞인다. 항공사 쪽 `startEquity` 와 같은 이유다.
+      startWorth: 0,
       // 조달 전략 — 원가 ↔ 공급 차질 위험.
       outsourcing: 'mid',
       // 이번 판의 충격 일정표 (역사 실현분 + 가상 대체분). newGame 에서 확정된다.
@@ -441,6 +444,9 @@
       pushLog(s, 'event', `[시나리오 · ${scenario.name}] ${scenario.desc}`);
       pushLog(s, 'event', `목표: ${scenario.goalText}. 파산하면 어떤 목표든 실패다.`);
     }
+    // 상태가 다 선 뒤에 창업 순자산을 새긴다 — 승계 선단·라인·재고가 자리를 잡아야
+    // 실제 출발선이 나온다.
+    stampStartWorth(s);
     return s;
   }
 
@@ -450,6 +456,12 @@
    * 플레이어에게 후속기 개발을 버텨낼 캐시카우를 쥐여준다.
    * 대신 연비가 낮아 유가가 오르거나 경쟁사가 신형을 내면 급속히 경쟁력을 잃는다.
    */
+  /** 창업 순자산을 새긴다. `newGame` 이 상태를 다 세운 뒤에 부른다. */
+  function stampStartWorth(s) {
+    s.startWorth = netWorth(s);
+    return s;
+  }
+
   function seedLegacyProgram(s, preset) {
     // 1990년대 설계라 그 시절 엔진을 달고 있다 — 지금 기준으로는 연비가 처진다.
     // 어느 회사를 골랐든 승계라는 출발점은 같다: 이미 팔리는 기체, 이미 있는 선단.
@@ -599,6 +611,10 @@
   };
 
   function ensureShape(s) {
+    // 옛 세이브에는 창업 순자산이 없다. 지금 값으로 채우면 그 판의 그룹 성장이 0 에서
+    // 시작하므로, 없으면 통합 성적에서 성장 항목을 빼는 편이 정직하다 — 0 을 넣어
+    // "모르는 값"임을 남긴다(`groupScore` 가 0 을 보고 성장 항목을 생략한다).
+    if (typeof s.startWorth !== 'number') s.startWorth = 0;
     if (!s.effects) s.effects = {};
     if (!s.effects.grounded) {
       s.effects.grounded = {};
@@ -4912,6 +4928,21 @@
     return s.programs.reduce((a, p) => a + (p.delivered || 0) * (DELIVERED_SCORE_WEIGHT[p.segment] ?? 1.2), 0);
   }
 
+  /**
+   * 순자산 항목을 뺀 제조사 점수 — 통합 모드 전용.
+   *
+   * 그룹 성적은 자본을 **연결 기준으로 한 번만** 센다. 제조사 점수의 순자산 항목과
+   * 항공사 점수의 자본 성장 항목을 그대로 더하면 같은 돈이 두 번 세어지고, 게다가
+   * 계열 간 값을 어떻게 매기느냐로 두 항목의 비중이 갈린다 — 이전가격으로 성적을
+   * 만들 길이 열린다. 여기 남는 것은 계열 간 거래가 닿지 않는 항목뿐이다.
+   */
+  function operatingScore(s) {
+    const ownership = 1 - (s.equityDilution || 0);
+    return Math.round(
+      (deliveredScore(s) + marketShare(s) * 4000 + s.reputation * 12) * ownership * (s.scoreMult || 1),
+    );
+  }
+
   function finalScore(s, bankrupt) {
     const share = marketShare(s);
     const worth = netWorth(s);
@@ -5098,6 +5129,8 @@
     newGame,
     placeInHouseOrder,
     inHouseQuote,
+    operatingScore,
+    stampStartWorth,
     dropAirlineRfps,
     cancelInHouseOrders,
     PLAYABLE_COMPANIES,

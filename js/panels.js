@@ -341,6 +341,62 @@
     return `<p class="hint">${esc(regions)} 항공사는 우리 인증을 믿지 않는다 — 지금 <b>−${left}점</b>. 평판 ${wall.fadeTo}까지 올려 회사 전체의 벽을 녹이거나, <b>이 기종 하나만</b> 상대 당국의 형식증명을 사서 지금 뚫어라.</p>`;
   }
 
+  /**
+   * 통합 모드 전용 — 자회사 항공사가 어떻게 굴러가는지.
+   *
+   * 항공사 화면에는 모회사 카드가 있는데 이쪽에는 없었다. 그러면 제조사 화면만 보는
+   * 동안 자회사가 무너져도 알 길이 없다 — 그룹 성적은 둘을 함께 지고 가는 값인데.
+   * 통합 모드가 아니면 아무것도 그리지 않는다.
+   */
+  function subsidiaryCard(s) {
+    const G = root.AirlinerSkyGroup;
+    const Shell = root.AirlinerShell;
+    const Sky = root.AirlinerSkyUi;
+    const St = root.AirlinerSkyState;
+    if (!G || !Shell || !Sky || !St || Shell.shell.mode !== 'group') return '';
+    const sky = Sky.ui.state;
+    const meId = Sky.ui.meId;
+    if (!sky || !meId) return '';
+    const a = St.airline(sky, meId);
+    if (!a) return '';
+
+    const eq = G.combinedEquity(s, sky, meId);
+    const routes = St.routesOf(sky, meId).filter((r) => r.active);
+    const planes = St.planesOf(sky, meId);
+    const last = a.results[a.results.length - 1];
+    const pending = (sky.orders || []).filter((o) => o.external && o.airlineId === meId);
+    const queued = pending.reduce((x, o) => x + o.count, 0);
+    // 우리 장부에 남은 자체 수주 — 아직 못 만들어 준 몫이다.
+    const backlog = (s.backlog || []).filter((o) => o.inHouse && o.remaining > 0).reduce((x, o) => x + o.remaining, 0);
+
+    if (!a.alive) {
+      return `<section class="card danger">
+        <h3>자회사 — ${esc(a.name)}</h3>
+        <p><b>문을 닫았다.</b> 자체 발주는 취소됐고, 그룹 성적은 F 다 — 통합 경영은 둘을 함께 지고 가는 판이다.</p>
+      </section>`;
+    }
+
+    return `<section class="card">
+      <h3>자회사 — ${esc(a.name)}</h3>
+      <p class="muted">노선망은 <b>항공사</b> 화면에서 편다. 여기서는 그룹 장부와 우리가 만들어 줄 몫만 본다.</p>
+      <div class="stats">
+        <div class="stat"><span>그룹 자본</span><b>${money(eq.total / 1e6)}</b></div>
+        <div class="stat"><span>항공사 자본</span><b>${money(eq.airline / 1e6)}</b></div>
+        <div class="stat ${last && last.net < 0 ? 'bad' : ''}"><span>분기 순익</span><b>${
+          last ? money(last.net / 1e6) : '—'
+        }</b></div>
+        <div class="stat"><span>노선 · 기재</span><b>${routes.length}개 · ${planes.length}대</b></div>
+      </div>
+      ${
+        backlog || queued
+          ? `<p class="muted">자체 수주 <b>${backlog}기</b>가 우리 생산 대기열에 있다${
+              queued !== backlog ? ` (항공사 장부 ${queued}기)` : ''
+            } — 남의 주문과 같은 줄에 선다.</p>`
+          : '<p class="muted">자체 발주가 없다. 항공사 화면의 <b>모회사</b> 카드에서 넣는다.</p>'
+      }
+    </section>`;
+  }
+
   function renderOverview(s, folds) {
     const warnings = [];
 
@@ -383,6 +439,7 @@
 
     return `
       ${scenarioCard(s)}
+      ${subsidiaryCard(s)}
       ${mandateCard(s)}
       ${decisionCard(s)}
       ${settlementCard(last, prev)}
@@ -2120,6 +2177,7 @@
   root.AirlinerPanels = {
     todoList,
     renderOverview,
+    subsidiaryCard,
     renderTrends,
     mandateCard,
     renderCareer,

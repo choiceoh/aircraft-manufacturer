@@ -223,6 +223,78 @@
     return { maker, airline: air, internal, total: maker + air - internal };
   }
 
+  /** 그룹의 창업 자본 — 두 계층이 판을 열 때 새겨 둔 값을 더한다. */
+  function foundingEquity(mfg, sky, airlineId) {
+    const a = sky && St.airline(sky, airlineId);
+    const air = a ? a.startEquity || 0 : 0;
+    const maker = mfg ? (mfg.startWorth || 0) * MUSD : 0;
+    return { maker, airline: air, total: maker + air };
+  }
+
+  /** 그룹 성적 배점. 자본 성장은 항공사 쪽 눈금을 그대로 쓴다 — 같은 자로 읽혀야 한다. */
+  const GROUP_GROWTH = 2000;
+  /** 등급 문턱은 두 게임과 같다. 세 성적표를 나란히 읽을 수 있어야 한다. */
+  const GROUP_CUTS = [['S', 7000], ['A', 4600], ['B', 3000], ['C', 1700]];
+
+  /**
+   * 통합 모드의 최종 성적.
+   *
+   * **자본은 연결 기준으로 한 번만 센다.** 제조사 점수의 순자산 항목과 항공사 점수의
+   * 자본 성장 항목을 그대로 더하면 같은 돈이 두 번 세어지고, 계열 간 값을 어떻게
+   * 매기느냐로 두 항목의 비중이 갈린다 — 이전가격으로 성적을 만들 길이 열린다.
+   * 그래서 각 계층에서는 **계열 간 거래가 닿지 않는 항목만** 가져오고(`operatingScore`),
+   * 자본은 상계까지 마친 그룹 자기자본 하나로 잰다.
+   *
+   * 어느 한쪽이 문을 닫으면 그룹도 실패다(F). 제조사가 무너진 채 항공사만 굴러가는
+   * 판을 "잘한 경영"으로 부를 수는 없다 — 통합 모드는 둘을 함께 지고 가는 판이다.
+   *
+   * **배점은 두 게임에서 그대로 물려받은 것이지 새로 잰 값이 아니다.** 제조사 쪽에는
+   * 자동조종이 없어 이 모드의 점수 분포를 시뮬레이션으로 확인하지 못했다. 각 항목은
+   * 제 게임에서 이미 보정된 눈금이고 문턱도 공유하지만, 합쳐 놓은 분포는 미측정이다.
+   */
+  function groupScore(mfg, sky, airlineId) {
+    if (!mfg || !sky || !airlineId) return null;
+    const a = St.airline(sky, airlineId);
+    if (!a) return null;
+
+    const eq = combinedEquity(mfg, sky, airlineId);
+    const start = foundingEquity(mfg, sky, airlineId);
+    const alive = !!a.alive && !(mfg.gameOver && mfg.gameOver.reason === 'bankrupt');
+
+    const rows = [];
+    // 창업 순자산을 모르는 옛 세이브에서는 성장 항목을 생략한다 — 0 을 기준으로 재면
+    // 있지도 않은 성장이 잡힌다.
+    const canGrow = start.total > 0;
+    if (canGrow) {
+      const mul = eq.total / start.total;
+      rows.push({
+        label: '그룹 자본 성장',
+        detail: `${mul.toFixed(2)}배 (창업 ${Math.round(start.total / MUSD)}M → ${Math.round(eq.total / MUSD)}M · 계열 상계 후)`,
+        points: Math.round(Math.max(0, mul - 1) * GROUP_GROWTH),
+      });
+    }
+    rows.push({
+      label: '제조사 운영',
+      detail: '누적 인도 · 시장 점유율 · 평판 (순자산은 그룹 자본에서 센다)',
+      points: E.operatingScore(mfg),
+    });
+    const air = St.operatingScore(sky, airlineId);
+    for (const r of air.rows) rows.push({ label: `항공사 ${r.label}`, detail: r.detail, points: r.points });
+
+    const score = alive ? rows.reduce((x, r) => x + r.points, 0) : 0;
+    let grade = 'F';
+    if (alive) {
+      grade = 'D';
+      for (const [g, cut] of GROUP_CUTS) {
+        if (score >= cut) {
+          grade = g;
+          break;
+        }
+      }
+    }
+    return { score, grade, alive, rows, equity: eq, founding: start };
+  }
+
   /** 아직 인도되지 않은 자체 발주의 선급금 — 그룹 안에서만 오간 돈이다. */
   function internalPrepaid(sky, airlineId) {
     if (!sky || !sky.orders) return 0;
@@ -303,6 +375,10 @@
     consumeOrder,
     applyRivalry,
     combinedEquity,
+    foundingEquity,
+    groupScore,
+    GROUP_GROWTH,
+    GROUP_CUTS,
     internalPrepaid,
     beforeTurns,
     betweenTurns,
