@@ -76,7 +76,8 @@
     const ranked = St.living(s)
       .map((a) => ({ a, eq: St.equity(s, a) }))
       .sort((x, y) => y.eq - x.eq);
-    const rank = ranked.findIndex((x) => x.a.id === meId) + 1;
+    // 접힌 회사는 이 목록에 없다 — `findIndex` 가 -1 을 내 "0위"가 뜬다.
+    const rank = me.alive ? ranked.findIndex((x) => x.a.id === meId) + 1 : 0;
 
     const over = s.turn >= s.totalTurns || !me.alive;
     return `
@@ -84,7 +85,9 @@
       ${over ? finalCard(s, meId) : ''}
       <div class="card">
         <h3>${esc(me.name)}</h3>
-        <p class="muted">${esc(Cities.name(me.home))} 기반 · 자기자본 <b>${rank}위</b> / 생존 ${St.living(s).length}사</p>
+        <p class="muted">${esc(Cities.name(me.home))} 기반 · ${
+          rank ? `자기자본 <b>${rank}위</b> / 생존 ${St.living(s).length}사` : '<b>파산</b> — 순위에서 빠졌다'
+        }</p>
         <div class="sky-stats">
           ${stat('자기자본', money(St.equity(s, me)))}
           ${stat('현금', money(me.cash))}
@@ -159,6 +162,11 @@
     // 남은 여력이 10M 밑이면 그 남은 만큼만 빌린다. 최소 단위를 강요하면 버튼이
     // 잠겨, 명령 계층과 AI 는 되는 소액 차입을 플레이어만 못 해 급매로 몰린다.
     const step = Math.min(room, Math.max(10e6, Math.round(room / 4 / 1e6) * 1e6));
+    // **상환액은 차입 여력과 무관하다.** 손실로 자본이 줄어 부채가 한도를 넘으면
+    // 여력이 0 이 되는데, 그때가 바로 빚을 줄여야 할 때다. 여력에서 금액을 끌어오면
+    // 버튼이 0 을 보내고 명령이 물린다 — 갚을 길이 막힌다.
+    const payable = Math.min(a.debt, Math.max(0, a.cash));
+    const payStep = Math.min(payable, Math.max(10e6, Math.round(payable / 4 / 1e6) * 1e6));
     return `<div class="card full">
       <h3>자금</h3>
       <div class="sky-stats">
@@ -170,8 +178,8 @@
       <div class="row">
         <button class="ghost" data-action="borrow" data-amount="${step}" ${step <= 0 ? 'disabled' : ''}>
           ${money(step)} 차입</button>
-        <button class="ghost" data-action="repay" data-amount="${step}" ${a.debt <= 0 || a.cash <= 0 ? 'disabled' : ''}>
-          ${money(Math.min(step, a.debt))} 상환</button>
+        <button class="ghost" data-action="repay" data-amount="${payStep}" ${payStep <= 0 ? 'disabled' : ''}>
+          ${money(payStep)} 상환</button>
       </div>
       <p class="muted">이자는 아무것도 안 하고 나가는 돈이다. 여유가 생기면 먼저 갚는 편이 낫다.</p>
     </div>`;
@@ -411,7 +419,8 @@
    * 놓고 그것만 넘기면, 장거리에 아껴 둔 광동체가 단거리에 끌려 나가고 플레이어는
    * 노선을 연 뒤 작은 기체로 갈아 끼우고 광동체를 떼는 수밖에 없다.
    */
-  function openCandidates(s, meId, limit) {
+  function openCandidates(s, meId, limit, choice) {
+    const picked = choice || {};
     const me = St.airline(s, meId);
     const idle = St.planesOf(s, meId).filter((p) => p.routeId === null && p.checkUntilTurn !== s.turn);
     const served = new Set(St.routesOf(s, meId).filter((r) => r.active).map((r) => Cities.pairKey(r.from, r.to)));
@@ -428,39 +437,52 @@
         if (St.isClosed(s.cityState[to.id] || {}, s.turn)) continue;
         const dist = Cities.distance(from, to.id);
         // 큰 기체가 먼저 오되, 나머지도 고를 수 있게 함께 싣는다.
-        const usable = idle
-          .filter((p) => Econ.canFly(s.types[p.typeId], dist))
-          .sort((x, y) => s.types[y.typeId].seats - s.types[x.typeId].seats || x.id - y.id);
-        const plane = usable[0];
-        if (!plane) continue;
-        const cap = Econ.capacity([plane], dist, (t) => s.types[t]);
-        if (cap.maxFreq < 1) continue;
-        const freq = Math.min(cap.maxFreq, 7);
-        const needFrom = Math.max(0, freq - A.freeSlots(s, meId, from));
-        const needTo = Math.max(0, freq - A.freeSlots(s, meId, to.id));
-        if (needFrom > A.unsoldSlots(s, from) || needTo > A.unsoldSlots(s, to.id)) continue;
-        const cost =
-          A.slotCost(s, meId, from, needFrom) + A.slotCost(s, meId, to.id, needTo) + A.routeSetupCost(s, from, to.id);
-        seen.add(Cities.pairKey(from, to.id));
+        // **견적은 기체마다 따로 낸다.** 기종이 다르면 한 바퀴에 묶이는 시간이 달라
+        // 낼 수 있는 편수가 갈리고, 그러면 필요한 슬롯과 값도 갈린다. 기본 기체의
+        // 견적을 보여주고 다른 기체로 열면 화면에 없던 값이 빠져나간다.
+        const usable = [];
+        for (const p of idle
+          .filter((x) => Econ.canFly(s.types[x.typeId], dist))
+          .sort((x, y) => s.types[y.typeId].seats - s.types[x.typeId].seats || x.id - y.id)) {
+          const cap = Econ.capacity([p], dist, (t) => s.types[t]);
+          if (cap.maxFreq < 1) continue;
+          const f = Math.min(cap.maxFreq, 7);
+          const nf = Math.max(0, f - A.freeSlots(s, meId, from));
+          const nt = Math.max(0, f - A.freeSlots(s, meId, to.id));
+          if (nf > A.unsoldSlots(s, from) || nt > A.unsoldSlots(s, to.id)) continue;
+          usable.push({
+            plane: p,
+            freq: f,
+            needFrom: nf,
+            needTo: nt,
+            cost: A.slotCost(s, meId, from, nf) + A.slotCost(s, meId, to.id, nt) + A.routeSetupCost(s, from, to.id),
+          });
+        }
+        if (!usable.length) continue;
+        const key = Cities.pairKey(from, to.id);
+        // 플레이어가 고른 기체가 있으면 그 견적을 앞에 세운다 — 화면이 보여주는 값과
+        // 누를 때 빠져나가는 값이 같아야 한다.
+        const chosen = usable.find((u) => u.plane.id === picked[`${from}|${to.id}`]) || usable[0];
+        seen.add(key);
         out.push({
           from,
           to: to.id,
           dist,
-          plane,
           usable,
-          freq,
-          needFrom,
-          needTo,
-          cost,
+          plane: chosen.plane,
+          freq: chosen.freq,
+          needFrom: chosen.needFrom,
+          needTo: chosen.needTo,
+          cost: chosen.cost,
           demand: St.demandFor(s, Cities.get(from), to).total,
-          score: Ai.attractiveness(s, meId, Cities.get(from), to) / (1 + cost / 60e6),
+          score: Ai.attractiveness(s, meId, Cities.get(from), to) / (1 + chosen.cost / 60e6),
         });
       }
     }
     return out.sort((x, y) => y.score - x.score).slice(0, limit || 24);
   }
 
-  function renderOpen(s, meId) {
+  function renderOpen(s, meId, choice) {
     const me = St.airline(s, meId);
     const idle = St.planesOf(s, meId).filter((p) => p.routeId === null && p.checkUntilTurn !== s.turn);
     if (!idle.length) {
@@ -468,7 +490,7 @@
         <p class="muted">유휴 기재가 없다. <b>기재</b> 탭에서 발주하거나, 노선에서 빼야 새 구간을 열 수 있다.</p>
       </div></section>`;
     }
-    const cands = openCandidates(s, meId);
+    const cands = openCandidates(s, meId, undefined, choice);
     if (!cands.length) {
       return `<section class="cards"><div class="card">
         <p class="muted">지금 기재로 열 수 있는 새 구간이 없다. 더 멀리 나는 기체가 필요하다.</p>
@@ -489,7 +511,7 @@
                 <b>${esc(Cities.name(c.from))} – ${esc(Cities.name(c.to))}</b>
                 <span>${num(c.dist)}km · 분기 수요 ${num(c.demand)}</span>
                 <span>로컬 ${esc(root.AirlinerSkyMarket.localStrengthLabel(Cities.get(c.from), Cities.get(c.to)))}
-                  · 주 ${c.freq}왕복</span>
+                  · ${esc(s.types[c.plane.typeId].name)} 주 ${c.freq}왕복</span>
                 <span class="${me.cash < c.cost ? 'bad' : 'accent'}">${money(c.cost)}${
                   c.needFrom + c.needTo ? ` (슬롯 ${c.needFrom + c.needTo}자리 포함)` : ''
                 }</span>
@@ -499,8 +521,8 @@
                   ? `<select data-action="pick-plane" data-from="${esc(c.from)}" data-to="${esc(c.to)}">
                       ${c.usable
                         .map(
-                          (p) => `<option value="${p.id}"${p.id === c.plane.id ? ' selected' : ''}>
-                            ${esc(s.types[p.typeId].name)} · ${s.types[p.typeId].seats}석</option>`,
+                          (u) => `<option value="${u.plane.id}"${u.plane.id === c.plane.id ? ' selected' : ''}>
+                            ${esc(s.types[u.plane.typeId].name)} · ${s.types[u.plane.typeId].seats}석 · 주 ${u.freq}왕복 · ${money(u.cost)}</option>`,
                         )
                         .join('')}
                     </select>`

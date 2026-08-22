@@ -124,6 +124,10 @@
       return fail('이미 같은 구간에 노선이 있습니다.');
     }
     if (!Number.isInteger(freq) || freq < 1) return fail('주간 편수는 1 이상의 정수여야 합니다.');
+    // `clampFare(NaN)` 은 NaN 이다. 안 막으면 개설비를 받고 운임이 NaN 인 노선이 저장되고,
+    // 다음 정산에서 점유율·수입·현금이 줄줄이 NaN 이 된다. `tuneRoute` 와 같은 문이다.
+    if (fareMul !== undefined && !Number.isFinite(fareMul)) return fail('운임 배수가 올바르지 않습니다.');
+    if (serviceExtra !== undefined && !Number.isFinite(serviceExtra)) return fail('서비스 등급이 올바르지 않습니다.');
     if (!planeIds || !planeIds.length) return fail('투입할 기재를 고르세요.');
 
     const dist = Cities.distance(from, to);
@@ -157,7 +161,7 @@
       to,
       fareMul: clampFare(fareMul === undefined ? 1 : fareMul),
       freq,
-      serviceExtra: Math.min(2, Math.max(0, serviceExtra || 0)),
+      serviceExtra: Math.min(2, Math.max(0, Math.round(serviceExtra || 0))),
       active: true,
       last: null,
     });

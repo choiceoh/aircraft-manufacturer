@@ -13,7 +13,6 @@
   const A = root.AirlinerSkyActions;
   const Ai = root.AirlinerSkyAi;
   const SP = root.AirlinerSkyPanels;
-  const Econ = root.AirlinerSkyEconomics;
   const P = root.AirlinerPanels;
 
   const SAVE_KEY = 'airliner-sky-save-v1';
@@ -64,7 +63,7 @@
         panel.innerHTML = SP.renderRoutes(s, ui.meId, ui.folds);
         break;
       case 'open':
-        panel.innerHTML = SP.renderOpen(s, ui.meId);
+        panel.innerHTML = SP.renderOpen(s, ui.meId, ui.planeChoice);
         break;
       case 'fleet':
         panel.innerHTML = SP.renderFleet(s, ui.meId, ui.folds);
@@ -272,28 +271,24 @@
         run(A.repay(s, me, +d.amount));
         break;
       case 'open-route': {
-        const c = SP.openCandidates(s, me, 500).find((x) => x.from === d.from && x.to === d.to);
+        // 화면이 보여준 것과 **같은 견적**을 다시 낸다 — 고른 기체까지 반영해서.
+        const c = SP.openCandidates(s, me, 500, ui.planeChoice).find((x) => x.from === d.from && x.to === d.to);
         if (!c) {
           toast('그 사이 조건이 바뀌었다.', 'bad');
           render();
           break;
         }
-        // 플레이어가 고른 기체가 있으면 그것으로 연다 — 없으면 가장 큰 것.
-        const picked = ui.planeChoice[`${d.from}|${d.to}`];
-        const plane = c.usable.find((x) => x.id === picked) || c.plane;
-        const dist = Cities.distance(c.from, c.to);
-        const cap = Econ.capacity([plane], dist, (t) => s.types[t]);
-        const want = Math.min(cap.maxFreq, 7);
-        if (want < 1) {
-          toast('그 기체로는 이 구간을 뛸 수 없다.', 'bad');
+        // **양쪽 슬롯값을 미리 합쳐 본다.** 하나씩 사면서 두 번째에서 돈이 모자라면,
+        // 첫 공항 슬롯만 사 놓고 노선은 못 여는 상태로 남는다.
+        const airline = St.airline(s, me);
+        if (airline.cash < c.cost) {
+          toast(`현금이 ${SP.money(c.cost)} 있어야 연다.`, 'bad');
           break;
         }
-        const needFrom = Math.max(0, want - A.freeSlots(s, me, c.from));
-        const needTo = Math.max(0, want - A.freeSlots(s, me, c.to));
-        if (needFrom > 0 && !run(A.buySlots(s, me, c.from, needFrom))) break;
-        if (needTo > 0 && !run(A.buySlots(s, me, c.to, needTo))) break;
-        const freq = Math.min(want, A.freeSlots(s, me, c.from), A.freeSlots(s, me, c.to));
-        run(A.openRoute(s, me, c.from, c.to, [plane.id], freq, 1));
+        if (c.needFrom > 0 && !run(A.buySlots(s, me, c.from, c.needFrom))) break;
+        if (c.needTo > 0 && !run(A.buySlots(s, me, c.to, c.needTo))) break;
+        const freq = Math.min(c.freq, A.freeSlots(s, me, c.from), A.freeSlots(s, me, c.to));
+        run(A.openRoute(s, me, c.from, c.to, [c.plane.id], freq, 1));
         delete ui.planeChoice[`${d.from}|${d.to}`];
         break;
       }
@@ -308,6 +303,9 @@
     const pick = e.target.closest('select[data-action="pick-plane"]');
     if (pick) {
       ui.planeChoice[`${pick.dataset.from}|${pick.dataset.to}`] = +pick.value;
+      // 견적이 기체마다 다르므로 다시 그린다. 고른 것은 `ui.planeChoice` 에 남아
+      // 다시 그려도 그 기체가 선택된 채로 온다.
+      render();
       return;
     }
     const sel = e.target.closest('select[data-action="assign"]');

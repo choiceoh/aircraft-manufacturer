@@ -1773,9 +1773,103 @@ test('화면: 취항할 기체를 고를 수 있다', () => {
   const cands = SP.openCandidates(s, me, 500);
   const many = cands.find((c) => c.usable.length > 1);
   assert.ok(many, '고를 거리가 있는 후보가 있어야 검사가 산다');
-  for (const p of many.usable) {
-    assert.ok(Econ.canFly(s.types[p.typeId], many.dist), '못 나는 기체가 목록에 있다');
+  for (const u of many.usable) {
+    assert.ok(Econ.canFly(s.types[u.plane.typeId], many.dist), '못 나는 기체가 목록에 있다');
+    assert.ok(u.freq >= 1 && u.cost > 0, '기체마다 제 견적이 있어야 한다');
   }
-  assert.strictEqual(many.usable[0].id, many.plane.id, '기본값은 목록 맨 앞이어야 한다');
-  assert.ok(/data-action="pick-plane"/.test(SP.renderOpen(s, me, new Set())), '화면에 고를 자리가 없다');
+  assert.strictEqual(many.usable[0].plane.id, many.plane.id, '기본값은 목록 맨 앞이어야 한다');
+  assert.ok(/data-action="pick-plane"/.test(SP.renderOpen(s, me)), '화면에 고를 자리가 없다');
+});
+
+test('화면: 고른 기체의 견적을 보여준다', () => {
+  // 기본 기체의 견적을 띄워 놓고 다른 기체로 열면, 화면에 없던 값이 빠져나간다.
+  // 기종이 다르면 한 바퀴에 묶이는 시간이 달라 편수·슬롯·값이 모두 갈린다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0].id;
+  const c = SP.openCandidates(s, me, 500).find((x) => x.usable.length > 1);
+  assert.ok(c, '고를 거리가 있어야 검사가 산다');
+  const alt = c.usable[c.usable.length - 1];
+  assert.notStrictEqual(alt.plane.id, c.plane.id);
+
+  // 고른 것을 알려 주면 후보의 머리 숫자가 그 기체의 견적이어야 한다.
+  const choice = { [`${c.from}|${c.to}`]: alt.plane.id };
+  const after = SP.openCandidates(s, me, 500, choice).find((x) => x.from === c.from && x.to === c.to);
+  assert.strictEqual(after.plane.id, alt.plane.id, '고른 기체가 앞에 서야 한다');
+  assert.strictEqual(after.freq, alt.freq, '편수가 그 기체 것이어야 한다');
+  assert.strictEqual(after.cost, alt.cost, '값이 그 기체 것이어야 한다');
+  assert.strictEqual(after.needFrom, alt.needFrom, '슬롯도 그 기체 것이어야 한다');
+});
+
+test('명령: NaN 운임으로 노선을 열 수 없다', () => {
+  // `clampFare(NaN)` 은 NaN 이다. 안 막으면 개설비를 받고 운임이 NaN 인 노선이
+  // 저장되고, 다음 정산에서 점유율·수입·현금이 줄줄이 NaN 이 된다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  const p = St.planesOf(s, a.id).find((x) => x.routeId === null);
+  a.slots[a.home] = 200;
+  a.slots.shanghai = 200;
+  const cash = a.cash;
+  const routes = s.routes.length;
+  for (const bad of [NaN, Infinity]) {
+    assert.strictEqual(A_openBad(s, a.id, a.home, 'shanghai', p.id, bad).ok, false, `운임 ${bad}`);
+  }
+  assert.strictEqual(a.cash, cash, '막혔는데 개설비가 나갔다');
+  assert.strictEqual(s.routes.length, routes, '막혔는데 노선이 생겼다');
+  assert.strictEqual(Act.openRoute(s, a.id, a.home, 'shanghai', [p.id], 5, 1.2).ok, true, '멀쩡한 운임은 통해야 한다');
+});
+
+function A_openBad(s, id, from, to, planeId, fare) {
+  return Act.openRoute(s, id, from, to, [planeId], 5, fare);
+}
+
+test('상태: 급매도 산 값을 기준으로 한다', () => {
+  // 정가가 오른 뒤 급매에 들어가면, 90M 에 산 기체가 300M 어치로 팔려 나간다 —
+  // 몇 대를 팔아야 하는지, 현금이 회복되는지가 통째로 달라진다.
+  const prog = { id: 'p1', name: '신형', phase: 'production', segment: 'narrow', seats: 180, range: 5000, efficiency: 60, listPrice: 90 };
+  const s = St.newGame(1234, { programs: [prog] });
+  const a = s.airlines[0];
+  Act.buyAircraft(s, a.id, 'p1', 2);
+  for (let i = 0; i < Act.ORDER_QUARTERS; i++) St.advance(s);
+  const mine = St.planesOf(s, a.id).filter((p) => p.typeId === 'p1');
+  assert.strictEqual(mine.length, 2);
+  prog.listPrice = 300;
+  St.refreshTypes(s, [prog]);
+  const paid = St.residual(s.types.p1, mine[0].ageQuarters, mine[0].paid);
+  const list = St.residual(s.types.p1, mine[0].ageQuarters);
+  assert.ok(list > paid * 2, '정가와 산 값이 크게 갈려야 검사가 산다');
+
+  // 급매가 이 기체를 팔도록 나머지를 치운다 — 안 그러면 가장 늙은 창업기부터 팔린다.
+  for (const r of St.routesOf(s, a.id).slice()) Act.closeRoute(s, a.id, r.id);
+  s.planes = s.planes.filter((p) => p.airlineId !== a.id || p.typeId === 'p1');
+  const before = St.planesOf(s, a.id).length;
+  a.cash = -paid * 0.5;
+  St.advance(s);
+  assert.ok(St.planesOf(s, a.id).length < before, '기재를 팔았어야 한다');
+  // 산 값 기준이면 한 대(90M×0.8)로 겨우 메운다. 정가 기준이면 300M×0.8 이 들어와
+  // 현금이 훌쩍 남는다 — 그 차이로 가른다.
+  assert.ok(a.cash < paid, `회수액이 정가 기준이다 (현금 ${Math.round(a.cash / 1e6)}M)`);
+});
+
+test('화면: 부채가 한도를 넘어도 갚을 수 있다', () => {
+  // 손실로 자본이 줄어 부채가 한도를 넘으면 차입 여력이 0 이 되는데, 그때가 바로
+  // 빚을 줄여야 할 때다. 여력에서 상환액을 끌어오면 버튼이 0 을 보내고 명령이 물린다.
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  a.debt = St.debtCap(s, a) * 3;
+  assert.ok(St.debtCap(s, a) - a.debt <= 0, '여력이 0 이어야 검사가 산다');
+  assert.ok(a.cash > 0 && a.debt > 0, '갚을 현금과 빚이 있어야 한다');
+  const m = SP.renderOverview(s, a.id, new Set()).match(/data-action="repay" data-amount="([0-9.e+]+)"([^>]*)>/);
+  assert.ok(m, '상환 버튼이 없다');
+  assert.ok(!/disabled/.test(m[2]), '갚을 수 있는데 버튼이 잠겼다');
+  assert.ok(+m[1] > 0, `버튼이 ${m[1]} 을 보낸다`);
+  assert.strictEqual(Act.repay(s, a.id, +m[1]).ok, true, '화면이 내놓은 금액이 안 통한다');
+});
+
+test('화면: 파산한 회사에 "0위"가 뜨지 않는다', () => {
+  const s = St.newGame(1234);
+  const a = s.airlines[0];
+  a.alive = false;
+  const html = SP.renderOverview(s, a.id, new Set());
+  assert.ok(!/>0위</.test(html) && !/\b0위\b/.test(html), '0위가 떴다');
+  assert.ok(/파산/.test(html), '파산이라고 말해야 한다');
 });

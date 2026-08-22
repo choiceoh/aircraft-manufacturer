@@ -723,7 +723,7 @@
         // 가장 늙은 것부터 판다 — 남길 값어치가 가장 적다.
         pool.sort((x, y) => y.ageQuarters - x.ageQuarters || x.id - y.id);
         const p = pool[0];
-        a.cash += residual(s.types[p.typeId], p.ageQuarters) * 0.8;
+        a.cash += residual(s.types[p.typeId], p.ageQuarters, p.paid) * 0.8;
         removePlane(s, p);
       }
       if (a.negativeQuarters >= B.NEGATIVE_QUARTERS_TO_FOLD) fold(s, a);
