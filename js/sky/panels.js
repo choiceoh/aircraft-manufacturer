@@ -97,6 +97,7 @@
           ${stat('정비 입고', `${inCheck}대`)}
         </div>
       </div>
+      ${groupCard(s, meId)}
       ${r ? quarterCard(r) : '<div class="card"><p class="muted">첫 분기를 넘기면 실적이 나온다.</p></div>'}
       ${financeCard(s, meId)}
       ${slotCard(s, meId)}
@@ -115,6 +116,100 @@
         </tbody></table>
       </div>
     </section>`;
+  }
+
+  /**
+   * 통합 모드 전용 — 모회사와의 사이.
+   *
+   * 통합 모드가 아니면 아무것도 그리지 않는다. 이 카드가 답하는 것은 셋이다.
+   * 그룹 성적이 얼마인가, 자사 기종을 지금 얼마에 받을 수 있는가, 노선을 넓힌 값으로
+   * 제조사가 무엇을 잃고 있는가.
+   */
+  function groupCard(s, meId) {
+    const G = root.AirlinerSkyGroup;
+    const Shell = root.AirlinerShell;
+    if (!G || !Shell || Shell.shell.mode !== 'group') return '';
+    const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
+    if (!mfg) return '';
+
+    const eq = G.combinedEquity(mfg, s, meId);
+    const progs = G.orderablePrograms(mfg).map((p) => G.quote(mfg, p.id, 1)).filter(Boolean);
+    const me = St.airline(s, meId);
+    const pending = (s.orders || []).filter((o) => o.external && o.airlineId === meId);
+
+    // 지금 노선이 겹치는 회사와, 그 때문에 제조사가 잃고 있는 신뢰.
+    const mineKeys = new Set(
+      St.routesOf(s, meId).filter((x) => x.active).map((x) => Cities.pairKey(x.from, x.to)),
+    );
+    const rivals = [];
+    for (const a of s.airlines) {
+      if (a.id === meId || !a.alive) continue;
+      const n = St.routesOf(s, a.id).filter((x) => x.active && mineKeys.has(Cities.pairKey(x.from, x.to))).length;
+      if (n) rivals.push({ a, n, rel: mfg.relations ? Math.round(mfg.relations[a.id] ?? 0) : null });
+    }
+    rivals.sort((x, y) => y.n - x.n || x.a.id.localeCompare(y.a.id));
+
+    return `<div class="card full">
+      <h3>모회사</h3>
+      <p class="muted">두 장부를 합해서 잰다. 계열 간 거래는 합계를 못 움직인다 — 값을 어떻게 매기든 그룹 성적은 그대로다.</p>
+      <div class="sky-stats">
+        ${stat('그룹 합산', money(eq.total))}
+        ${stat('제조사', money(eq.maker))}
+        ${stat('항공사', money(eq.airline))}
+        ${eq.internal ? stat('계열 상계', '−' + money(eq.internal), '중복 계상분') : ''}
+      </div>
+
+      <h4>자체 발주</h4>
+      <p class="muted">공고를 거치지 않는다. 대신 <b>줄은 똑같이 선다</b> — 생산 대기열에서 남의 주문을 제치지 않으므로, 재고가 나와야 인도된다.</p>
+      ${
+        progs.length
+          ? `<ul class="lines">${progs
+              .map((q) => {
+                const dep = q.deposit * G.MUSD;
+                const canPay = me.cash >= dep;
+                return `<li>
+                  <b>${esc(q.name)}</b>
+                  <span class="muted">대당 ${money(q.unitPrice * G.MUSD)} · 착수금 ${money(dep)}${canPay ? '' : ' — 현금 부족'}</span>
+                  <span class="row">
+                    ${[1, 2, 5]
+                      .map(
+                        (n) =>
+                          `<button class="ghost" data-action="group-order" data-prog="${esc(q.programId)}" data-qty="${n}"${
+                            me.cash >= q.deposit * G.MUSD * n ? '' : ' disabled'
+                          }>${n}기</button>`,
+                      )
+                      .join('')}
+                  </span>
+                </li>`;
+              })
+              .join('')}</ul>`
+          : '<p class="muted">아직 양산 중인 자사 기종이 없다. 제조사 화면에서 형식증명을 받아야 한다.</p>'
+      }
+      ${
+        pending.length
+          ? `<p class="muted">인도 대기 ${pending.reduce((x, o) => x + o.count, 0)}기 · 선급금 ${money(
+              pending.reduce((x, o) => x + o.paid, 0),
+            )}</p>`
+          : ''
+      }
+
+      <h4>노선에서 겨루는 손님</h4>
+      ${
+        rivals.length
+          ? `<p class="muted">이 회사들은 우리 기체를 사는 손님이자 노선의 경쟁자다. 겹칠수록 제조사를 덜 믿는다 — 자체 항공사를 갖는 값이다.</p>
+             <table class="tbl"><thead><tr><th>회사</th><th class="r">겹치는 노선</th><th class="r">제조사 관계</th></tr></thead><tbody>
+             ${rivals
+               .map(
+                 (x) =>
+                   `<tr><td>${esc(x.a.name)}</td><td class="r">${x.n}개</td><td class="r">${
+                     x.rel === null ? '—' : x.rel
+                   }</td></tr>`,
+               )
+               .join('')}
+             </tbody></table>`
+          : '<p class="muted">아직 겹치는 노선이 없다. 남의 안방을 밟기 전까지는 값을 치르지 않는다.</p>'
+      }
+    </div>`;
   }
 
   /** 숫자 한 칸 — 라벨 위, 값 아래. 좁은 화면에서 두 칸씩 접힌다. */
@@ -652,6 +747,7 @@
   root.AirlinerSkyPanels = {
     money,
     renderOverview,
+    groupCard,
     finalCard,
     renderRoutes,
     renderFleet,

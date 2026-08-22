@@ -14,6 +14,9 @@
   const Ai = root.AirlinerSkyAi;
   const SP = root.AirlinerSkyPanels;
   const P = root.AirlinerPanels;
+  // 통합 모드에서 제조사의 본국 고객을 묻는 데만 쓴다. 항공사 게임 단독으로 열어도
+  // 이 모듈은 함께 실려 있다(`airline.html` 이 제조사 쪽을 통째로 싣는다).
+  const E = root.AirlinerEngine;
 
   const SAVE_KEY = 'airliner-sky-save-v1';
 
@@ -240,6 +243,15 @@
         if (root.AirlinerShell) root.AirlinerShell.turn();
         else nextTurn();
         break;
+      case 'group-order': {
+        // 통합 모드 전용. 규칙은 `js/sky/group.js` 에 있고 여기서는 부르기만 한다 —
+        // 두 장부를 함께 만지는 일이라 한 군데서만 해야 한다.
+        const G = root.AirlinerSkyGroup;
+        const mfg = root.AirlinerUI && root.AirlinerUI.ui.state;
+        if (!G || !mfg) break;
+        run(G.placeOrder(mfg, s, me, d.prog, +d.qty));
+        break;
+      }
       case 'new-game':
         // 회사 선택으로 돌아간다. 그냥 `newGame()` 을 부르면 `airlines[0]`(대한항공)이
         // 잠자코 배정되어, 다른 회사를 고른 플레이어가 다음 판을 남의 회사로 시작한다.
@@ -391,14 +403,23 @@
     document.getElementById('hud').innerHTML = '<div class="hud-left"><div class="hud-company">에어라이너 — 항공사</div></div>';
     document.getElementById('tabs').innerHTML = '';
     document.getElementById('foot').innerHTML = '<span class="muted">회사를 고르면 시작한다</span>';
+    // 통합 모드에서는 어느 회사가 우리 계열인지 알려준다. 제조사의 본국 고객이
+    // 자회사로 삼기 자연스러운 자리다 — 이미 우리 기체를 타고 관계도 두텁다.
+    const mfg = root.AirlinerShell && root.AirlinerShell.shell.mode === 'group' && root.AirlinerUI ? root.AirlinerUI.ui.state : null;
+    const home = new Set(mfg ? E.homeAirlines(mfg) : []);
+    const list = s.airlines.slice().sort((x, y) => (home.has(y.id) ? 1 : 0) - (home.has(x.id) ? 1 : 0));
     panel.innerHTML = `<section class="cards"><div class="card">
       <h3>어느 회사를 맡겠는가</h3>
-      <p class="muted">모기지·창업 기단·성향이 다르다. 여기서 고른 회사만 당신이 굴리고, 나머지 열한 곳은 스스로 노선망을 편다.</p>
-      <ul class="lines">${s.airlines
+      <p class="muted">${
+        mfg
+          ? '모기지·창업 기단·성향이 다르다. <b>계열</b>로 표시된 곳은 제조사의 본국 고객이라 자회사로 삼기 자연스럽지만, 어디든 고를 수 있다.'
+          : '모기지·창업 기단·성향이 다르다. 여기서 고른 회사만 당신이 굴리고, 나머지 열한 곳은 스스로 노선망을 편다.'
+      }</p>
+      <ul class="lines">${list
         .map((a) => {
           const rs = St.routesOf(s, a.id).filter((r) => r.active);
           return `<li><button class="ghost wide" data-action="pick" data-id="${P.esc(a.id)}">
-            <b>${P.esc(a.name)}</b>
+            <b>${P.esc(a.name)}${home.has(a.id) ? ' <span class="tag">계열</span>' : ''}</b>
             <span class="muted">${P.esc(Cities.name(a.home))} · 기재 ${St.planesOf(s, a.id).length}대 · 노선 ${rs.length}개 · 현금 ${SP.money(a.cash)}</span>
           </button></li>`;
         })

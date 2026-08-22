@@ -2330,3 +2330,42 @@ test('통합: 합산 자기자본은 계열 간 거래에 흔들리지 않는다
     `발주 여섯 번에 합산이 ${Math.round((piled.total - before.total) / 1e6)}M 불었다`,
   );
 });
+
+test('통합: 제조사가 띄운 기종이 항공사 기종표에 들어온다', () => {
+  // 항공사의 `advance` 는 통합 모드에서 프로그램을 받지 않는다. 글루가 넘기지 않으면
+  // 자사 기종이 영영 표에 안 들어와, 발주는 되는데 인도가 안 된다 — 착수금만 나간다.
+  const mfg = E.newGame(1234);
+  const sky = St.newGame(1234); // 일부러 프로그램 없이 연다
+  const meId = sky.airlines[0].id;
+  const prog = mfg.programs[0];
+  assert.ok(!sky.types[prog.id], '검사가 살려면 처음엔 표에 없어야 한다');
+
+  G.betweenTurns(mfg, sky, meId, null);
+  assert.ok(sky.types[prog.id], '자사 기종이 항공사 기종표에 안 들어왔다');
+  assert.strictEqual(sky.types[prog.id].name, prog.name);
+});
+
+test('통합: 기체를 못 세우면 잔금도 선급금도 건드리지 않는다', () => {
+  // 잔금을 받고 선급금까지 지운 뒤 기체가 안 서면, 낸 돈도 기록도 사라진 채 아무도
+  // 그 사실을 모른다. 실제로 그렇게 됐다 — 기종표에 없는 기종이라 조용히 실패했다.
+  const { mfg, sky, meId, prog } = groupGame();
+  assert.strictEqual(G.placeOrder(mfg, sky, meId, prog.id, 2).ok, true);
+  const a = St.airline(sky, meId);
+  const cash = a.cash;
+  const planes = St.planesOf(sky, meId).length;
+  const pending = (sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.count, 0);
+  assert.strictEqual(pending, 2);
+
+  // 없는 기종으로 인도가 왔다고 알린다(기종표에서 빠진 상황을 흉내낸다).
+  const bad = { inHouse: [{ airlineId: meId, programId: 'no-such-type', qty: 2, unitPrice: 80, balance: 136 }] };
+  const got = G.receiveDeliveries(mfg, sky, bad, meId);
+
+  assert.deepStrictEqual(got, [], '못 세웠는데 인도됐다고 답했다');
+  assert.strictEqual(a.cash, cash, '기체도 없이 잔금이 나갔다');
+  assert.strictEqual(St.planesOf(sky, meId).length, planes, '기체가 늘었다');
+  assert.strictEqual(
+    (sky.orders || []).filter((o) => o.external).reduce((x, o) => x + o.count, 0),
+    pending,
+    '선급금 기록이 지워졌다 — 낸 돈이 사라진다',
+  );
+});

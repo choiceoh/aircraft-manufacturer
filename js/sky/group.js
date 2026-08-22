@@ -113,13 +113,21 @@
    */
   function receiveDeliveries(mfg, sky, report, airlineId) {
     const list = (report && report.inHouse) || [];
+    if (!list.length) return [];
+    // **기종표를 먼저 맞춘다.** 항공사 계층은 자기 `advance` 에서만 표를 새로 만드는데,
+    // 통합 모드에서는 제조사가 방금 인증·양산한 기종이 그 표에 아직 없다. 없는 기종으로
+    // 기체를 세우려다 조용히 실패하면 착수금만 나가고 기체는 오지 않는다.
+    St.refreshTypes(sky, mfg && mfg.programs);
     const got = [];
     for (const d of list) {
       if (d.airlineId !== airlineId) continue;
       const a = St.airline(sky, airlineId);
       if (!a || !a.alive) continue;
+      // **세우지 못하면 아무것도 건드리지 않는다.** 잔금을 받고 선급금까지 지운 뒤
+      // 기체가 안 서면, 낸 돈도 기록도 사라진 채 아무도 그 사실을 모른다.
+      const r = St.receiveAircraft(sky, airlineId, d.programId, d.qty, d.unitPrice * MUSD);
+      if (!r || !r.ok) continue;
       a.cash -= d.balance * MUSD;
-      St.receiveAircraft(sky, airlineId, d.programId, d.qty, d.unitPrice * MUSD);
       consumeOrder(sky, airlineId, d.programId, d.qty);
       got.push(d);
     }
@@ -222,6 +230,10 @@
    */
   function betweenTurns(mfg, sky, airlineId, report) {
     if (!mfg || !sky || !airlineId) return [];
+    // 제조사가 띄운 기종을 항공사 계층이 볼 수 있게 한다. 통합 모드에서 항공사의
+    // `advance` 는 프로그램을 받지 않으므로, 여기서 넘기지 않으면 자사 기종이 영영
+    // 항공사 기종표에 들어오지 않는다 — 발주는 되는데 인도가 안 된다.
+    St.refreshTypes(sky, mfg.programs);
     const got = receiveDeliveries(mfg, sky, report, airlineId);
     syncWorld(mfg, sky);
     return got;
