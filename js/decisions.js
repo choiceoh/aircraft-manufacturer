@@ -117,6 +117,43 @@
     return prod.reduce((a, b) => (b.delivered > a.delivered ? b : a));
   }
 
+  /** 선주문·입찰이 열리는 단계 — 엔진의 biddablePhase 와 같은 문턱. */
+  function biddableProgram(p) {
+    return p && (p.phase === 'production' || p.phase === 'cert' || (p.phase === 'dev' && p.progress >= 40));
+  }
+
+  /**
+   * 부스에 내놓을 기체와 그 급의 손님. 점수는 관계로만 고른다 — 난수를 쓰면
+   * 출품을 고른 판의 본류가 재편된다.
+   */
+  function showFloor(s) {
+    const shown = s.programs
+      .filter(biddableProgram)
+      .slice()
+      .sort((a, b) => {
+        const rank = (p) => (p.phase === 'production' ? 3 : p.phase === 'cert' ? 2 : 1) * 1e6 + (p.delivered || 0);
+        return rank(b) - rank(a);
+      })[0];
+    if (!shown) return null;
+    const guests = AIRLINES.filter((a) => a.bias === shown.segment);
+    const pool = guests.length ? guests : AIRLINES;
+    const airline = pool.reduce((a, b) => ((s.relations[b.id] || 0) > (s.relations[a.id] || 0) ? b : a));
+    return { program: shown, airline };
+  }
+
+  function launchBatch(h, p, a, qty) {
+    const needEtops = a.rangeBand[0] >= ETOPS_RANGE_KM && p.engines !== 4;
+    p.launchAirlineId = a.id;
+    return h.order({
+      airlineId: a.id,
+      airlineName: a.name,
+      program: p,
+      qty,
+      unitPrice: p.listPrice,
+      reqEtops: needEtops,
+    });
+  }
+
   /**
    * "앞당겨 인도"를 팔 수 있는 주문인가 — 양산 중이고 인도 게이트에 안 막혀
    * 있어야 한다. ETOPS 게이트에 막힌 주문은 특별 근무로 기체를 더 뽑아도
@@ -374,7 +411,7 @@
         {
           id: 'take',
           label: '받아들인다',
-          detail: '개발비 일부를 선납받고 관계가 크게 오른다. 그 기종 정가는 낮아진다',
+          detail: '선급금과 관계. 정가가 낮아지고, 초도 8기가 지금 선주문으로 들어온다',
           apply: (s, h) => {
             const p = s.programs.find((x) => x.id === h.recall('program'));
             const a = AIRLINES.find((x) => x.id === h.recall('airline'));
@@ -383,13 +420,15 @@
             h.income(advance);
             h.relation(a.id, 18);
             p.listPrice = Math.round(p.listPrice * 0.94);
-            return `${a.name}에서 선급금 ${money(advance)}을 받았다. 대신 ${p.name}의 정가가 6% 낮아졌다.`;
+            const o = launchBatch(h, p, a, 8);
+            const qty = (o && o.qty) || 8;
+            return `${a.name}에서 선급금 ${money(advance)}을 받았다. ${p.name} 정가가 6% 낮아졌고, 초도 ${qty}기가 선주문으로 올라왔다.`;
           },
         },
         {
           id: 'counter',
           label: '조건을 낮춰 역제안한다',
-          detail: '선급금은 적지만 정가를 지킨다. 거절당할 수도 있다',
+          detail: '선급금은 적지만 정가를 지킨다. 받아들여지면 초도 5기다',
           apply: (s, h) => {
             const p = s.programs.find((x) => x.id === h.recall('program'));
             const a = AIRLINES.find((x) => x.id === h.recall('airline'));
@@ -398,7 +437,9 @@
               const advance = Math.round(p.devCost * 0.05);
               h.income(advance);
               h.relation(a.id, 8);
-              return `${iGa(a.name)} 역제안을 받아들였다. 선급금 ${money(advance)}, 정가는 지켰다.`;
+              const o = launchBatch(h, p, a, 5);
+              const qty = (o && o.qty) || 5;
+              return `${iGa(a.name)} 역제안을 받아들였다. 선급금 ${money(advance)}, 정가는 지켰다. 초도 ${qty}기가 선주문이다.`;
             }
             h.relation(a.id, -6);
             return `${iGa(a.name)} 역제안을 걷어찼다. 런치 커스터머 이야기는 없던 일이 됐다.`;
@@ -801,30 +842,53 @@
       name: '에어쇼 출품 결정',
       weight: () => 7,
       text: () =>
-        '지역 에어쇼·무역 박람회가 열린다. 파리·판버러 달력과는 다른 자리다 — 출품은 비싸지만 항공사 실무진이 모인다.',
+        '국제 에어쇼가 열린다. 출품은 비싸지만 항공사 실무진이 모이고, 부스에서 본 기체로 현장 공고가 열리기도 한다.',
       options: [
         {
           id: 'full',
           label: '대형 부스로 나간다',
-          detail: '비싸다. 관계와 평판이 함께 오른다',
+          detail: '비싸다. 관계·평판이 오르고, 내놓을 기체가 있으면 이번 분기 현장 공고가 열린다',
           apply: (s, h) => {
             const cost = 260;
             h.expense(cost);
             h.reputation(4);
             for (const a of AIRLINES) h.relation(a.id, 3);
-            return `${money(cost)}을 들여 대형 부스를 냈다. 모든 항공사와의 관계가 조금씩 올랐다.`;
+            const floor = showFloor(s);
+            if (!floor || !h.rfp) {
+              h.reputation(-2);
+              return `${money(cost)}을 들여 대형 부스를 냈지만 살 수 있는 비행기가 없었다. 명함만 돌렸다.`;
+            }
+            const qty = 6 + ((((s.turn % 7) + 7) % 7));
+            const rfp = h.rfp({
+              airline: floor.airline,
+              segment: floor.program.segment,
+              qty,
+              seats: floor.program.seats,
+              range: floor.program.range,
+              reason: 'airshow',
+            });
+            return `${money(cost)}을 들여 ${floor.program.name} 부스를 냈다. ${floor.airline.name}이 현장에서 ${rfp.qty}기 공고를 열었다 — 이번 분기 수주전에서 받아라.`;
           },
         },
         {
           id: 'targeted',
           label: '주요 고객만 따로 만난다',
-          detail: '싸게 간다. 효과는 한 곳에 몰린다',
+          detail: '싸게 간다. 양산기와 관계가 있으면 그 자리에서 계약하고, 아니면 견적만 가져간다',
           apply: (s, h) => {
             const cost = 70;
             h.expense(cost);
             const a = topCustomer(s);
             h.relation(a.id, 12);
-            return `${money(cost)}만 쓰고 ${a.name} 경영진과 따로 만났다. 관계가 크게 올랐다.`;
+            const p = s.programs.find((x) => x.phase === 'production' && x.segment === a.bias) || biggestProgram(s);
+            if (p && (s.relations[a.id] ?? 0) >= 52) {
+              const qty = 4;
+              const unitPrice = Math.round(p.listPrice * 0.9);
+              const needEtops = a.rangeBand[0] >= ETOPS_RANGE_KM && p.engines !== 4;
+              h.order({ airlineId: a.id, airlineName: a.name, program: p, qty, unitPrice, reqEtops: needEtops });
+              return `${money(cost)}만 쓰고 ${a.name}과 따로 만났다. 자리에서 ${p.name} ${qty}기를 계약했다.`;
+            }
+            h.relation(a.id, -3);
+            return `${money(cost)}만 쓰고 ${a.name} 경영진과 만났다. 그들은 조건을 적어 다른 제작사와 비교하러 갔다.`;
           },
         },
         {

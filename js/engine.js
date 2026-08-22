@@ -33,12 +33,10 @@
     RESEARCH_PROJECTS,
     TAKEOVER,
     RIVAL_DRIFT_LIMIT,
-    AIRSHOWS,
-    SEASON,
   } = root.AirlinerData;
   const { MANUFACTURERS, AIRCRAFT, availableTypes, typeScore } = root.AirlinerFleet;
   const { evaluate, unitCostAt, clamp } = root.AirlinerDesign;
-  const { generateRfps, scoreBid, resolveBid, normalizeTerms } = root.AirlinerBidding;
+  const { generateRfps, makeRfp, scoreBid, resolveBid, normalizeTerms } = root.AirlinerBidding;
   const { createRng } = root.AirlinerRng;
   const Decisions = root.AirlinerDecisions;
 
@@ -364,12 +362,6 @@
       tradeTension: 0,
       // 이 회사가 남긴 순간들 — 첫 인도, 100호기, 첫 광동체. 종료 회고의 연표가 된다.
       milestones: [],
-      // 업계의 계절 — 에어쇼 출품·수주 캠페인·초도비행. 고르지 않으면 비어 있다.
-      airshowPlan: null,
-      showHalo: null,
-      airshowReveal: null,
-      pendingShows: [],
-      campaign: null,
       gameOver: null,
     };
     for (const a of AIRLINES) s.relations[a.id] = 34 + (a.prestige < 0.8 ? 10 : 0);
@@ -827,18 +819,6 @@
       s.trait = (absorbed || companyPreset('deneb')).trait || {};
     }
     if (!Array.isArray(s.milestones)) s.milestones = [];
-    if (s.airshowPlan === undefined) s.airshowPlan = null;
-    if (s.showHalo === undefined) s.showHalo = null;
-    if (s.airshowReveal === undefined) s.airshowReveal = null;
-    if (!Array.isArray(s.pendingShows)) s.pendingShows = [];
-    if (s.campaign === undefined) s.campaign = null;
-    // 초도비행 선택이 없던 세이브의 심사 중 기종 — 그 판은 이미 "초도 비행 성공"
-    // 로그를 남기고 심사를 시작했다. 새 선택지를 소급해 열면 할 일이 영원히 남는다.
-    for (const p of s.programs || []) {
-      if (p.phase === 'cert' && p.firstFlight === undefined && p.firstFlightDue === undefined) {
-        p.firstFlight = 'private';
-      }
-    }
     return s;
   }
 
@@ -1246,7 +1226,6 @@
     // 시나리오의 기둥(붉은 별의 SSJ)을 접었다면 그 자리에서 알린다 — 분기 정산까지 미루지 않는다.
     tickScenario(s);
     voidOrdersFor(s, p, '개발 중단');
-    detachProgramSeasons(s, p.id, '개발 중단');
     return { ok: true };
   }
 
@@ -1603,543 +1582,6 @@
     s.reputation = clamp(s.reputation + delta, 0, 100);
   }
 
-  // ─────────────────────────────── 업계의 계절 ───────────────────────────────
-
-  /**
-   * 파리(홀수 해 2분기)·판버러(짝수 해 3분기). 실제 달력과 같다.
-   * 일정은 턴만 보고 정해지므로 난수를 쓰지 않는다 — 같은 시드의 본류 전개를
-   * 에어쇼 규칙이 재편하지 않는다.
-   */
-  function airshowAt(turn) {
-    const year = CONFIG.startYear + Math.floor(turn / 4);
-    const q = ((turn % 4) + 4) % 4;
-    if (year % 2 === 1 && q === 1) return { ...AIRSHOWS.paris, turn, year };
-    if (year % 2 === 0 && q === 2) return { ...AIRSHOWS.farnborough, turn, year };
-    return null;
-  }
-
-  function nextAirshow(fromTurn) {
-    const start = Math.max(0, fromTurn);
-    for (let t = start; t < CONFIG.totalTurns; t++) {
-      const a = airshowAt(t);
-      if (a) return { ...a, left: t - fromTurn };
-    }
-    return null;
-  }
-
-  function isAirlineId(id) {
-    return AIRLINES.some((a) => a.id === id);
-  }
-
-  function airlineById(id) {
-    return AIRLINES.find((a) => a.id === id) || null;
-  }
-
-  function topAirlineCustomer(s) {
-    const byUnits = Object.entries(s.fleets || {})
-      .filter(([id]) => isAirlineId(id))
-      .map(([id, byProgram]) => ({ id, units: Object.values(byProgram).reduce((a, n) => a + n, 0) }))
-      .filter((x) => x.units > 0)
-      .sort((a, b) => b.units - a.units)[0];
-    const id = byUnits
-      ? byUnits.id
-      : Object.entries(s.relations || {})
-          .filter(([aid]) => isAirlineId(aid))
-          .sort((a, b) => (b[1] || 0) - (a[1] || 0))[0]?.[0];
-    return airlineById(id) || AIRLINES[0];
-  }
-
-  function campaignFits(airline, program) {
-    if (!airline || !program || !biddablePhase(program)) return false;
-    return (
-      program.segment === airline.bias &&
-      program.seats >= airline.seatBand[0] * 0.8 &&
-      program.seats <= airline.seatBand[1] * 1.2 &&
-      program.range >= airline.rangeBand[0] * 0.85
-    );
-  }
-
-  function orderNeedsEtops(airline, program) {
-    if (!airline || !program) return false;
-    return airline.rangeBand[0] >= ETOPS_RANGE_KM && program.engines !== 4;
-  }
-
-  /**
-   * 결정 사건의 수의계약과 같은 장부. 입찰을 거치지 않는 수주(에어쇼·캠페인)가
-   * 선수금·잔고·분기 실적을 빠뜨리면 그 수주는 화면의 숫자와 어긋난다.
-   */
-  function placeDirectOrder(s, spec) {
-    const p = spec.program;
-    const qty = Math.max(1, Math.round(spec.qty || 0));
-    if (!p || !qty) return null;
-    const unitPrice = Math.round(spec.unitPrice);
-    const deposit = Math.round(qty * unitPrice * CONFIG.depositRate);
-    s.cash += deposit;
-    s.pending.revenue += deposit;
-    s.stats.ordersWon += qty;
-    s.pending.ordersWon = (s.pending.ordersWon || 0) + qty;
-    const order = {
-      id: 'ord-' + s.nextId++,
-      airlineId: spec.airlineId,
-      airlineName: spec.airlineName,
-      programId: p.id,
-      programName: p.name,
-      qty,
-      remaining: qty,
-      unitPrice,
-      wonTurn: s.turn,
-      reqEtops: !!spec.reqEtops,
-      gov: false,
-    };
-    s.backlog.push(order);
-    return { order, deposit };
-  }
-
-  function productionFor(s, pred) {
-    return s.programs.filter((p) => p.phase === 'production' && (!pred || pred(p)));
-  }
-
-  function pickShowProgram(s, kind) {
-    if (kind === 'reveal') {
-      const pool = s.programs.filter((p) => !p.legacy && biddablePhase(p));
-      if (!pool.length) return null;
-      return pool.reduce((a, b) => ((b.launchTurn || 0) > (a.launchTurn || 0) ? b : a));
-    }
-    const pool = productionFor(s);
-    if (!pool.length) return null;
-    return pool.reduce((a, b) => ((b.delivered || 0) > (a.delivered || 0) ? b : a));
-  }
-
-  function pickShowAirline(s, program) {
-    const guests = AIRLINES.filter((a) => !program || a.bias === program.segment);
-    const pool = guests.length ? guests : AIRLINES;
-    return pool.reduce((a, b) => ((s.relations[b.id] || 0) > (s.relations[a.id] || 0) ? b : a), pool[0]);
-  }
-
-  function showOrderQty(kind, showTurn) {
-    if (kind === 'private') return 6;
-    return 8 + (((showTurn % 7) + 7) % 7);
-  }
-
-  function attachShowOrder(plan, s, program, airline, priceMult) {
-    if (!program || program.phase !== 'production' || !airline) return;
-    plan.order = {
-      airlineId: airline.id,
-      airlineName: airline.name,
-      programId: program.id,
-      qty: showOrderQty(plan.kind, plan.showTurn),
-      unitPrice: Math.round(program.listPrice * priceMult),
-      reqEtops: orderNeedsEtops(airline, program),
-    };
-  }
-
-  function activateAirshow(s) {
-    const plan = s.airshowPlan;
-    if (!plan || plan.activated) return;
-    if (s.turn < plan.showTurn) return;
-    plan.activated = true;
-    if ((plan.kind === 'booth' || plan.kind === 'reveal') && plan.programId) {
-      s.showHalo = { programId: plan.programId, untilTurn: s.turn + SEASON.airshowHaloQuarters, bonus: SEASON.airshowHalo };
-    }
-    if (plan.kind === 'reveal' && plan.programId) {
-      const p = s.programs.find((x) => x.id === plan.programId);
-      if (p && p.phase !== 'production') {
-        s.airshowReveal = {
-          programId: p.id,
-          deadlineTurn: s.turn + SEASON.airshowRevealDeadline,
-          showName: plan.showName,
-        };
-      }
-    }
-    if (plan.order) {
-      s.pendingShows.push({ dueTurn: s.turn + 1, ...plan.order });
-    }
-    pushLog(s, 'event', `${plan.showName}이 열렸다. ${plan.kindLabel}로 나갔다.`);
-  }
-
-  function paySeason(s, cost) {
-    s.cash -= cost;
-    s.pending.overhead += cost;
-  }
-
-  /** 에어쇼 출품 — 달력의 다음 쇼에만 건다. 고르지 않으면 아무 일도 없다. */
-  function commitAirshow(s, kind, programId) {
-    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
-    ensureShape(s);
-    const show = nextAirshow(s.turn);
-    if (!show) return { ok: false, error: '남은 에어쇼가 없습니다.' };
-    if (show.left > SEASON.airshowWindow) return { ok: false, error: '아직 출품 창이 열리지 않았습니다.' };
-    if (s.airshowPlan && s.airshowPlan.showTurn === show.turn) {
-      return { ok: false, error: '이미 이번 에어쇼 출품을 정했습니다.' };
-    }
-
-    const kinds = {
-      booth: { cost: SEASON.airshowBoothCost, label: '대형 부스' },
-      reveal: { cost: SEASON.airshowRevealCost, label: '신형 발표' },
-      private: { cost: SEASON.airshowPrivateCost, label: '비공개 상담' },
-    };
-    const spec = kinds[kind];
-    if (!spec) return { ok: false, error: '없는 출품 형식입니다.' };
-    if (s.cash < spec.cost) return { ok: false, error: `${fmtMoney(spec.cost)}이 부족합니다.` };
-
-    let program = programId ? s.programs.find((p) => p.id === programId) : pickShowProgram(s, kind);
-    if (kind === 'reveal') {
-      if (!program || program.legacy || !biddablePhase(program)) {
-        return { ok: false, error: '발표할 신형이 없습니다. 개발 40%를 넘긴 기종이 필요합니다.' };
-      }
-    }
-    if (kind === 'booth') {
-      if (!program || program.phase !== 'production') {
-        return { ok: false, error: '대형 부스는 양산 기종이 있어야 값을 합니다.' };
-      }
-    }
-
-    paySeason(s, spec.cost);
-    const plan = {
-      kind,
-      kindLabel: spec.label,
-      showId: show.id,
-      showName: show.name,
-      showTurn: show.turn,
-      programId: program ? program.id : null,
-      activated: false,
-    };
-
-    if (kind === 'booth') {
-      adjustReputation(s, SEASON.airshowBoothRep);
-      for (const a of AIRLINES) {
-        s.relations[a.id] = clamp((s.relations[a.id] ?? 40) + SEASON.airshowBoothRel, 0, 100);
-      }
-      attachShowOrder(plan, s, program, pickShowAirline(s, program), SEASON.airshowBoothPrice);
-      pushLog(
-        s,
-        'info',
-        `${show.name} 대형 부스에 ${fmtMoney(spec.cost)}을 걸었다. 모든 항공사와의 관계가 조금 올랐다.`,
-      );
-    } else if (kind === 'reveal') {
-      adjustReputation(s, SEASON.airshowRevealRep);
-      plan.programId = program.id;
-      pushLog(
-        s,
-        'info',
-        `${show.name}에서 ${program.name}을 발표하기로 했다 (${fmtMoney(spec.cost)}). ` +
-          (program.phase === 'production'
-            ? '이미 나는 기체라 약속은 지켜진 셈이다.'
-            : `취항이 ${SEASON.airshowRevealDeadline}분기 안에 안 되면 종이비행기 발표가 된다.`),
-      );
-    } else {
-      const a = topAirlineCustomer(s);
-      s.relations[a.id] = clamp((s.relations[a.id] ?? 40) + SEASON.airshowPrivateRel, 0, 100);
-      plan.airlineId = a.id;
-      const fit = productionFor(s, (p) => campaignFits(a, p))[0] || productionFor(s)[0];
-      if (fit) attachShowOrder(plan, s, fit, a, SEASON.airshowPrivatePrice);
-      pushLog(s, 'info', `${show.name}에서 ${a.name} 경영진만 따로 만난다 (${fmtMoney(spec.cost)}).`);
-    }
-
-    s.airshowPlan = plan;
-    if (s.turn >= show.turn) activateAirshow(s);
-    return { ok: true, cost: spec.cost, show };
-  }
-
-  function firstFlightGuests(s, program) {
-    const ranked = AIRLINES.filter((a) => a.bias === program.segment)
-      .map((a) => ({ a, rel: s.relations[a.id] ?? 40 }))
-      .sort((x, y) => y.rel - x.rel);
-    const pool = ranked.length ? ranked : AIRLINES.map((a) => ({ a, rel: s.relations[a.id] ?? 40 })).sort((x, y) => y.rel - x.rel);
-    return pool.slice(0, 2).map((x) => x.a);
-  }
-
-  function applyFirstFlight(s, p, kind, opts) {
-    p.firstFlight = kind;
-    p.firstFlightDue = undefined;
-    if (kind === 'private') {
-      pushLog(
-        s,
-        'program',
-        opts && opts.auto
-          ? `${p.name} 초도비행을 비공개로 치렀다 — 형식을 고르지 않아 기본값이 적용됐다.`
-          : `${p.name} 초도비행을 비공개로 치렀다. 기록은 남지만 객석은 비어 있다.`,
-      );
-      return;
-    }
-    p.flightFindingsAt = p.findings || 0;
-    p.flightWatchUntil = s.turn + SEASON.firstFlightWatch;
-    if (kind === 'invite') {
-      const guests = firstFlightGuests(s, p);
-      p.flightGuests = guests.map((a) => a.id);
-      p.flightBonusUntil = s.turn + SEASON.firstFlightInviteQuarters;
-      for (const a of guests) {
-        s.relations[a.id] = clamp((s.relations[a.id] ?? 40) + SEASON.firstFlightInviteRel, 0, 100);
-      }
-      pushLog(
-        s,
-        'good',
-        `${p.name} 초도비행에 ${guests.map((a) => a.name).join('·')}을 불렀다 (${fmtMoney(SEASON.firstFlightInviteCost)}). 그들이 본 것이 곧 다음 수주전의 점수다.`,
-      );
-      return;
-    }
-    adjustReputation(s, SEASON.firstFlightDemoRep);
-    for (const a of AIRLINES.filter((x) => x.bias === p.segment)) {
-      s.relations[a.id] = clamp((s.relations[a.id] ?? 40) + SEASON.firstFlightDemoRel, 0, 100);
-    }
-    pushLog(
-      s,
-      'good',
-      `${p.name} 공개 시범비행 (${fmtMoney(SEASON.firstFlightDemoCost)}). 업계가 지켜본다 — 심사가 깨끗하면 더 오르고, 지적이 나오면 그 자리에 있던 사람들이 기억한다.`,
-    );
-  }
-
-  function shameFirstFlight(s, p) {
-    if (p.flightShame) return;
-    if (typeof p.flightWatchUntil !== 'number' || s.turn >= p.flightWatchUntil) return;
-    if ((p.findings || 0) <= (p.flightFindingsAt || 0)) return;
-    p.flightShame = true;
-    if (p.firstFlight === 'invite') {
-      for (const id of p.flightGuests || []) {
-        s.relations[id] = clamp((s.relations[id] ?? 40) + SEASON.firstFlightInviteShameRel, 0, 100);
-      }
-      pushLog(s, 'bad', `${p.name} 초도비행에 불렀던 항공사가 심사 지적을 봤다. 관계가 깎인다.`);
-    } else if (p.firstFlight === 'demo') {
-      adjustReputation(s, SEASON.firstFlightDemoShameRep);
-      pushLog(s, 'bad', `${p.name} 공개 시범비행 직후 심사 지적이 나왔다. 객석이 가득했던 만큼 흉이 크다.`);
-    }
-  }
-
-  function stageFirstFlight(s, programId, kind) {
-    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
-    ensureShape(s);
-    const p = s.programs.find((x) => x.id === programId);
-    if (!p) return { ok: false, error: '프로그램을 찾을 수 없습니다.' };
-    if (p.phase !== 'cert') return { ok: false, error: '형식증명 심사 중인 기종만 초도비행을 치를 수 있습니다.' };
-    if (p.firstFlight) return { ok: false, error: '이미 초도비행 형식을 정했습니다.' };
-    if (kind !== 'private' && kind !== 'invite' && kind !== 'demo') {
-      return { ok: false, error: '없는 초도비행 형식입니다.' };
-    }
-    const cost = kind === 'invite' ? SEASON.firstFlightInviteCost : kind === 'demo' ? SEASON.firstFlightDemoCost : 0;
-    if (cost && s.cash < cost) return { ok: false, error: `${fmtMoney(cost)}이 부족합니다.` };
-    if (cost) paySeason(s, cost);
-    applyFirstFlight(s, p, kind);
-    return { ok: true, cost };
-  }
-
-  function campaignOptions(s) {
-    const out = [];
-    for (const a of AIRLINES) {
-      const programs = s.programs.filter((p) => campaignFits(a, p));
-      if (!programs.length) continue;
-      const program = programs.reduce((best, p) => {
-        const rank = (x) => (x.phase === 'production' ? 3 : x.phase === 'cert' ? 2 : 1) * 1e6 + (x.delivered || 0);
-        return rank(p) > rank(best) ? p : best;
-      });
-      out.push({
-        airlineId: a.id,
-        airlineName: a.name,
-        programId: program.id,
-        programName: program.name,
-        relation: Math.round(s.relations[a.id] ?? 40),
-      });
-    }
-    return out.sort((a, b) => b.relation - a.relation);
-  }
-
-  function startCampaign(s, airlineId, programId) {
-    if (s.gameOver) return { ok: false, error: '게임이 종료되었습니다.' };
-    ensureShape(s);
-    if (s.campaign) return { ok: false, error: '이미 진행 중인 수주 캠페인이 있습니다.' };
-    const a = airlineById(airlineId);
-    const p = s.programs.find((x) => x.id === programId);
-    if (!a || !p) return { ok: false, error: '대상 항공사나 기종이 없습니다.' };
-    if (!campaignFits(a, p)) return { ok: false, error: '그 항공사의 노선에 맞는 기종이 아닙니다.' };
-    if (s.cash < SEASON.campaignCost) return { ok: false, error: `${fmtMoney(SEASON.campaignCost)}이 부족합니다.` };
-    paySeason(s, SEASON.campaignCost);
-    s.relations[a.id] = clamp((s.relations[a.id] ?? 40) + SEASON.campaignStartRel, 0, 100);
-    s.campaign = {
-      airlineId: a.id,
-      airlineName: a.name,
-      programId: p.id,
-      programName: p.name,
-      startTurn: s.turn,
-      left: SEASON.campaignQuarters,
-      spent: SEASON.campaignCost,
-    };
-    pushLog(
-      s,
-      'info',
-      `${a.name} 수주 캠페인에 착수했다 (${fmtMoney(SEASON.campaignCost)} · ${SEASON.campaignQuarters}분기). ${p.name} 수주전에 +${SEASON.campaignBonus}점이 붙는다.`,
-    );
-    return { ok: true, cost: SEASON.campaignCost };
-  }
-
-  function resolveCampaign(s) {
-    const c = s.campaign;
-    if (!c) return;
-    s.campaign = null;
-    const a = airlineById(c.airlineId);
-    const p = s.programs.find((x) => x.id === c.programId);
-    if (!a || !p || !biddablePhase(p)) {
-      pushLog(s, 'bad', `${c.airlineName} 캠페인이 허공에 흩어졌다. 대상 기종이 없다.`);
-      return;
-    }
-    const rel = s.relations[a.id] ?? 40;
-    if (rel >= SEASON.campaignWinRel) {
-      const qty = 6 + (((c.startTurn % 5) + 5) % 5);
-      const placed = placeDirectOrder(s, {
-        airlineId: a.id,
-        airlineName: a.name,
-        program: p,
-        qty,
-        unitPrice: Math.round(p.listPrice * SEASON.campaignOrderPrice),
-        reqEtops: orderNeedsEtops(a, p),
-      });
-      adjustReputation(s, 1);
-      addMilestone(s, `${a.name}이 ${p.name} ${qty}기를 캠페인 끝에 발주했다.`, 0);
-      pushLog(
-        s,
-        'good',
-        `${a.name} 캠페인이 수주로 끝났다. ${p.name} ${qty}기 · 선수금 ${fmtMoney(placed.deposit)}.`,
-      );
-    } else if (rel < SEASON.campaignFailRel) {
-      s.relations[a.id] = clamp(rel + SEASON.campaignFailPenalty, 0, 100);
-      pushLog(s, 'bad', `${a.name}은 우리 제안을 경쟁사 압박용으로만 썼다. 캠페인 비용은 남고 관계는 조금 깎였다.`);
-    } else {
-      s.relations[a.id] = clamp(rel + SEASON.campaignWarmRel, 0, 100);
-      pushLog(s, 'info', `${a.name} 캠페인은 수주 없이 끝났다. 다만 구매부가 우리 이름을 기억한다.`);
-    }
-  }
-
-  function detachProgramSeasons(s, programId, why) {
-    if (s.campaign && s.campaign.programId === programId) {
-      pushLog(s, 'bad', `${s.campaign.airlineName} 캠페인이 ${why}과 함께 접혔다.`);
-      s.campaign = null;
-    }
-    if (s.airshowPlan && !s.airshowPlan.activated && s.airshowPlan.programId === programId) {
-      s.airshowPlan.programId = null;
-      s.airshowPlan.order = undefined;
-    }
-    if (s.showHalo && s.showHalo.programId === programId) s.showHalo = null;
-    if (s.airshowReveal && s.airshowReveal.programId === programId) {
-      adjustReputation(s, SEASON.vaporwareRep);
-      pushLog(s, 'bad', `${s.airshowReveal.showName}에서 발표한 기종이 ${why}됐다. 종이비행기 발표의 값을 지금 치른다.`);
-      s.airshowReveal = null;
-    }
-    s.pendingShows = (s.pendingShows || []).filter((o) => o.programId !== programId);
-  }
-
-  function tickSeasons(s) {
-    activateAirshow(s);
-
-    if (s.showHalo && s.turn >= s.showHalo.untilTurn) s.showHalo = null;
-
-    if (s.airshowReveal) {
-      const p = s.programs.find((x) => x.id === s.airshowReveal.programId);
-      if (p && p.phase === 'production') {
-        pushLog(s, 'good', `${s.airshowReveal.showName}에서 발표한 ${p.name}이 취항했다. 약속은 지켜졌다.`);
-        s.airshowReveal = null;
-      } else if (!p || p.phase === 'cancelled' || p.phase === 'sold' || s.turn >= s.airshowReveal.deadlineTurn) {
-        adjustReputation(s, SEASON.vaporwareRep);
-        pushLog(s, 'bad', `${s.airshowReveal.showName}에서 발표한 신형이 하늘에 없다. 종이비행기 발표로 남았다.`);
-        s.airshowReveal = null;
-      }
-    }
-
-    const due = (s.pendingShows || []).filter((o) => o.dueTurn <= s.turn);
-    s.pendingShows = (s.pendingShows || []).filter((o) => o.dueTurn > s.turn);
-    for (const o of due) {
-      const p = s.programs.find((x) => x.id === o.programId && x.phase === 'production');
-      const a = airlineById(o.airlineId);
-      if (!p || !a) {
-        pushLog(s, 'info', '에어쇼에서 타진하던 발주가 사그라들었다.');
-        continue;
-      }
-      const placed = placeDirectOrder(s, {
-        airlineId: a.id,
-        airlineName: a.name,
-        program: p,
-        qty: o.qty,
-        unitPrice: o.unitPrice,
-        reqEtops: o.reqEtops,
-      });
-      pushLog(s, 'good', `${a.name}이 에어쇼에서 본 ${p.name} ${o.qty}기를 발주했다. 선수금 ${fmtMoney(placed.deposit)}.`);
-    }
-
-    for (const p of s.programs) {
-      if (p.phase !== 'cert' || p.firstFlight || typeof p.firstFlightDue !== 'number') continue;
-      // turn++ 뒤에 부르므로 등호로 자르면 고를 분기가 한 분기 줄어든다.
-      if (s.turn > p.firstFlightDue) applyFirstFlight(s, p, 'private', { auto: true });
-    }
-
-    if (s.campaign) {
-      s.relations[s.campaign.airlineId] = clamp(
-        (s.relations[s.campaign.airlineId] ?? 40) + SEASON.campaignTickRel,
-        0,
-        100,
-      );
-      s.campaign.left -= 1;
-      if (s.campaign.left <= 0) resolveCampaign(s);
-    }
-  }
-
-  /**
-   * 한 해 수주 장부. 분기 이력의 ordersWon 을 더해, 올해가 회사 기록을 깼는지만 본다.
-   * 첫 기록(이전 최고가 0)은 장부만 갱신한다 — 개장 해의 승계 잔고 인도가 아닌
-   * **수주** 기록이므로 AFK 판은 조용하고, 첫 승리를 기념 마일스톤으로 부풀리지 않는다.
-   */
-  function closeYearBook(s) {
-    if (s.turn % 4 !== 3) return;
-    const rows = (s.history || []).filter((h) => Math.floor(h.turn / 4) === Math.floor(s.turn / 4));
-    const won = rows.reduce((a, h) => a + (h.ordersWon || 0), 0);
-    if (!(won > 0)) return;
-    const year = CONFIG.startYear + Math.floor(s.turn / 4);
-    const best = s.stats.bestYearOrders || 0;
-    if (won > best) {
-      s.stats.bestYearOrders = won;
-      if (best > 0) {
-        addMilestone(s, `${year}년 수주 ${num(won)}기 — 이 회사 한 해 최고.`, 1);
-      } else {
-        pushLog(s, 'info', `${year}년 수주 ${num(won)}기. 올해부터 한 해 장부가 열린다.`);
-      }
-    } else {
-      pushLog(s, 'info', `${year}년 수주 ${num(won)}기 (최고 ${num(best)}기).`);
-    }
-  }
-
-  function seasonStatus(s) {
-    const show = nextAirshow(s.turn);
-    const open = !!(show && show.left <= SEASON.airshowWindow);
-    const committed = !!(s.airshowPlan && show && s.airshowPlan.showTurn === show.turn);
-    const firstFlights = (s.programs || [])
-      .filter((p) => p.phase === 'cert' && !p.firstFlight)
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        left: typeof p.firstFlightDue === 'number' ? Math.max(0, p.firstFlightDue - s.turn) : 0,
-      }));
-    return {
-      show,
-      open,
-      committed,
-      plan: committed ? s.airshowPlan : null,
-      halo: s.showHalo && s.turn < s.showHalo.untilTurn ? s.showHalo : null,
-      reveal: s.airshowReveal,
-      campaign: s.campaign,
-      campaignOptions: s.campaign ? [] : campaignOptions(s),
-      firstFlights,
-      canBooth: open && !committed && productionFor(s).length > 0,
-      canReveal: open && !committed && s.programs.some((p) => !p.legacy && biddablePhase(p)),
-      canPrivate: open && !committed,
-      canCampaign: !s.campaign && campaignOptions(s).length > 0 && s.cash >= SEASON.campaignCost,
-      costs: {
-        booth: SEASON.airshowBoothCost,
-        reveal: SEASON.airshowRevealCost,
-        private: SEASON.airshowPrivateCost,
-        campaign: SEASON.campaignCost,
-        invite: SEASON.firstFlightInviteCost,
-        demo: SEASON.firstFlightDemoCost,
-      },
-      bonus: { campaign: SEASON.campaignBonus, halo: SEASON.airshowHalo, invite: SEASON.firstFlightInviteBonus },
-    };
-  }
-
   // ─────────────────────────────── 분기 정산 ───────────────────────────────
 
   function endTurn(s) {
@@ -2212,7 +1654,6 @@
       demand: Math.round(s.market.demandIndex * 1000) / 1000,
     });
     if (s.history.length > 120) s.history.shift();
-    closeYearBook(s);
 
     // 파산은 정산 결과로 확정한다. 다음 분기 이벤트를 먼저 굴리면 연구지원금 같은
     // 현금 유입이 이미 지급불능인 회사를 되살려 "즉시 종료" 규칙과 어긋난다.
@@ -2227,8 +1668,6 @@
     // 마지막 분기를 정산했다면 여기서 끝낸다. 존재하지 않는 다음 분기의 경쟁사 인도량이
     // 최종 점유율을 깎거나, 이벤트가 최종 현금·평판까지 바꾼다.
     if (s.turn >= CONFIG.totalTurns) {
-      // 열려 있는 계절 약속(캠페인·에어쇼 발주·초도비행)을 판이 끝나기 전에 닫는다.
-      tickSeasons(s);
       // 아직 오지 않은 약속을 여기서 모두 닫는다. 그러지 않으면 종료 직전에 고른
       // 정부 지원금·낙관적 전망 같은 선택이 이득만 챙기고 대가를 영영 피한다.
       resolvePendingOutcomes(s, rng, { final: true });
@@ -2285,7 +1724,6 @@
     reactToRivals(s);
     rollMarketNews(s);
     resolvePendingOutcomes(s, rng);
-    tickSeasons(s);
 
     // 지연 결과가 현금을 말렸다면 이번 분기 이벤트·사건은 굴리지 않는다. 그대로 두면
     // 연구지원금 같은 현금 유입이 이미 지급불능인 회사를 되살려, 확정될 파산이 없던
@@ -2714,16 +2152,11 @@
       p.testSpent += cost;
       p.testFleet++;
     }
-    // 초도비행은 로그 한 줄이 아니라 고르는 순간이다. 성공을 여기서 선언하면
-    // 프로그램 탭의 선택이 사후 연출이 된다. 심사 자체는 시험기가 뜨는 지금 시작한다.
-    p.firstFlight = null;
-    p.firstFlightDue = s.turn + SEASON.firstFlightGrace;
     pushLog(
       s,
       'program',
-      `${p.name} 설계 동결. 시험기 ${p.testFleet}대로 형식증명 심사에 들어간다 — ` +
-        `${num(p.testHoursNeeded)}시간 필요, 지금 속도로 ${certQuartersLeft(p)}분기. ` +
-        `초도비행을 어떻게 치를지 프로그램 탭에서 정하라.`,
+      `${p.name} 설계 동결 및 초도 비행 성공. 시험기 ${p.testFleet}대로 형식증명 심사에 들어간다 — ` +
+        `${num(p.testHoursNeeded)}시간 필요, 지금 속도로 ${certQuartersLeft(p)}분기.`,
     );
   }
 
@@ -2789,7 +2222,6 @@
           'bad',
           `${p.name} 형식증명 심사에서 설계 변경 요구가 나왔다. 재시험 ${num(addedHours)}시간, 대응 비용 ${fmtMoney(cost)}.`,
         );
-        shameFirstFlight(s, p);
       }
 
       p.testHours = (p.testHours || 0) + testHoursPerQuarter(p);
@@ -2817,11 +2249,6 @@
             'program',
             `${p.name}을 끝까지 만들어 본 경험이 조직에 남았다 (+${gained}). 다음 신규 설계의 기간과 필요 인력이 줄어든다.`,
           );
-        }
-        if (!p.firstFlight) applyFirstFlight(s, p, 'private', { auto: true });
-        if (p.firstFlight === 'demo' && !p.flightShame) {
-          adjustReputation(s, SEASON.firstFlightDemoWinRep);
-          pushLog(s, 'good', `${p.name} 공개 시범비행의 약속이 지켜졌다. 심사 지적 없이 취항했다 — 평판이 한 번 더 오른다.`);
         }
         pushLog(
           s,
@@ -4100,7 +3527,6 @@
     pushLog(s, 'bad', `${p.name} 프로그램을 ${fmtMoney(value)}에 매각했다. 도면은 ${buyerName}로 넘어갔다.`);
     // 시나리오의 기둥을 팔았다면 그 자리에서 알린다.
     tickScenario(s);
-    detachProgramSeasons(s, p.id, '프로그램 매각');
     return { ok: true, value, buyer: buyerName };
   }
 
@@ -4300,7 +3726,7 @@
         s.pending.revenue += deposit;
         s.stats.ordersWon += qty;
         s.pending.ordersWon = (s.pending.ordersWon || 0) + qty;
-        s.backlog.push({
+        const order = {
           id: 'ord-' + s.nextId++,
           airlineId,
           airlineName,
@@ -4314,7 +3740,18 @@
           reqEtops: !!reqEtops,
           // 정부 계약 표식 — 항공사발 취소 충격(발주 취소·9·11·연쇄 파산)이 비켜 간다.
           gov: !!gov,
-        });
+        };
+        s.backlog.push(order);
+        return order;
+      },
+      /**
+       * 이번 분기 공고 목록에 한 장을 보탠다. 에어쇼 부스처럼 "지금 현장에서
+       * 수주전이 열린다"가 다음 분기 갱신을 기다리면, 고른 자리와 입찰 자리가 어긋난다.
+       */
+      rfp: (plan) => {
+        const rfp = makeRfp(s, rng, plan);
+        s.rfps.push(rfp);
+        return rfp;
       },
     };
   }
@@ -5015,14 +4452,6 @@
     setBid,
     setBidTerms,
     decide,
-    commitAirshow,
-    startCampaign,
-    stageFirstFlight,
-    seasonStatus,
-    nextAirshow,
-    airshowAt,
-    campaignOptions,
-    SEASON,
     endTurn,
     eligiblePrograms,
     canBid,

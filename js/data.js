@@ -1140,59 +1140,6 @@
   /** 역사적 사건이 실제로 일어날 확률. 나머지는 가상 충격으로 대체된다. */
   const HISTORICAL_ODDS = 0.6;
 
-  /**
-   * 업계의 계절 — 파리·판버러는 해가 바뀌어도 같은 달에 선다.
-   *
-   * 무작위 결정 사건의 에어쇼(지역 박람회)와 겹치지 않는다. 이쪽은 **달력**이다.
-   * 플레이어가 출품을 고르지 않으면 아무 일도 없다 — 본류 난수와 기준 밸런스를
-   * 건드리지 않기 위해, 자동 벌금·자동 출품은 두지 않는다.
-   */
-  const AIRSHOWS = {
-    paris: { id: 'paris', name: '파리 에어쇼', venue: '르부르제', month: '6월' },
-    farnborough: { id: 'farnborough', name: '판버러 에어쇼', venue: '판버러', month: '7월' },
-  };
-
-  const SEASON = {
-    // 출품 창: 쇼 당일과 그 전 N분기. 4로 두면 쇼 간격(3~4분기)과 겹쳐
-    // 달력이 한 해도 안 접힌다. 3이면 모을 시간은 있고 사이가 한 분기는 쉰다.
-    airshowWindow: 3,
-    airshowHaloQuarters: 5,
-    airshowHalo: 2,
-    airshowRevealDeadline: 8,
-    airshowBoothCost: 220,
-    airshowRevealCost: 180,
-    airshowPrivateCost: 60,
-    airshowBoothPrice: 0.88,
-    airshowPrivatePrice: 0.9,
-    airshowBoothRel: 2,
-    airshowBoothRep: 2,
-    airshowPrivateRel: 10,
-    airshowRevealRep: 2,
-    vaporwareRep: -3,
-    campaignCost: 95,
-    campaignQuarters: 4,
-    campaignBonus: 2.5,
-    campaignStartRel: 3,
-    campaignTickRel: 1,
-    campaignOrderPrice: 0.92,
-    campaignWinRel: 58,
-    campaignFailRel: 42,
-    campaignWarmRel: 4,
-    campaignFailPenalty: -2,
-    firstFlightInviteCost: 45,
-    firstFlightDemoCost: 90,
-    firstFlightInviteBonus: 1.5,
-    firstFlightInviteQuarters: 5,
-    firstFlightInviteRel: 5,
-    firstFlightDemoRel: 2,
-    firstFlightDemoRep: 3,
-    firstFlightDemoWinRep: 2,
-    firstFlightDemoShameRep: -4,
-    firstFlightInviteShameRel: -3,
-    firstFlightWatch: 3,
-    firstFlightGrace: 2,
-  };
-
   root.AirlinerData = {
     CONFIG,
     SEGMENTS,
@@ -1229,7 +1176,5 @@
     HISTORICAL,
     FICTIONAL_SHOCKS,
     HISTORICAL_ODDS,
-    AIRSHOWS,
-    SEASON,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
