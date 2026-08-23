@@ -1869,3 +1869,75 @@ p.order-warn {
   margin: 6px 0 0;
   line-height: 1.5;
 }
+
+/* ── 지도 화면 (항공사 계층) ────────────────────────────────────────── */
+/* 해안선 배경 — 대륙이 없으면 점 45개가 허공에 뜬다. */
+.map-land {
+  fill: #1c2836;
+  stroke: #2b3a4d;
+  stroke-width: 0.5;
+}
+/* 클릭 과녁 — 보이는 점 위에 얹는 투명한 넓은 원. */
+.map-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+.map-sel {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+}
+.map-city.is-home {
+  fill: var(--accent);
+}
+/* 지도의 켜짐 상태 버튼 — 기존 .seg.on 과 같은 눈금이되 이름이 겹치지 않게 따로 둔다. */
+.panel button.ghost.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 어디로 갈까 — 도시 패널의 취항 목록. */
+.dest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.dest-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.dest-row b {
+  flex: 0 0 auto;
+}
+.dest-row span {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.dest-row i {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 12px;
+  color: var(--accent);
+}
+.dest-row.is-mine {
+  cursor: default;
+  opacity: 0.66;
+}
+.dest-row.is-mine i {
+  color: var(--muted);
+}
+.dest-row.on {
+  border-color: var(--accent);
+}
