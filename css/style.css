@@ -1732,8 +1732,9 @@ details.fold > table:first-of-type {
 }
 
 /* 끝난 판 — 둘러보기만 된다. 눌러 보기 전에는 못 쓴다는 걸 알 수 없는 버튼은
-   그 자체로 잘못된 화면이다. */
-.panel.over button:not([data-action='tab']),
+   그 자체로 잘못된 화면이다. `.view-ok` 는 상태를 안 바꾸는 둘러보기 버튼(지도의
+   도시·목적지 선택, 경쟁 노선 토글)이라 살려 둔다 — JS 쪽 VIEW_ONLY 와 같은 목록이다. */
+.panel.over button:not([data-action='tab']):not(.view-ok),
 .panel.over select {
   opacity: 0.4;
   pointer-events: none;

@@ -910,7 +910,7 @@
       if (St.isClosed(s.cityState[c.id] || {}, s.turn)) {
         return `<div class="dest-row is-mine"><b>${esc(c.name)}</b><span>${esc(info)}</span><i>폐쇄 중</i></div>`;
       }
-      return `<button class="dest-row${view.dest === c.id ? ' on' : ''}" data-action="map-dest" data-dest="${esc(c.id)}">
+      return `<button class="dest-row view-ok${view.dest === c.id ? ' on' : ''}" data-action="map-dest" data-dest="${esc(c.id)}">
         <b>${esc(c.name)}</b><span>${esc(info)}</span><i>개설 ›</i></button>`;
     };
 
@@ -941,7 +941,7 @@
       <div class="dest-list">${shown.map(destRow).join('')}</div>
       ${
         ranked.length > 14
-          ? `<button class="ghost wide" data-action="map-all">${view.all ? '수요 상위만 보기' : `전체 ${ranked.length}개 도시 보기`}</button>`
+          ? `<button class="ghost wide view-ok" data-action="map-all">${view.all ? '수요 상위만 보기' : `전체 ${ranked.length}개 도시 보기`}</button>`
           : ''
       }
     </div>`;
@@ -956,7 +956,7 @@
     const planeRow = (p) => {
       const t = s.types[p.typeId];
       const on = picked.has(p.id);
-      return `<button class="ghost${on ? ' on' : ''}" data-action="map-plane" data-plane="${p.id}">
+      return `<button class="ghost view-ok${on ? ' on' : ''}" data-action="map-plane" data-plane="${p.id}">
         ${on ? '✓ ' : ''}${esc(t.name)} · ${t.seats}석 · 기령 ${Math.floor(p.ageQuarters / 4)}년</button>`;
     };
     const ok = !q.blocked && q.chosen.length > 0 && q.maxFreq >= 1 && me.cash >= q.total;
@@ -980,15 +980,15 @@
 
       <h4>편수와 운임</h4>
       <span class="row">
-        <button class="ghost" data-action="map-freq" data-delta="-1">편수 −1</button>
+        <button class="ghost view-ok" data-action="map-freq" data-delta="-1">편수 −1</button>
         <b>주 ${q.freq}왕복</b>
-        <button class="ghost" data-action="map-freq" data-delta="1">편수 +1</button>
+        <button class="ghost view-ok" data-action="map-freq" data-delta="1">편수 +1</button>
         <span class="muted">기재 한계 ${q.cap.maxFreq} · 슬롯 한계 ${Math.max(0, q.maxFreq)}</span>
       </span>
       <span class="row">
-        <button class="ghost" data-action="map-fare" data-delta="-0.05">운임 −5%</button>
+        <button class="ghost view-ok" data-action="map-fare" data-delta="-0.05">운임 −5%</button>
         <b>${Math.round(q.fare * 100)}%</b>
-        <button class="ghost" data-action="map-fare" data-delta="0.05">운임 +5%</button>
+        <button class="ghost view-ok" data-action="map-fare" data-delta="0.05">운임 +5%</button>
         <span class="muted">낮으면 관광객이, 높으면 출장객이 남는다</span>
       </span>
 
@@ -1059,7 +1059,7 @@
         </svg>
       </div>
       <span class="row">
-        <button class="ghost${v.rivals === false ? '' : ' on'}" data-action="map-rivals">경쟁사 노선</button>
+        <button class="ghost view-ok${v.rivals === false ? '' : ' on'}" data-action="map-rivals">경쟁사 노선</button>
         <span class="muted"><b class="map-key-mine">굵은 선</b>이 우리 노선 ${mine.length}개 · 전체 ${mine.length + s.routes.filter((r) => r.active && r.airlineId !== meId).length}개</span>
       </span>
     </div>

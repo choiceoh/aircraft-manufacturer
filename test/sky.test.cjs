@@ -3708,3 +3708,29 @@ test('지도: 이미 있는 구간은 견적에서 막힌다 — 폼을 열어 �
   assert.strictEqual(mapOpen(s, me.id, again).ok, false);
   assert.strictEqual(me.cash, cashBefore, '중복 구간에서 슬롯값이 나갔다');
 });
+
+test('지도: 둘러보기 버튼은 끝난 판에서도 산다는 표식을 단다', () => {
+  // JS 의 VIEW_ONLY 만으로는 모자라다 — 끝난 판의 CSS(`,panel.over`)가 버튼의
+  // 클릭을 통째로 죽이므로, 상태를 안 바꾸는 버튼은 `view-ok` 로 살려 둬야 한다.
+  // 돈이 오가는 개설·슬롯 매매는 표식이 없어야 한다 — 그쪽은 죽는 게 맞다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const dest = C.CITIES.map((c) => c.id).find(
+    (id) => id !== me.home && idle.some((p) => s.types[p.typeId].range >= C.distance(me.home, id)),
+  );
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(me.home, dest)).slice(0, 1);
+  const html = SP.renderMap(s, me.id, {
+    city: me.home, dest, planes: usable.map((p) => p.id), freq: 3, fare: 1, rivals: true, all: true,
+  });
+  for (const action of ['map-dest', 'map-all', 'map-rivals', 'map-plane', 'map-freq', 'map-fare']) {
+    const re = new RegExp(`<button class="[^"]*" data-action="${action}"`, 'g');
+    for (const m of html.match(re) || []) {
+      assert.ok(/view-ok/.test(m), `${action} 버튼에 view-ok 가 없다 — 끝난 판에서 죽는다: ${m}`);
+    }
+  }
+  for (const action of ['map-open', 'map-slot']) {
+    const re = new RegExp(`<button class="[^"]*view-ok[^"]*" data-action="${action}"`);
+    assert.ok(!re.test(html), `${action} 은 돈이 오가는 버튼인데 view-ok 가 붙었다`);
+  }
+});
