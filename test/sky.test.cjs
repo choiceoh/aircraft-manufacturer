@@ -13,7 +13,7 @@ const path = require('node:path');
 
 const JS = path.join(__dirname, '..', 'js');
 // 기종 어댑터는 설계 평가기로 값을 매기므로 제조사 쪽 모듈이 먼저 있어야 한다.
-for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/cargo.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js', 'sky/group.js']) {
+for (const f of ['rng.js', 'fleet.js', 'engines.js', 'airframe.js', 'data.js', 'decisions.js', 'charts.js', 'design.js', 'bidding.js', 'engine.js', 'sky/cities.js', 'sky/world.js', 'sky/demand.js', 'sky/types.js', 'sky/economics.js', 'sky/market.js', 'sky/cargo.js', 'sky/state.js', 'sky/actions.js', 'sky/ai.js', 'panels.js', 'sky/panels.js', 'sky/group.js']) {
   require(path.join(JS, f));
 }
 
@@ -3510,4 +3510,229 @@ test('화물: 취항 점수가 NaN 을 만들지 않는다', () => {
   const score = Ai.attractiveness(s, a.id, from, to, type);
   assert.ok(Number.isFinite(score), `취항 점수가 ${score} 다`);
   assert.ok(score > 0, '점수가 0 이하면 화물 항이 실렸는지 알 수 없다');
+});
+
+// ─────────────────────────────── 지도 ───────────────────────────────
+
+test('세계: 해안선 데이터가 온전히 풀리고 한 번만 풀린다', () => {
+  // sky-tycoon 의 WorldShapes 산출물을 그대로 옮긴 것 — 개수가 다르면 옮기다 흘린 것이다.
+  const W = globalThis.AirlinerWorld;
+  const lm = W.landmasses();
+  assert.strictEqual(lm.length, 186, '폴리곤 수가 다르다');
+  let pts = 0;
+  for (const rings of lm) {
+    for (const ring of rings) {
+      pts += ring.length / 2;
+      for (let i = 0; i < ring.length; i += 2) {
+        assert.ok(Math.abs(ring[i]) <= 180.01 && Math.abs(ring[i + 1]) <= 90.01, `좌표가 지구 밖이다 (${ring[i]}, ${ring[i + 1]})`);
+      }
+    }
+  }
+  assert.strictEqual(pts, 10182, '점 수가 다르다');
+  // 데이터는 안 변하므로 캐시가 같은 참조를 돌려줘야 한다 — 클릭마다 다시 풀면 굼떠진다.
+  assert.strictEqual(W.landmasses(), lm, '부를 때마다 새로 풀고 있다');
+});
+
+/** 지도 개설 버튼과 같은 순서 — 견적을 다시 내고, 슬롯을 사고, 연다. */
+function mapOpen(s, meId, view) {
+  const q = SP.mapQuote(s, meId, view);
+  if (!q || q.blocked || !q.chosen.length || q.maxFreq < 1) return { ok: false, q };
+  if (q.needFrom > 0 && !Act.buySlots(s, meId, q.from, q.needFrom).ok) return { ok: false, q };
+  if (q.needTo > 0 && !Act.buySlots(s, meId, q.to, q.needTo).ok) return { ok: false, q };
+  return { ok: Act.openRoute(s, meId, q.from, q.to, q.chosen.map((p) => p.id), q.freq, q.fare).ok, q };
+}
+
+test('지도: 슬롯이 하나도 없는 두 도시 사이도 연다 — 견적 그대로', () => {
+  // 추천 목록만 있으면 항로를 내 뜻대로 못 놓는다. 지도는 어느 구간이든 열 수 있어야
+  // 하고, 화면이 보여준 총비용과 실제로 나가는 돈이 같아야 한다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  assert.ok(idle.length >= 2, '유휴기가 둘은 있어야 검사가 산다');
+  const range = Math.max(...idle.map((p) => s.types[p.typeId].range));
+  // 내가 슬롯을 하나도 안 가진 두 도시를 고른다.
+  const bare = C.CITIES.filter((c) => !(me.slots[c.id] > 0));
+  let from = null;
+  let to = null;
+  outer: for (const a of bare) {
+    for (const b of bare) {
+      if (a.id !== b.id && C.distance(a.id, b.id) < range * 0.9) { from = a.id; to = b.id; break outer; }
+    }
+  }
+  assert.ok(from && to, '슬롯 없는 도시 쌍이 없으면 검사가 아무것도 안 잰다');
+
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(from, to)).slice(0, 2);
+  const view = { city: from, dest: to, planes: usable.map((p) => p.id), freq: 4, fare: 1.1 };
+  const q = SP.mapQuote(s, me.id, view);
+  assert.ok(q && q.chosen.length === usable.length, '고른 기재가 견적에 다 실려야 한다');
+  assert.ok(q.needFrom >= q.freq && q.needTo >= q.freq, '슬롯이 없으니 편수만큼 사야 한다');
+
+  const cashBefore = me.cash;
+  const r = mapOpen(s, me.id, view);
+  assert.strictEqual(r.ok, true, '슬롯 없는 구간이 안 열렸다');
+  assert.ok(Math.abs(cashBefore - me.cash - q.total) < 1, `보여준 ${Math.round(q.total)} 과 다르게 ${Math.round(cashBefore - me.cash)} 이 나갔다`);
+  const route = s.routes.find((x) => x.airlineId === me.id && C.pairKey(x.from, x.to) === C.pairKey(from, to));
+  assert.ok(route, '노선이 안 생겼다');
+  assert.strictEqual(route.freq, q.freq);
+  assert.ok(Math.abs(route.fareMul - q.fare) < 1e-9, '정한 운임이 안 실렸다');
+  const assigned = St.planesOf(s, me.id).filter((p) => p.routeId === route.id);
+  assert.strictEqual(assigned.length, usable.length, '고른 기재가 다 배속되지 않았다');
+  assert.deepStrictEqual(assigned.map((p) => p.id).sort(), usable.map((p) => p.id).sort(), '다른 기재가 배속됐다');
+});
+
+test('지도: 미분양이 바닥난 공항은 편수의 상한이 된다', () => {
+  // 이 상한이 없으면 견적은 통과하는데 목적지 슬롯 매입에서 물려, 출발지 슬롯만 사 놓고
+  // 노선은 못 여는 상태로 남는다 — 보여준 값과 다른 돈이 나간다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const range = Math.max(...idle.map((p) => s.types[p.typeId].range));
+  const bare = C.CITIES.filter((c) => !(me.slots[c.id] > 0));
+  let from = null;
+  let to = null;
+  outer: for (const a of bare) {
+    for (const b of bare) {
+      if (a.id !== b.id && C.distance(a.id, b.id) < range * 0.9) { from = a.id; to = b.id; break outer; }
+    }
+  }
+  assert.ok(from && to, '도시 쌍이 없으면 검사가 아무것도 안 잰다');
+  // 목적지의 미분양을 통째로 말린다 — 다른 회사가 다 가져간 공항.
+  const other = s.airlines.find((a) => a.id !== me.id);
+  other.slots[to] = (other.slots[to] || 0) + Act.unsoldSlots(s, to);
+  assert.strictEqual(Act.unsoldSlots(s, to), 0, '미분양이 말라야 검사가 산다');
+
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(from, to)).slice(0, 1);
+  const view = { city: from, dest: to, planes: usable.map((p) => p.id), freq: 3, fare: 1 };
+  const q = SP.mapQuote(s, me.id, view);
+  assert.strictEqual(q.maxFreq, 0, `살 수 있는 슬롯이 없는데 상한이 ${q.maxFreq} 다`);
+
+  const slotsBefore = me.slots[from] || 0;
+  const cashBefore = me.cash;
+  const r = mapOpen(s, me.id, view);
+  assert.strictEqual(r.ok, false, '열릴 수 없는 구간이 열렸다');
+  assert.strictEqual(me.slots[from] || 0, slotsBefore, '출발지 슬롯만 사 놓고 노선은 못 열었다');
+  assert.strictEqual(me.cash, cashBefore, '아무것도 못 열었는데 돈이 나갔다');
+});
+
+test('지도: 화면이 해안선·클릭 과녁·도시 패널·개설 폼을 다 싣는다', () => {
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const home = me.home;
+  const dest = C.CITIES.map((c) => c.id).find(
+    (id) => id !== home && idle.some((p) => s.types[p.typeId].range >= C.distance(home, id)),
+  );
+  assert.ok(dest, '갈 수 있는 목적지가 없으면 검사가 아무것도 안 잰다');
+
+  const base = { city: home, dest: null, planes: [], freq: 3, fare: 1, rivals: true, all: false };
+  const html = SP.renderMap(s, me.id, base);
+  assert.ok(/map-land/.test(html), '해안선이 없다 — 점 45개가 허공에 뜬다');
+  assert.strictEqual((html.match(/data-action="map-city"/g) || []).length, C.CITIES.length, '도시 전부가 클릭 과녁을 가져야 한다');
+  // 과녁은 <button> 이 아니라 SVG 원이다 — 이름과 초점이 없으면 키보드로 도시를 못 고른다.
+  assert.strictEqual((html.match(/tabindex="0" role="button" aria-label=/g) || []).length, C.CITIES.length, '과녁에 이름·초점이 없다');
+  // 지도가 role="img" 면 통째 그림이 되어 안의 버튼 45개가 접근성 트리에서 숨는다.
+  assert.ok(!/svg class="map"[^>]*role="img"/.test(html), '지도가 그림으로 선언돼 도시 버튼이 보조기기에 안 잡힌다');
+  assert.ok((html.match(/data-action="map-dest"/g) || []).length >= 10, '목적지 목록이 없다');
+  assert.ok(!/data-action="map-open"/.test(html), '목적지를 안 골랐는데 개설 폼이 떴다');
+
+  const all = SP.renderMap(s, me.id, Object.assign({}, base, { all: true }));
+  const rows = (all.match(/class="dest-row/g) || []).length;
+  assert.strictEqual(rows, C.CITIES.length - 1, `전체 보기인데 ${rows}개 도시만 실렸다 — 어디로든 갈 수 있어야 한다`);
+
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(home, dest)).slice(0, 1);
+  const composing = SP.renderMap(s, me.id, Object.assign({}, base, { dest, planes: usable.map((p) => p.id) }));
+  assert.ok(/data-action="map-open"/.test(composing), '개설 버튼이 없다');
+  assert.ok(/data-action="map-plane"/.test(composing), '기재를 고를 수 없다');
+  assert.ok(/data-action="map-freq"/.test(composing) && /data-action="map-fare"/.test(composing), '편수·운임 조절이 없다');
+  assert.ok(/개설 비용/.test(composing), '비용을 안 보여주고 연다');
+});
+
+test('지도: 폐쇄된 공항은 슬롯을 사기 전에 막힌다', () => {
+  // `openRoute` 도 폐쇄를 거르지만 그건 슬롯을 산 **뒤**다 — 견적에서 안 거르면
+  // 출발지 슬롯값과 임차 의무만 남기고 노선은 못 연다. 보여준 값과 다른 돈이 나간다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const range = Math.max(...idle.map((p) => s.types[p.typeId].range));
+  const bare = C.CITIES.filter((c) => !(me.slots[c.id] > 0));
+  let from = null;
+  let to = null;
+  outer: for (const a of bare) {
+    for (const b of bare) {
+      if (a.id !== b.id && C.distance(a.id, b.id) < range * 0.9) { from = a.id; to = b.id; break outer; }
+    }
+  }
+  assert.ok(from && to, '도시 쌍이 없으면 검사가 아무것도 안 잰다');
+  s.cityState[to] = Object.assign({}, s.cityState[to], { closedUntilTurn: s.turn + 4 });
+
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(from, to)).slice(0, 1);
+  const view = { city: from, dest: to, planes: usable.map((p) => p.id), freq: 3, fare: 1 };
+  const q = SP.mapQuote(s, me.id, view);
+  assert.ok(q && q.blocked, '폐쇄된 목적지인데 견적이 서 있다');
+
+  const cashBefore = me.cash;
+  const slotsBefore = me.slots[from] || 0;
+  const r = mapOpen(s, me.id, view);
+  assert.strictEqual(r.ok, false, '폐쇄된 구간이 열렸다');
+  assert.strictEqual(me.cash, cashBefore, '못 여는 구간인데 돈이 나갔다');
+  assert.strictEqual(me.slots[from] || 0, slotsBefore, '출발지 슬롯만 사 놓고 노선은 못 열었다');
+});
+
+test('지도: 이미 있는 구간은 견적에서 막힌다 — 폼을 열어 둔 사이 세상이 변해도', () => {
+  // 취항 탭에서 같은 구간을 먼저 열었을 수 있다. 견적이 그걸 모르면 슬롯을 또 사고
+  // `openRoute` 의 중복 검사에서 물린다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const range = Math.max(...idle.map((p) => s.types[p.typeId].range));
+  const bare = C.CITIES.filter((c) => !(me.slots[c.id] > 0));
+  let from = null;
+  let to = null;
+  outer: for (const a of bare) {
+    for (const b of bare) {
+      if (a.id !== b.id && C.distance(a.id, b.id) < range * 0.9) { from = a.id; to = b.id; break outer; }
+    }
+  }
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(from, to));
+  const view = { city: from, dest: to, planes: [usable[0].id], freq: 2, fare: 1 };
+  assert.strictEqual(mapOpen(s, me.id, view).ok, true, '첫 개설이 돼야 검사가 산다');
+
+  // 같은 구간을 다시 — 다른 기재로.
+  const again = { city: from, dest: to, planes: [usable[1].id], freq: 2, fare: 1 };
+  const q = SP.mapQuote(s, me.id, again);
+  assert.ok(q && q.blocked, '이미 있는 구간인데 견적이 서 있다');
+  const cashBefore = me.cash;
+  assert.strictEqual(mapOpen(s, me.id, again).ok, false);
+  assert.strictEqual(me.cash, cashBefore, '중복 구간에서 슬롯값이 나갔다');
+});
+
+test('지도: 둘러보기 버튼은 끝난 판에서도 산다는 표식을 단다', () => {
+  // JS 의 VIEW_ONLY 만으로는 모자라다 — 끝난 판의 CSS(`,panel.over`)가 버튼의
+  // 클릭을 통째로 죽이므로, 상태를 안 바꾸는 버튼은 `view-ok` 로 살려 둬야 한다.
+  // 돈이 오가는 개설·슬롯 매매는 표식이 없어야 한다 — 그쪽은 죽는 게 맞다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const dest = C.CITIES.map((c) => c.id).find(
+    (id) => id !== me.home && idle.some((p) => s.types[p.typeId].range >= C.distance(me.home, id)),
+  );
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(me.home, dest)).slice(0, 1);
+  const html = SP.renderMap(s, me.id, {
+    city: me.home, dest, planes: usable.map((p) => p.id), freq: 3, fare: 1, rivals: true, all: true,
+  });
+  for (const action of ['map-dest', 'map-all', 'map-rivals', 'map-plane', 'map-freq', 'map-fare']) {
+    const re = new RegExp(`<button class="[^"]*" data-action="${action}"`, 'g');
+    for (const m of html.match(re) || []) {
+      assert.ok(/view-ok/.test(m), `${action} 버튼에 view-ok 가 없다 — 끝난 판에서 죽는다: ${m}`);
+    }
+  }
+  for (const action of ['map-open', 'map-slot']) {
+    const re = new RegExp(`<button class="[^"]*view-ok[^"]*" data-action="${action}"`);
+    assert.ok(!re.test(html), `${action} 은 돈이 오가는 버튼인데 view-ok 가 붙었다`);
+  }
 });

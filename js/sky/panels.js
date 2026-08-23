@@ -14,6 +14,7 @@
   const St = root.AirlinerSkyState;
   const A = root.AirlinerSkyActions;
   const Ai = root.AirlinerSkyAi;
+  const Market = root.AirlinerSkyMarket;
   const P = root.AirlinerPanels;
   const Charts = root.AirlinerCharts;
 
@@ -764,27 +765,254 @@
   /**
    * 노선망 지도 — 라이브러리 없이 SVG 문자열로 만든다(`js/charts.js` 와 같은 규칙).
    *
+   * sky-tycoon 의 NetworkScreen 을 옮긴 것이다: 지도에서 도시를 **누르면** 그 도시의
+   * 패널이 열리고, 거기서 슬롯을 사고 팔며, **어느 도시로든** 노선을 짠다 — 기재를
+   * 여러 대 고르고 편수와 운임까지 정해서. 추천 목록(취항 탭)은 "기계가 좋다고 보는
+   * 곳"이고, 여기는 "내가 가고 싶은 곳"이다. 추천만 있으면 항로를 내 뜻대로 못 놓는다.
+   *
    * 도시 이름은 **viewBox 밖 HTML 이 아니라** 안에 둔다. 여기서는 글자가 지도와 함께
    * 줄어드는 편이 맞다 — 라벨만 원래 크기로 남으면 도시가 촘촘한 유럽이 통째로 뭉갠다.
-   * 대신 큰 공항만 이름을 단다.
+   * 대신 큰 공항과 선택한 도시만 이름을 단다.
    *
    * 좁은 화면에서는 지도를 폭에 맞추지 않고 **가로로 흐르게** 둔다. 420px 에 세계를
    * 우겨 넣으면 유럽이 점 하나가 되어 아무것도 못 읽는다 (본문은 여전히 안 넘친다 —
    * 흐르는 것은 이 컨테이너 안뿐이다).
    */
-  function renderMap(s, meId) {
-    const W = 1000;
-    const H = 500;
-    // 위도 60°N~45°S 만 쓴다. 극지방까지 그리면 아무 도시도 없는 띠가 위아래로 남아
-    // 정작 도시가 몰린 띠가 얇아진다 (45개 도시가 다 이 안에 있다).
-    const LAT_TOP = 60;
-    const LAT_BOTTOM = -45;
-    const xy = (c) => ({
-      x: (Cities.project(c.lat, c.lon).x) * W,
-      y: ((LAT_TOP - c.lat) / (LAT_TOP - LAT_BOTTOM)) * H,
-    });
+  const MAP_W = 1000;
+  const MAP_H = 500;
+  // 위도 60°N~45°S 만 쓴다. 극지방까지 그리면 아무 도시도 없는 띠가 위아래로 남아
+  // 정작 도시가 몰린 띠가 얇아진다 (45개 도시가 다 이 안에 있다).
+  const MAP_LAT_TOP = 60;
+  const MAP_LAT_BOTTOM = -45;
+  const mapX = (lon) => ((lon + 180) / 360) * MAP_W;
+  const mapY = (lat) => ((MAP_LAT_TOP - lat) / (MAP_LAT_TOP - MAP_LAT_BOTTOM)) * MAP_H;
+
+  let coastCache = null;
+
+  /**
+   * 해안선 배경 — 대륙이 없으면 점 45개가 허공에 떠서 어디가 어딘지 읽을 수 없다.
+   *
+   * 데이터(`js/sky/world.js`)는 판이 끝나도 안 변하므로 **한 번만** 문자열로 굽는다 —
+   * 1만 점을 클릭마다 다시 찍으면 도시 선택이 눈에 띄게 굼떠진다. 링에 구멍(내해)이
+   * 있으므로 even-odd 로 채운다 — 단순 채움이면 카스피해가 육지로 칠해진다.
+   */
+  function coastline() {
+    if (coastCache !== null) return coastCache;
+    const World = root.AirlinerWorld;
+    if (!World) return (coastCache = '');
+    const parts = [];
+    for (const rings of World.landmasses()) {
+      // 화면 밖 육지는 통째로 건너뛴다 — 남극이 여기서 걸러진다.
+      let visible = false;
+      for (let i = 1; i < rings[0].length && !visible; i += 2) {
+        const lat = rings[0][i];
+        if (lat > MAP_LAT_BOTTOM && lat < MAP_LAT_TOP) visible = true;
+      }
+      if (!visible) continue;
+      for (const ring of rings) {
+        let d = '';
+        for (let i = 0; i < ring.length; i += 2) {
+          d += `${i ? 'L' : 'M'}${mapX(ring[i]).toFixed(1)} ${mapY(ring[i + 1]).toFixed(1)}`;
+        }
+        parts.push(d + 'Z');
+      }
+    }
+    coastCache = `<path class="map-land" fill-rule="evenodd" d="${parts.join('')}" />`;
+    return coastCache;
+  }
+
+  /**
+   * 개설 폼의 견적 — **화면과 명령이 같은 값을 봐야 한다.**
+   *
+   * 화면이 이 함수로 보여주고, 개설 버튼도 이 함수를 다시 불러 그대로 집행한다.
+   * 따로 세면 언젠가 한쪽만 고쳐져, 보여준 값과 다른 돈이 빠져나간다.
+   *
+   * 슬롯은 모자라면 **사서** 연다(취항 탭과 같은 규칙) — 다만 공항의 미분양이 바닥나면
+   * 거기가 편수의 상한이다. 이 상한을 안 걸면 견적은 통과하는데 슬롯 매입에서 물려,
+   * 한쪽 공항 슬롯만 사 놓고 노선은 못 여는 상태로 남는다.
+   */
+  function mapQuote(s, meId, view) {
+    const from = view.city;
+    const to = view.dest;
+    if (!from || !to || from === to) return null;
+    const a = Cities.get(from);
+    const b = Cities.get(to);
+    if (!a || !b) return null;
+    const dist = Cities.distance(from, to);
+    // **막힌 구간은 슬롯을 사기 전에 거른다.** `openRoute` 도 같은 검사를 하지만
+    // 그건 슬롯을 산 **뒤**라, 여기서 안 거르면 견적은 통과하고 개설에서 물려 —
+    // 노선 없이 슬롯값과 임차 의무만 남는다. 다른 탭에서 같은 구간을 먼저 연 경우도
+    // 같다: 폼을 열어 둔 사이 세상이 변할 수 있다.
+    let blocked = '';
+    if (St.isClosed(s.cityState[from] || {}, s.turn) || St.isClosed(s.cityState[to] || {}, s.turn)) {
+      blocked = '공항이 폐쇄 중이다 — 열릴 때까지 개설할 수 없다.';
+    } else if (
+      s.routes.some((r) => r.airlineId === meId && r.active && Cities.pairKey(r.from, r.to) === Cities.pairKey(from, to))
+    ) {
+      blocked = '이미 같은 구간에 노선이 있다.';
+    }
+    const idle = St.planesOf(s, meId)
+      .filter((p) => p.routeId === null && p.checkUntilTurn !== s.turn)
+      .filter((p) => Econ.canFly(s.types[p.typeId], dist))
+      .sort((x, y) => s.types[y.typeId].seats - s.types[x.typeId].seats || x.id - y.id);
+    const picked = new Set(view.planes || []);
+    const chosen = idle.filter((p) => picked.has(p.id));
+    const cap = chosen.length ? Econ.capacity(chosen, dist, (t) => s.types[t]) : { maxFreq: 0, avgSeats: 0 };
+    const roomFrom = A.freeSlots(s, meId, from) + A.unsoldSlots(s, from);
+    const roomTo = A.freeSlots(s, meId, to) + A.unsoldSlots(s, to);
+    const maxFreq = Math.min(cap.maxFreq, roomFrom, roomTo);
+    const freq = Math.max(1, Math.min(view.freq || 1, Math.max(1, maxFreq)));
+    const needFrom = Math.max(0, freq - A.freeSlots(s, meId, from));
+    const needTo = Math.max(0, freq - A.freeSlots(s, meId, to));
+    const slotCost = A.slotCost(s, meId, from, needFrom) + A.slotCost(s, meId, to, needTo);
+    const setupCost = A.routeSetupCost(s, from, to);
+    const fare = Math.min(A.FARE_MAX_MUL, Math.max(A.FARE_MIN_MUL, view.fare || 1));
+    return {
+      from, to, dist, idle, chosen, cap, maxFreq, freq, needFrom, needTo, blocked,
+      slotCost, setupCost, total: slotCost + setupCost, fare,
+      seats: Econ.quarterlySeats(freq, cap.avgSeats),
+      demand: St.demandFor(s, a, b).total,
+    };
+  }
+
+  /** 선택한 도시의 패널 — 도시 정보 · 슬롯 매매 · 어디로든 가는 취항 목록. */
+  function cityCard(s, meId, view) {
+    const city = Cities.get(view.city);
+    if (!city) return '';
+    const me = St.airline(s, meId);
+    const owned = (me.slots || {})[city.id] || 0;
+    const used = A.usedSlots(s, meId, city.id);
+    const idle = Math.max(0, owned - used);
+    const unsold = A.unsoldSlots(s, city.id);
+    const rent = St.slotRent(s, meId, city.id);
+    const closed = St.isClosed(s.cityState[city.id] || {}, s.turn);
+    const dev = (s.cityState[city.id] || {}).dev || 1;
+
+    const mineKeys = new Set(
+      St.routesOf(s, meId).filter((r) => r.active).map((r) => Cities.pairKey(r.from, r.to)),
+    );
+    // 수요 상위만 보여주면 추천은 깔끔하지만, 양쪽 도시가 서로를 밀어내는 한산한 노선은
+    // 개설 화면에 영영 닿지 못한다 — 시뮬레이션은 지원하는데도. 기본은 상위, 펼치면 전 도시.
+    const ranked = Cities.CITIES.filter((c) => c.id !== city.id)
+      .map((c) => ({ c, demand: St.demandFor(s, city, c).total }))
+      .sort((x, y) => y.demand - x.demand);
+    const shown = view.all ? ranked : ranked.slice(0, 14);
+    const destRow = ({ c, demand }) => {
+      const mine = mineKeys.has(Cities.pairKey(city.id, c.id));
+      const rivals = s.routes.filter(
+        (r) => r.active && r.airlineId !== meId && Cities.pairKey(r.from, r.to) === Cities.pairKey(city.id, c.id),
+      ).length;
+      const info = `${num(Cities.distance(city.id, c.id))}km · 분기 수요 ${num(demand)} · ${
+        mine ? '우리 노선' : rivals > 0 ? `경쟁 ${rivals}사` : '미개척'
+      } · 로컬 ${Market.localStrengthLabel(city, c)}`;
+      if (mine) return `<div class="dest-row is-mine"><b>${esc(c.name)}</b><span>${esc(info)}</span><i>취항 중</i></div>`;
+      // 폐쇄된 공항은 폼까지 갈 것도 없다 — 누르게 해 놓고 개설에서 물리면 헛걸음이다.
+      if (St.isClosed(s.cityState[c.id] || {}, s.turn)) {
+        return `<div class="dest-row is-mine"><b>${esc(c.name)}</b><span>${esc(info)}</span><i>폐쇄 중</i></div>`;
+      }
+      return `<button class="dest-row view-ok${view.dest === c.id ? ' on' : ''}" data-action="map-dest" data-dest="${esc(c.id)}">
+        <b>${esc(c.name)}</b><span>${esc(info)}</span><i>개설 ›</i></button>`;
+    };
+
+    return `<div class="card full">
+      <h3>${esc(city.name)} <span class="muted">${esc(city.code)} · ${esc(Cities.REGIONS[city.region] || '')}${
+        closed ? ' · 폐쇄 중' : ''
+      }</span></h3>
+      <div class="sky-stats">
+        ${stat('정치·경제 비중', num(city.standing * dev))}
+        ${stat('관광 매력', num(city.tour))}
+        ${stat('착륙료', `표준의 ${city.fee.toFixed(2)}배`)}
+      </div>
+
+      <h4>슬롯</h4>
+      <div class="sky-stats">
+        ${stat('내 보유', `${owned}개`, `사용 ${used} · 여유 ${idle}`)}
+        ${stat('미분양', `${unsold}개`)}
+        ${stat('취득 수수료', money(A.slotCost(s, meId, city.id, 1)))}
+        ${stat('분기 임차료', money(rent), '슬롯당')}
+      </div>
+      <p class="muted">슬롯은 사는 게 아니라 빌리는 것이다 — 놀려도 임차료는 그대로 나가고, 취득 수수료는 돌려받지 못한다.</p>
+      <span class="row wrap">
+        ${[1, 3, 5].map((n) => `<button class="ghost" data-action="map-slot" data-city="${esc(city.id)}" data-n="${n}"${unsold >= n ? '' : ' disabled'}>+${n}</button>`).join('')}
+        ${[1, 3, 5].map((n) => `<button class="ghost" data-action="map-slot" data-city="${esc(city.id)}" data-n="${-n}"${idle >= n ? '' : ' disabled'}>반납 −${n}</button>`).join('')}
+      </span>
+
+      <h4>어디로 갈까</h4>
+      <div class="dest-list">${shown.map(destRow).join('')}</div>
+      ${
+        ranked.length > 14
+          ? `<button class="ghost wide view-ok" data-action="map-all">${view.all ? '수요 상위만 보기' : `전체 ${ranked.length}개 도시 보기`}</button>`
+          : ''
+      }
+    </div>`;
+  }
+
+  /** 노선 개설 폼 — 기재를 고르고 편수·운임을 정한다. */
+  function composerCard(s, meId, view) {
+    const q = mapQuote(s, meId, view);
+    if (!q) return '';
+    const me = St.airline(s, meId);
+    const picked = new Set(view.planes || []);
+    const planeRow = (p) => {
+      const t = s.types[p.typeId];
+      const on = picked.has(p.id);
+      return `<button class="ghost view-ok${on ? ' on' : ''}" data-action="map-plane" data-plane="${p.id}">
+        ${on ? '✓ ' : ''}${esc(t.name)} · ${t.seats}석 · 기령 ${Math.floor(p.ageQuarters / 4)}년</button>`;
+    };
+    const ok = !q.blocked && q.chosen.length > 0 && q.maxFreq >= 1 && me.cash >= q.total;
+    const why = q.blocked
+      ? q.blocked
+      : !q.idle.length
+      ? '이 거리를 날 수 있는 유휴 기재가 없다 — 기재를 사거나 다른 노선의 배속을 풀어야 한다.'
+      : !q.chosen.length
+        ? '투입할 기재를 골라야 한다.'
+        : q.maxFreq < 1
+          ? '양쪽 공항에 살 수 있는 슬롯이 없다.'
+          : me.cash < q.total
+            ? `현금이 ${money(q.total)} 있어야 연다.`
+            : '';
+    return `<div class="card full">
+      <h3>${esc(Cities.name(q.from))} – ${esc(Cities.name(q.to))}
+        <span class="muted">${num(q.dist)}km · 표준 운임 ${money(Econ.standardFare(q.dist, s.world.inflation))}</span></h3>
+
+      <h4>투입 기재</h4>
+      ${q.idle.length ? `<span class="row wrap">${q.idle.map(planeRow).join('')}</span>` : '<p class="muted">이 거리를 날 수 있는 유휴 기재가 없다.</p>'}
+
+      <h4>편수와 운임</h4>
+      <span class="row">
+        <button class="ghost view-ok" data-action="map-freq" data-delta="-1">편수 −1</button>
+        <b>주 ${q.freq}왕복</b>
+        <button class="ghost view-ok" data-action="map-freq" data-delta="1">편수 +1</button>
+        <span class="muted">기재 한계 ${q.cap.maxFreq} · 슬롯 한계 ${Math.max(0, q.maxFreq)}</span>
+      </span>
+      <span class="row">
+        <button class="ghost view-ok" data-action="map-fare" data-delta="-0.05">운임 −5%</button>
+        <b>${Math.round(q.fare * 100)}%</b>
+        <button class="ghost view-ok" data-action="map-fare" data-delta="0.05">운임 +5%</button>
+        <span class="muted">낮으면 관광객이, 높으면 출장객이 남는다</span>
+      </span>
+
+      <div class="sky-stats">
+        ${stat('분기 공급 좌석', num(q.seats))}
+        ${stat('분기 수요', num(q.demand))}
+        ${stat('로컬 경쟁', Market.localStrengthLabel(Cities.get(q.from), Cities.get(q.to)))}
+        ${stat('개설 비용', money(q.setupCost))}
+        ${q.slotCost > 0 ? stat('슬롯 취득', money(q.slotCost), `${q.needFrom + q.needTo}개를 사서 연다`) : ''}
+      </div>
+      <span class="row">
+        <button class="primary" data-action="map-open"${ok ? '' : ' disabled'}>개설 — ${money(q.total)}</button>
+        ${why ? `<span class="muted">${esc(why)}</span>` : ''}
+      </span>
+    </div>`;
+  }
+
+  function renderMap(s, meId, view) {
+    const v = view || {};
+    const me = St.airline(s, meId);
+    const sel = v.city;
+    const xy = (c) => ({ x: mapX(c.lon), y: mapY(c.lat) });
     const mine = St.routesOf(s, meId).filter((r) => r.active);
-    const others = s.routes.filter((r) => r.active && r.airlineId !== meId);
+    const others = v.rivals === false ? [] : s.routes.filter((r) => r.active && r.airlineId !== meId);
     const seg = (cls, x1, y1, x2, y2) =>
       `<line class="${cls}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" />`;
 
@@ -800,33 +1028,44 @@
       const a = xy(Cities.get(r.from));
       const b = xy(Cities.get(r.to));
       const dx = b.x - a.x;
-      if (Math.abs(dx) <= W / 2) return seg(cls, a.x, a.y, b.x, b.y);
+      if (Math.abs(dx) <= MAP_W / 2) return seg(cls, a.x, a.y, b.x, b.y);
       // 짧은 쪽으로 돌아간다 — 넘어가는 방향이 반대다.
-      const wrapped = dx > 0 ? dx - W : dx + W;
-      const edge = wrapped < 0 ? 0 : W;
+      const wrapped = dx > 0 ? dx - MAP_W : dx + MAP_W;
+      const edge = wrapped < 0 ? 0 : MAP_W;
       const t = (edge - a.x) / wrapped;
       const yc = a.y + (b.y - a.y) * t;
-      return seg(cls, a.x, a.y, edge, yc) + seg(cls, W - edge, yc, b.x, b.y);
+      return seg(cls, a.x, a.y, edge, yc) + seg(cls, MAP_W - edge, yc, b.x, b.y);
     };
+    // 점은 전부 누를 수 있다 — 보이는 점 위에 투명한 넓은 과녁을 얹는다. 점 자체를
+    // 키우면 유럽이 뭉개지고, 점만 남기면 2px 를 맞혀야 한다.
     const dots = Cities.CITIES.map((c) => {
       const p = xy(c);
       const big = c.standing + c.tour >= 105;
-      return `<circle class="map-city" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${big ? 3.4 : 2}" />
-        ${big ? `<text class="map-label" x="${(p.x + 5).toFixed(1)}" y="${(p.y + 3.5).toFixed(1)}">${esc(c.name)}</text>` : ''}`;
+      const isSel = c.id === sel;
+      return `${isSel ? `<circle class="map-sel" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="7" />` : ''}
+        <circle class="map-city${c.id === me.home ? ' is-home' : ''}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${big ? 3.4 : 2}" />
+        ${big || isSel ? `<text class="map-label" x="${(p.x + 5).toFixed(1)}" y="${(p.y + 3.5).toFixed(1)}">${esc(c.name)}</text>` : ''}
+        <circle class="map-hit" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="9" data-action="map-city" data-city="${esc(c.id)}" tabindex="0" role="button" aria-label="${esc(c.name)}" />`;
     }).join('');
 
     return `<section class="cards"><div class="card full">
-      <h3>노선망</h3>
+      <h3>노선망 <span class="muted">도시를 누르면 그곳의 슬롯과 갈 곳이 열린다</span></h3>
       <div class="map-wrap">
-        <svg class="map" data-home="${esc(St.airline(s, meId).home)}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="세계 노선망">
+        <svg class="map" data-home="${esc(me.home)}" viewBox="0 0 ${MAP_W} ${MAP_H}" preserveAspectRatio="xMidYMid meet" role="group" aria-label="세계 노선망 — 도시를 골라 취항한다">
+          ${coastline()}
           <g>${others.map((r) => line(r, 'map-rival')).join('')}</g>
           <g>${mine.map((r) => line(r, 'map-mine')).join('')}</g>
           <g>${dots}</g>
         </svg>
       </div>
-      <p class="muted"><b class="map-key-mine">굵은 선</b>이 우리 노선, 옅은 선이 남의 노선이다.
-        우리 ${mine.length}개 · 전체 ${mine.length + others.length}개.</p>
-    </div></section>`;
+      <span class="row">
+        <button class="ghost view-ok${v.rivals === false ? '' : ' on'}" data-action="map-rivals">경쟁사 노선</button>
+        <span class="muted"><b class="map-key-mine">굵은 선</b>이 우리 노선 ${mine.length}개 · 전체 ${mine.length + s.routes.filter((r) => r.active && r.airlineId !== meId).length}개</span>
+      </span>
+    </div>
+    ${sel ? cityCard(s, meId, v) : ''}
+    ${v.dest ? composerCard(s, meId, v) : ''}
+    </section>`;
   }
 
   // ─────────────────────────────── 기록 ───────────────────────────────
@@ -878,6 +1117,7 @@
     groupFinalCard,
     finalCard,
     renderRoutes,
+    mapQuote,
     renderFleet,
     renderOpen,
     renderMap,

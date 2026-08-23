@@ -27,11 +27,17 @@
     folds: new Set(),
     /** 취항 후보에서 고른 기재 (구간 → 기재 id). 누를 때까지 상태를 안 건드린다. */
     planeChoice: {},
+    /**
+     * 지도 화면의 보는-상태 — 어느 도시를 골랐고, 어디로 가는 폼을 열었고, 어떤 기재를
+     * 집었는가. 게임 상태(`ui.state`)가 아니라 **화면 상태**라 세이브에 안 들어간다.
+     */
+    map: { city: null, dest: null, planes: [], freq: 3, fare: 1, rivals: true, all: false },
     animate: null,
   };
 
-  /** 판이 끝난 뒤에도 되는 것 — 둘러보기와 새 판뿐이다. */
-  const VIEW_ONLY = new Set(['tab', 'new-game', 'pick']);
+  /** 판이 끝난 뒤에도 되는 것 — 둘러보기와 새 판뿐이다. 지도의 선택·토글·폼 조작은
+   * 상태를 안 바꾸는 둘러보기라 되고, 실제로 돈이 오가는 개설·슬롯 매매만 막는다. */
+  const VIEW_ONLY = new Set(['tab', 'new-game', 'pick', 'map-city', 'map-rivals', 'map-all', 'map-dest', 'map-plane', 'map-freq', 'map-fare']);
 
   const TABS = [
     { id: 'overview', name: '개요' },
@@ -74,8 +80,10 @@
         panel.innerHTML = SP.renderFleet(s, ui.meId, ui.folds);
         break;
       case 'map':
-        panel.innerHTML = SP.renderMap(s, ui.meId);
-        centerMapOnHome();
+        // 처음 열면 홈 공항이 골라져 있다 — 빈 지도에서 시작할 이유가 없다.
+        if (!ui.map.city) ui.map.city = St.airline(s, ui.meId).home;
+        panel.innerHTML = SP.renderMap(s, ui.meId, ui.map);
+        centerMapOn(ui.map.city);
         break;
       case 'history':
         panel.innerHTML = SP.renderHistory(s, ui.meId);
@@ -91,14 +99,15 @@
   /**
    * 지도는 폭에 맞추지 않고 가로로 흐르므로, 열면 왼쪽 끝(아메리카)이 보인다.
    * 서울에 앉은 회사에게 첫 화면이 시카고이면 제 노선망을 찾으러 밀어야 한다.
+   * 도시를 고르면 그 도시로 옮긴다 — 골랐는데 화면 밖이면 고른 티가 안 난다.
    */
-  function centerMapOnHome() {
+  function centerMapOn(cityId) {
     const svg = document.querySelector('svg.map');
     const wrap = svg && svg.closest('.map-wrap');
     if (!wrap) return;
-    const home = Cities.get(svg.dataset.home);
-    if (!home) return;
-    const x = Cities.project(home.lat, home.lon).x * svg.clientWidth;
+    const c = Cities.get(cityId) || Cities.get(svg.dataset.home);
+    if (!c) return;
+    const x = Cities.project(c.lat, c.lon).x * svg.clientWidth;
     wrap.scrollLeft = Math.max(0, x - wrap.clientWidth / 2);
   }
 
@@ -325,6 +334,82 @@
       case 'repay':
         run(A.repay(s, me, +d.amount));
         break;
+      case 'map-city':
+        ui.map.city = d.city;
+        ui.map.dest = null;
+        ui.map.planes = [];
+        ui.map.all = false;
+        render();
+        break;
+      case 'map-rivals':
+        ui.map.rivals = ui.map.rivals === false;
+        render();
+        break;
+      case 'map-all':
+        ui.map.all = !ui.map.all;
+        render();
+        break;
+      case 'map-dest':
+        ui.map.dest = d.dest;
+        ui.map.planes = [];
+        ui.map.freq = 3;
+        ui.map.fare = 1;
+        render();
+        break;
+      case 'map-plane': {
+        const id = +d.plane;
+        ui.map.planes = ui.map.planes.includes(id) ? ui.map.planes.filter((x) => x !== id) : ui.map.planes.concat(id);
+        render();
+        break;
+      }
+      case 'map-freq': {
+        // 위 상한은 견적이 안다 — 기재·슬롯 한계 위로는 안 올라간다.
+        const q = SP.mapQuote(s, me, Object.assign({}, ui.map, { freq: ui.map.freq + +d.delta }));
+        ui.map.freq = q ? q.freq : Math.max(1, ui.map.freq + +d.delta);
+        render();
+        break;
+      }
+      case 'map-fare': {
+        const q = SP.mapQuote(s, me, Object.assign({}, ui.map, { fare: +(ui.map.fare + +d.delta).toFixed(2) }));
+        ui.map.fare = q ? q.fare : ui.map.fare;
+        render();
+        break;
+      }
+      case 'map-slot': {
+        const n = +d.n;
+        run(n > 0 ? A.buySlots(s, me, d.city, n) : A.sellSlots(s, me, d.city, -n));
+        break;
+      }
+      case 'map-open': {
+        // 화면이 보여준 것과 **같은 견적**을 다시 낸다 — 취항 탭과 같은 규칙이다.
+        const q = SP.mapQuote(s, me, ui.map);
+        if (!q || q.blocked) {
+          toast(q && q.blocked ? q.blocked : '개설할 구간을 고르세요.', 'bad');
+          break;
+        }
+        if (!q.chosen.length || q.maxFreq < 1) {
+          toast('투입할 기재를 고르세요.', 'bad');
+          break;
+        }
+        // 양쪽 슬롯값을 미리 합쳐 본다. 하나씩 사면서 두 번째에서 돈이 모자라면,
+        // 첫 공항 슬롯만 사 놓고 노선은 못 여는 상태로 남는다.
+        const airline = St.airline(s, me);
+        if (airline.cash < q.total) {
+          toast(`현금이 ${SP.money(q.total)} 있어야 연다.`, 'bad');
+          break;
+        }
+        if (q.needFrom > 0 && !run(A.buySlots(s, me, q.from, q.needFrom))) break;
+        if (q.needTo > 0 && !run(A.buySlots(s, me, q.to, q.needTo))) break;
+        // `run` 이 성공 시 바로 다시 그리므로, 폼 상태를 **먼저** 접어야 열린 노선의
+        // 폼이 화면에 남지 않는다.
+        const opened = A.openRoute(s, me, q.from, q.to, q.chosen.map((p) => p.id), q.freq, q.fare);
+        if (opened.ok) {
+          ui.map.dest = null;
+          ui.map.planes = [];
+        }
+        run(opened);
+        break;
+      }
       case 'open-route': {
         // 화면이 보여준 것과 **같은 견적**을 다시 낸다 — 고른 기체까지 반영해서.
         const c = SP.openCandidates(s, me, 500, ui.planeChoice).find((x) => x.from === d.from && x.to === d.to);
@@ -437,6 +522,7 @@
     ui.tab = 'overview';
     ui.folds = new Set();
     ui.planeChoice = {};
+    ui.map = { city: null, dest: null, planes: [], freq: 3, fare: 1, rivals: true, all: false };
     render();
   }
 
@@ -475,9 +561,24 @@
     </div></section>`;
   }
 
+  /**
+   * 키보드로 누르는 길 — 지도의 클릭 과녁은 `<button>` 이 아니라 SVG 원이라,
+   * 브라우저가 Enter/Space 를 click 으로 바꿔 주지 않는다. 여기서 바꿔 준다.
+   * 진짜 버튼은 건드리지 않는다 — 브라우저가 이미 알아서 한다.
+   */
+  function onKey(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (root.AirlinerShell && !e.target.closest('#modal') && !root.AirlinerShell.isActive('airline')) return;
+    const el = e.target.closest && e.target.closest('[data-action]');
+    if (!el || el.tagName === 'BUTTON' || el.tagName === 'SELECT' || el.tagName === 'A') return;
+    e.preventDefault();
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
   function boot() {
     document.addEventListener('click', onClick);
     document.addEventListener('change', onChange);
+    document.addEventListener('keydown', onKey);
     load();
     show();
   }
