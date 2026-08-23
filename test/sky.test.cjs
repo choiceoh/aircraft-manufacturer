@@ -3633,6 +3633,8 @@ test('지도: 화면이 해안선·클릭 과녁·도시 패널·개설 폼을 �
   assert.strictEqual((html.match(/data-action="map-city"/g) || []).length, C.CITIES.length, '도시 전부가 클릭 과녁을 가져야 한다');
   // 과녁은 <button> 이 아니라 SVG 원이다 — 이름과 초점이 없으면 키보드로 도시를 못 고른다.
   assert.strictEqual((html.match(/tabindex="0" role="button" aria-label=/g) || []).length, C.CITIES.length, '과녁에 이름·초점이 없다');
+  // 지도가 role="img" 면 통째 그림이 되어 안의 버튼 45개가 접근성 트리에서 숨는다.
+  assert.ok(!/svg class="map"[^>]*role="img"/.test(html), '지도가 그림으로 선언돼 도시 버튼이 보조기기에 안 잡힌다');
   assert.ok((html.match(/data-action="map-dest"/g) || []).length >= 10, '목적지 목록이 없다');
   assert.ok(!/data-action="map-open"/.test(html), '목적지를 안 골랐는데 개설 폼이 떴다');
 

@@ -1051,7 +1051,7 @@
     return `<section class="cards"><div class="card full">
       <h3>노선망 <span class="muted">도시를 누르면 그곳의 슬롯과 갈 곳이 열린다</span></h3>
       <div class="map-wrap">
-        <svg class="map" data-home="${esc(me.home)}" viewBox="0 0 ${MAP_W} ${MAP_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="세계 노선망">
+        <svg class="map" data-home="${esc(me.home)}" viewBox="0 0 ${MAP_W} ${MAP_H}" preserveAspectRatio="xMidYMid meet" role="group" aria-label="세계 노선망 — 도시를 골라 취항한다">
           ${coastline()}
           <g>${others.map((r) => line(r, 'map-rival')).join('')}</g>
           <g>${mine.map((r) => line(r, 'map-mine')).join('')}</g>
