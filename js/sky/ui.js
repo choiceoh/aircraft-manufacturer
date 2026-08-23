@@ -83,6 +83,7 @@
         // 처음 열면 홈 공항이 골라져 있다 — 빈 지도에서 시작할 이유가 없다.
         if (!ui.map.city) ui.map.city = St.airline(s, ui.meId).home;
         panel.innerHTML = SP.renderMap(s, ui.meId, ui.map);
+        centerMapOn(ui.map.city);
         break;
       case 'history':
         panel.innerHTML = SP.renderHistory(s, ui.meId);
@@ -98,14 +99,15 @@
   /**
    * 지도는 폭에 맞추지 않고 가로로 흐르므로, 열면 왼쪽 끝(아메리카)이 보인다.
    * 서울에 앉은 회사에게 첫 화면이 시카고이면 제 노선망을 찾으러 밀어야 한다.
+   * 도시를 고르면 그 도시로 옮긴다 — 골랐는데 화면 밖이면 고른 티가 안 난다.
    */
-  function centerMapOnHome() {
+  function centerMapOn(cityId) {
     const svg = document.querySelector('svg.map');
     const wrap = svg && svg.closest('.map-wrap');
     if (!wrap) return;
-    const home = Cities.get(svg.dataset.home);
-    if (!home) return;
-    const x = Cities.project(home.lat, home.lon).x * svg.clientWidth;
+    const c = Cities.get(cityId) || Cities.get(svg.dataset.home);
+    if (!c) return;
+    const x = Cities.project(c.lat, c.lon).x * svg.clientWidth;
     wrap.scrollLeft = Math.max(0, x - wrap.clientWidth / 2);
   }
 
@@ -381,7 +383,11 @@
       case 'map-open': {
         // 화면이 보여준 것과 **같은 견적**을 다시 낸다 — 취항 탭과 같은 규칙이다.
         const q = SP.mapQuote(s, me, ui.map);
-        if (!q || !q.chosen.length || q.maxFreq < 1) {
+        if (!q || q.blocked) {
+          toast(q && q.blocked ? q.blocked : '개설할 구간을 고르세요.', 'bad');
+          break;
+        }
+        if (!q.chosen.length || q.maxFreq < 1) {
           toast('투입할 기재를 고르세요.', 'bad');
           break;
         }
@@ -394,10 +400,14 @@
         }
         if (q.needFrom > 0 && !run(A.buySlots(s, me, q.from, q.needFrom))) break;
         if (q.needTo > 0 && !run(A.buySlots(s, me, q.to, q.needTo))) break;
-        if (run(A.openRoute(s, me, q.from, q.to, q.chosen.map((p) => p.id), q.freq, q.fare))) {
+        // `run` 이 성공 시 바로 다시 그리므로, 폼 상태를 **먼저** 접어야 열린 노선의
+        // 폼이 화면에 남지 않는다.
+        const opened = A.openRoute(s, me, q.from, q.to, q.chosen.map((p) => p.id), q.freq, q.fare);
+        if (opened.ok) {
           ui.map.dest = null;
           ui.map.planes = [];
         }
+        run(opened);
         break;
       }
       case 'open-route': {
@@ -551,9 +561,24 @@
     </div></section>`;
   }
 
+  /**
+   * 키보드로 누르는 길 — 지도의 클릭 과녁은 `<button>` 이 아니라 SVG 원이라,
+   * 브라우저가 Enter/Space 를 click 으로 바꿔 주지 않는다. 여기서 바꿔 준다.
+   * 진짜 버튼은 건드리지 않는다 — 브라우저가 이미 알아서 한다.
+   */
+  function onKey(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (root.AirlinerShell && !e.target.closest('#modal') && !root.AirlinerShell.isActive('airline')) return;
+    const el = e.target.closest && e.target.closest('[data-action]');
+    if (!el || el.tagName === 'BUTTON' || el.tagName === 'SELECT' || el.tagName === 'A') return;
+    e.preventDefault();
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
   function boot() {
     document.addEventListener('click', onClick);
     document.addEventListener('change', onChange);
+    document.addEventListener('keydown', onKey);
     load();
     show();
   }

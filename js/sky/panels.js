@@ -839,6 +839,18 @@
     const b = Cities.get(to);
     if (!a || !b) return null;
     const dist = Cities.distance(from, to);
+    // **막힌 구간은 슬롯을 사기 전에 거른다.** `openRoute` 도 같은 검사를 하지만
+    // 그건 슬롯을 산 **뒤**라, 여기서 안 거르면 견적은 통과하고 개설에서 물려 —
+    // 노선 없이 슬롯값과 임차 의무만 남는다. 다른 탭에서 같은 구간을 먼저 연 경우도
+    // 같다: 폼을 열어 둔 사이 세상이 변할 수 있다.
+    let blocked = '';
+    if (St.isClosed(s.cityState[from] || {}, s.turn) || St.isClosed(s.cityState[to] || {}, s.turn)) {
+      blocked = '공항이 폐쇄 중이다 — 열릴 때까지 개설할 수 없다.';
+    } else if (
+      s.routes.some((r) => r.airlineId === meId && r.active && Cities.pairKey(r.from, r.to) === Cities.pairKey(from, to))
+    ) {
+      blocked = '이미 같은 구간에 노선이 있다.';
+    }
     const idle = St.planesOf(s, meId)
       .filter((p) => p.routeId === null && p.checkUntilTurn !== s.turn)
       .filter((p) => Econ.canFly(s.types[p.typeId], dist))
@@ -856,7 +868,7 @@
     const setupCost = A.routeSetupCost(s, from, to);
     const fare = Math.min(A.FARE_MAX_MUL, Math.max(A.FARE_MIN_MUL, view.fare || 1));
     return {
-      from, to, dist, idle, chosen, cap, maxFreq, freq, needFrom, needTo,
+      from, to, dist, idle, chosen, cap, maxFreq, freq, needFrom, needTo, blocked,
       slotCost, setupCost, total: slotCost + setupCost, fare,
       seats: Econ.quarterlySeats(freq, cap.avgSeats),
       demand: St.demandFor(s, a, b).total,
@@ -894,6 +906,10 @@
         mine ? '우리 노선' : rivals > 0 ? `경쟁 ${rivals}사` : '미개척'
       } · 로컬 ${Market.localStrengthLabel(city, c)}`;
       if (mine) return `<div class="dest-row is-mine"><b>${esc(c.name)}</b><span>${esc(info)}</span><i>취항 중</i></div>`;
+      // 폐쇄된 공항은 폼까지 갈 것도 없다 — 누르게 해 놓고 개설에서 물리면 헛걸음이다.
+      if (St.isClosed(s.cityState[c.id] || {}, s.turn)) {
+        return `<div class="dest-row is-mine"><b>${esc(c.name)}</b><span>${esc(info)}</span><i>폐쇄 중</i></div>`;
+      }
       return `<button class="dest-row${view.dest === c.id ? ' on' : ''}" data-action="map-dest" data-dest="${esc(c.id)}">
         <b>${esc(c.name)}</b><span>${esc(info)}</span><i>개설 ›</i></button>`;
     };
@@ -943,8 +959,10 @@
       return `<button class="ghost${on ? ' on' : ''}" data-action="map-plane" data-plane="${p.id}">
         ${on ? '✓ ' : ''}${esc(t.name)} · ${t.seats}석 · 기령 ${Math.floor(p.ageQuarters / 4)}년</button>`;
     };
-    const ok = q.chosen.length > 0 && q.maxFreq >= 1 && me.cash >= q.total;
-    const why = !q.idle.length
+    const ok = !q.blocked && q.chosen.length > 0 && q.maxFreq >= 1 && me.cash >= q.total;
+    const why = q.blocked
+      ? q.blocked
+      : !q.idle.length
       ? '이 거리를 날 수 있는 유휴 기재가 없다 — 기재를 사거나 다른 노선의 배속을 풀어야 한다.'
       : !q.chosen.length
         ? '투입할 기재를 골라야 한다.'
@@ -1027,7 +1045,7 @@
       return `${isSel ? `<circle class="map-sel" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="7" />` : ''}
         <circle class="map-city${c.id === me.home ? ' is-home' : ''}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${big ? 3.4 : 2}" />
         ${big || isSel ? `<text class="map-label" x="${(p.x + 5).toFixed(1)}" y="${(p.y + 3.5).toFixed(1)}">${esc(c.name)}</text>` : ''}
-        <circle class="map-hit" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="9" data-action="map-city" data-city="${esc(c.id)}" />`;
+        <circle class="map-hit" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="9" data-action="map-city" data-city="${esc(c.id)}" tabindex="0" role="button" aria-label="${esc(c.name)}" />`;
     }).join('');
 
     return `<section class="cards"><div class="card full">

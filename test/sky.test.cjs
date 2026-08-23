@@ -3536,7 +3536,7 @@ test('세계: 해안선 데이터가 온전히 풀리고 한 번만 풀린다', 
 /** 지도 개설 버튼과 같은 순서 — 견적을 다시 내고, 슬롯을 사고, 연다. */
 function mapOpen(s, meId, view) {
   const q = SP.mapQuote(s, meId, view);
-  if (!q || !q.chosen.length || q.maxFreq < 1) return { ok: false, q };
+  if (!q || q.blocked || !q.chosen.length || q.maxFreq < 1) return { ok: false, q };
   if (q.needFrom > 0 && !Act.buySlots(s, meId, q.from, q.needFrom).ok) return { ok: false, q };
   if (q.needTo > 0 && !Act.buySlots(s, meId, q.to, q.needTo).ok) return { ok: false, q };
   return { ok: Act.openRoute(s, meId, q.from, q.to, q.chosen.map((p) => p.id), q.freq, q.fare).ok, q };
@@ -3631,6 +3631,8 @@ test('지도: 화면이 해안선·클릭 과녁·도시 패널·개설 폼을 �
   const html = SP.renderMap(s, me.id, base);
   assert.ok(/map-land/.test(html), '해안선이 없다 — 점 45개가 허공에 뜬다');
   assert.strictEqual((html.match(/data-action="map-city"/g) || []).length, C.CITIES.length, '도시 전부가 클릭 과녁을 가져야 한다');
+  // 과녁은 <button> 이 아니라 SVG 원이다 — 이름과 초점이 없으면 키보드로 도시를 못 고른다.
+  assert.strictEqual((html.match(/tabindex="0" role="button" aria-label=/g) || []).length, C.CITIES.length, '과녁에 이름·초점이 없다');
   assert.ok((html.match(/data-action="map-dest"/g) || []).length >= 10, '목적지 목록이 없다');
   assert.ok(!/data-action="map-open"/.test(html), '목적지를 안 골랐는데 개설 폼이 떴다');
 
@@ -3644,4 +3646,65 @@ test('지도: 화면이 해안선·클릭 과녁·도시 패널·개설 폼을 �
   assert.ok(/data-action="map-plane"/.test(composing), '기재를 고를 수 없다');
   assert.ok(/data-action="map-freq"/.test(composing) && /data-action="map-fare"/.test(composing), '편수·운임 조절이 없다');
   assert.ok(/개설 비용/.test(composing), '비용을 안 보여주고 연다');
+});
+
+test('지도: 폐쇄된 공항은 슬롯을 사기 전에 막힌다', () => {
+  // `openRoute` 도 폐쇄를 거르지만 그건 슬롯을 산 **뒤**다 — 견적에서 안 거르면
+  // 출발지 슬롯값과 임차 의무만 남기고 노선은 못 연다. 보여준 값과 다른 돈이 나간다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const range = Math.max(...idle.map((p) => s.types[p.typeId].range));
+  const bare = C.CITIES.filter((c) => !(me.slots[c.id] > 0));
+  let from = null;
+  let to = null;
+  outer: for (const a of bare) {
+    for (const b of bare) {
+      if (a.id !== b.id && C.distance(a.id, b.id) < range * 0.9) { from = a.id; to = b.id; break outer; }
+    }
+  }
+  assert.ok(from && to, '도시 쌍이 없으면 검사가 아무것도 안 잰다');
+  s.cityState[to] = Object.assign({}, s.cityState[to], { closedUntilTurn: s.turn + 4 });
+
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(from, to)).slice(0, 1);
+  const view = { city: from, dest: to, planes: usable.map((p) => p.id), freq: 3, fare: 1 };
+  const q = SP.mapQuote(s, me.id, view);
+  assert.ok(q && q.blocked, '폐쇄된 목적지인데 견적이 서 있다');
+
+  const cashBefore = me.cash;
+  const slotsBefore = me.slots[from] || 0;
+  const r = mapOpen(s, me.id, view);
+  assert.strictEqual(r.ok, false, '폐쇄된 구간이 열렸다');
+  assert.strictEqual(me.cash, cashBefore, '못 여는 구간인데 돈이 나갔다');
+  assert.strictEqual(me.slots[from] || 0, slotsBefore, '출발지 슬롯만 사 놓고 노선은 못 열었다');
+});
+
+test('지도: 이미 있는 구간은 견적에서 막힌다 — 폼을 열어 둔 사이 세상이 변해도', () => {
+  // 취항 탭에서 같은 구간을 먼저 열었을 수 있다. 견적이 그걸 모르면 슬롯을 또 사고
+  // `openRoute` 의 중복 검사에서 물린다.
+  const s = St.newGame(1234);
+  const me = s.airlines[0];
+  me.cash = 5e9;
+  const idle = St.planesOf(s, me.id).filter((p) => p.routeId === null);
+  const range = Math.max(...idle.map((p) => s.types[p.typeId].range));
+  const bare = C.CITIES.filter((c) => !(me.slots[c.id] > 0));
+  let from = null;
+  let to = null;
+  outer: for (const a of bare) {
+    for (const b of bare) {
+      if (a.id !== b.id && C.distance(a.id, b.id) < range * 0.9) { from = a.id; to = b.id; break outer; }
+    }
+  }
+  const usable = idle.filter((p) => s.types[p.typeId].range >= C.distance(from, to));
+  const view = { city: from, dest: to, planes: [usable[0].id], freq: 2, fare: 1 };
+  assert.strictEqual(mapOpen(s, me.id, view).ok, true, '첫 개설이 돼야 검사가 산다');
+
+  // 같은 구간을 다시 — 다른 기재로.
+  const again = { city: from, dest: to, planes: [usable[1].id], freq: 2, fare: 1 };
+  const q = SP.mapQuote(s, me.id, again);
+  assert.ok(q && q.blocked, '이미 있는 구간인데 견적이 서 있다');
+  const cashBefore = me.cash;
+  assert.strictEqual(mapOpen(s, me.id, again).ok, false);
+  assert.strictEqual(me.cash, cashBefore, '중복 구간에서 슬롯값이 나갔다');
 });
